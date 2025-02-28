@@ -6,97 +6,127 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/02/26 19:56:30 by mayeung          ###   ########.fr       --
+--   Updated: 2025/02/28 20:33:12 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
-
 module Main where
 
-import Options.Applicative as O
--- import Text.ParserCombinators.ReadP as ReadP
--- import Text.ParserCombinators.Parsec as P
+import qualified Options.Applicative as O
 import Text.Parsec as P
-import Text.Parsec.Char as PC
+import Control.Monad
+-- import System.IO
 
-data  Args = Args {ifiles :: [String], doLex :: Bool, doParse :: Bool, codegen :: Bool}
+data  Args = Args
+  {ifiles :: [String],
+  doLex :: Bool,
+  doParse :: Bool,
+  codegen :: Bool}
 
 data  Token = KeyInt 
-              | KeyVoid
-              | Return
-              | OpenP
-              | CloseP
-              | OpenCur
-              | CloseCur
-              | SemiCol
-              | Identifier String
-              | IValue Int
-              | DValue Double
-              deriving Show
+  | KeyVoid
+  | KeyReturn
+  | OpenP
+  | CloseP
+  | OpenCur
+  | CloseCur
+  | SemiCol
+  | Identifier String
+  | IValue Int
+  | DValue Double
+  deriving (Show, Eq)
+
+-- data  Program =
 
 argsParser :: O.Parser Args
-argsParser = Args <$> O.many (argument str (metavar "input files")) <*> switch (long "lex") <*> switch (long "parse") <*> switch (long "codegen")
+argsParser = Args
+  <$> O.many (O.argument O.str (O.metavar "input files"))
+  <*> O.switch (O.long "lex")
+  <*> O.switch (O.long "parse")
+  <*> O.switch (O.long "codegen")
 
--- keyIntParser :: ReadP String
-keyIntParser = string "int"
+spaceNlTabParser :: ParsecT String u IO Char
+spaceNlTabParser = space <|> newline <|> tab
 
--- -- keyVoidParser :: ReadP String
--- keyVoidParser = string "void"
+ucLex :: ParsecT String u IO Char
+ucLex = char '_'
 
--- returnParser = string "return"
+symbolExtract :: ParsecT String u IO [Char]
+symbolExtract = (:) <$> (letter <|> ucLex) <*> many (alphaNum <|> ucLex)
 
--- openPParser = char '('
+buildKeywordParser :: (Monad m, O.Alternative m, Eq a) => a -> b -> m a -> m b
+buildKeywordParser k t p = do
+  symbol <- p
+  guard $ symbol == k
+  pure t
 
--- closePParser = char ')'
+openPParser :: ParsecT String u IO Token
+openPParser = buildKeywordParser '(' OpenP anyChar
 
--- openCurParser = char '{'
+closePParser :: ParsecT String u IO Token
+closePParser = buildKeywordParser ')' CloseP anyChar
 
--- closeCurParser = char ')'
+openCurParser :: ParsecT String u IO Token
+openCurParser = buildKeywordParser '{' OpenCur anyChar
 
--- semiColParser = char ':'
+closeCurParser :: ParsecT String u IO Token
+closeCurParser = buildKeywordParser '}' CloseCur anyChar
 
-isLower = flip elem ['a'..'z']
+semiColParser :: ParsecT String u IO Token
+semiColParser = buildKeywordParser ';' SemiCol anyChar
 
-isUpper = flip elem ['A'..'Z']
+keyIntParser :: ParsecT String u IO Token
+keyIntParser = buildKeywordParser "int" KeyInt symbolExtract
 
-isdigit = flip elem ['0'..'9']
+keyVoidParser :: ParsecT String u IO Token
+keyVoidParser = buildKeywordParser "void" KeyVoid symbolExtract
 
-isUnderscore = (== '_')
+keyReturnParser :: ParsecT String u IO Token
+keyReturnParser = buildKeywordParser "return" KeyReturn symbolExtract
 
+keywordParser :: ParsecT String u IO Token
+keywordParser = try keyIntParser
+  <|> try keyVoidParser 
+  <|> try keyReturnParser
 
-underscoreParser = char '_'
+keyCharParser :: ParsecT String u IO Token
+keyCharParser = try openPParser
+  <|> try closePParser
+  <|> try openCurParser
+  <|> try closeCurParser
+  <|> try semiColParser
 
-isSymbolBody c = any ($ c)[isLower, isUpper, isdigit, isUnderscore]
+keySymbolParser :: ParsecT String u IO Token
+keySymbolParser = keywordParser <|> keyCharParser
 
-symbolBody = many1 $ letter P.<|> digit P.<|> underscoreParser
+identifierParser :: ParsecT String u IO Token
+identifierParser = Identifier <$> symbolExtract
 
-isSymbolHead c = any ($ c) [isLower, isUpper, isUnderscore]
+intParser :: ParsecT String u IO Token
+intParser = IValue . read <$> many1 digit
 
-symbolHead = letter P.<|> underscoreParser
+tokenParser :: ParsecT String u IO Token
+tokenParser = skipMany spaceNlTabParser
+  >> (try keySymbolParser <|> identifierParser <|> intParser)
 
-symbolExtract = (:) <$> symbolHead  <*> symbolBody
-
-
--- symbolParser = symbolExtract >>= pure runParser keyIntParser () ""
-symbolParser = symbolExtract >> pure KeyInt
--- symbolExtract = (:) <$> satisfy isSymbolHead <*> P.many (satisfy isSymbolBody)
-
--- testParser = symbolExtract >>= pure keyIntParser
--- symbolParser = Sym <$> 
-
--- tokenParser = 
+fileParser :: ParsecT String u IO [Token]
+fileParser = many (try tokenParser)
+  >>= (\toks -> skipMany spaceNlTabParser >> eof >> pure toks)
 
 main :: IO ()
--- main = execParser (info (argsParser <**> helper) (fullDesc <> progDesc "aaaa" <> header "bbb")) >>= printArgs
 main = do
-  printArgs =<< execParser (info (argsParser <**> helper) (fullDesc <> progDesc "aaaa" <> header "bbb"))
-  -- print $ runParser symbolExtract () ""
-  -- print $ readP_to_S symbolExtract "____1"
+  printArgs =<< O.execParser
+    (O.info (argsParser O.<**> O.helper)
+    (O.fullDesc <> O.progDesc "aaaa" <> O.header "bbb"))
+  print =<< runParserT fileParser () "" "int int   int; return intt; 234 void3;;;  "
+  print =<< runParserT fileParser () "" "234 3 ;"
+  print =<< runParserT fileParser () "" ") return"
+  print =<< runParserT fileParser () "" "return   "
+  print =<< runParserT fileParser () "" "int main(void){return (3);}"
 
 printArgs :: Args -> IO ()
-printArgs args = 
-  do
-    print $ ifiles args
-    print $ doLex args
-    print $ doParse args
-    print $ codegen args
+printArgs args = do
+  print $ ifiles args
+  print $ doLex args
+  print $ doParse args
+  print $ codegen args
