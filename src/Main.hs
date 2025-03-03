@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/03/03 18:40:49 by mayeung          ###   ########.fr       --
+--   Updated: 2025/03/03 23:17:43 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -15,7 +15,6 @@ module Main where
 import qualified Options.Applicative as O
 import Text.Parsec as P
 import Control.Monad
-import System.Posix.Internals (c_getpid)
 -- import System.IO
 
 data Args = Args
