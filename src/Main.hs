@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/02/28 20:33:12 by mayeung          ###   ########.fr       --
+--   Updated: 2025/03/03 18:40:49 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -15,15 +15,16 @@ module Main where
 import qualified Options.Applicative as O
 import Text.Parsec as P
 import Control.Monad
+import System.Posix.Internals (c_getpid)
 -- import System.IO
 
-data  Args = Args
+data Args = Args
   {ifiles :: [String],
   doLex :: Bool,
   doParse :: Bool,
   codegen :: Bool}
 
-data  Token = KeyInt 
+data Token = KeyInt 
   | KeyVoid
   | KeyReturn
   | OpenP
@@ -31,12 +32,43 @@ data  Token = KeyInt
   | OpenCur
   | CloseCur
   | SemiCol
-  | Identifier String
+  | Ident String
   | IValue Int
   | DValue Double
   deriving (Show, Eq)
 
--- data  Program =
+type Program = [FunctionDecl]
+
+data FunctionDecl = FunctionDecl DataType Identifier InputArgs [Statment]
+  deriving (Show, Eq)
+
+data Identifier = Identifier String
+  deriving (Show, Eq)
+
+data InputArgs = SingleVoid
+  | SomeArgs [DataTypeVariPair]
+  deriving (Show, Eq)
+
+data DataTypeVariPair = IntSymP String
+  | DoubleSymP String
+  deriving (Show, Eq)
+
+data Statment = VariableDecl
+  | Return Expr
+  deriving (Show, Eq)
+
+data DataType = IntType
+  | VoidType
+  deriving (Show, Eq)
+
+data Expr = Constant Number
+  | Variable String
+  | FunctionCall
+  deriving (Show, Eq)
+
+data Number = IntValue Int
+  | DoubleValue Double
+  deriving (Show, Eq)
 
 argsParser :: O.Parser Args
 argsParser = Args
@@ -100,7 +132,7 @@ keySymbolParser :: ParsecT String u IO Token
 keySymbolParser = keywordParser <|> keyCharParser
 
 identifierParser :: ParsecT String u IO Token
-identifierParser = Identifier <$> symbolExtract
+identifierParser = Ident <$> symbolExtract
 
 intParser :: ParsecT String u IO Token
 intParser = IValue . read <$> many1 digit
@@ -112,6 +144,17 @@ tokenParser = skipMany spaceNlTabParser
 fileParser :: ParsecT String u IO [Token]
 fileParser = many (try tokenParser)
   >>= (\toks -> skipMany spaceNlTabParser >> eof >> pure toks)
+
+-- programParser = many $ 
+
+-- functionHeadParser = do
+
+returnTypeParser = do
+  returnType <- _
+  case returnType of
+    KeyVoid -> pure VoidType
+    KeyInt -> pure IntType
+    _ -> Left "Error"
 
 main :: IO ()
 main = do
