@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/03/03 23:17:43 by mayeung          ###   ########.fr       --
+--   Updated: 2025/03/05 12:25:49 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -18,10 +18,13 @@ import Control.Monad
 -- import System.IO
 
 data Args = Args
-  {ifiles :: [String],
-  doLex :: Bool,
-  doParse :: Bool,
-  codegen :: Bool}
+  {
+    ifiles :: [String],
+    doLex :: Bool,
+    doParse :: Bool,
+    codegen :: Bool
+  }
+  deriving (Show, Eq)
 
 data Token = KeyInt 
   | KeyVoid
@@ -36,28 +39,34 @@ data Token = KeyInt
   | DValue Double
   deriving (Show, Eq)
 
-type Program = [FunctionDecl]
+type Program = [FunctionDefine]
 
-data FunctionDecl = FunctionDecl DataType Identifier InputArgs [Statment]
+data FunctionDefine = FunctionDefine
+  {
+    returnType :: DataType,
+    funName :: String,
+    inputArgs :: [InputArgPair],
+    body :: [Statment]
+  }
   deriving (Show, Eq)
 
-data Identifier = Identifier String
-  deriving (Show, Eq)
-
-data InputArgs = SingleVoid
-  | SomeArgs [DataTypeVariPair]
-  deriving (Show, Eq)
-
-data DataTypeVariPair = IntSymP String
-  | DoubleSymP String
+data InputArgPair = ArgPair 
+  {
+    dataType :: BuildinDataType,
+    varName :: String
+  }
   deriving (Show, Eq)
 
 data Statment = VariableDecl
   | Return Expr
   deriving (Show, Eq)
 
-data DataType = IntType
-  | VoidType
+data DataType = SolidType BuildinDataType
+  | JustVoid
+  deriving (Show, Eq)
+
+data BuildinDataType = IntType
+  | DoubleType
   deriving (Show, Eq)
 
 data Expr = Constant Number
@@ -146,14 +155,20 @@ fileParser = many (try tokenParser)
 
 -- programParser = many $ 
 
--- functionHeadParser = do
+-- exprConstantParser :: ParsecT [Token] u IO Expr
+-- exprConstantParser =  do
+--   num <- satisfy 
 
-returnTypeParser = do
-  returnType <- _
-  case returnType of
-    KeyVoid -> pure VoidType
-    KeyInt -> pure IntType
-    _ -> Left "Error"
+-- programParser :: ParsecT [Token] u IO Program
+-- programParser = do
+  -- pure $ _
+
+-- returnTypeParser = do
+--   returnType <- _
+--   case returnType of
+--     KeyVoid -> pure VoidType
+--     KeyInt -> pure IntType
+--     _ -> Left "Error"
 
 main :: IO ()
 main = do
