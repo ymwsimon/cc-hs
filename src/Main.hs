@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/03/05 12:25:49 by mayeung          ###   ########.fr       --
+--   Updated: 2025/03/05 23:12:45 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -74,8 +74,8 @@ data Expr = Constant Number
   | FunctionCall
   deriving (Show, Eq)
 
-data Number = IntValue Int
-  | DoubleValue Double
+data Number = IntValue String
+  | DoubleValue String
   deriving (Show, Eq)
 
 argsParser :: O.Parser Args
@@ -93,6 +93,76 @@ ucLex = char '_'
 
 symbolExtract :: ParsecT String u IO [Char]
 symbolExtract = (:) <$> (letter <|> ucLex) <*> many (alphaNum <|> ucLex)
+
+buildKeywordParserc :: Eq b => b -> ParsecT String u IO b -> ParsecT String u IO b
+buildKeywordParserc k p = do
+  skipMany spaceNlTabParser
+  symbol <- p
+  guard $ symbol == k
+  pure symbol
+
+openPParserc :: ParsecT String u IO String
+openPParserc = pure <$> buildKeywordParserc '(' anyChar
+
+closePParserc :: ParsecT String u IO String
+closePParserc = pure <$> buildKeywordParserc ')' anyChar
+
+openCurParserc :: ParsecT String u IO String
+openCurParserc = pure <$> buildKeywordParserc '{' anyChar
+
+closeCurParserc :: ParsecT String u IO String
+closeCurParserc = pure <$> buildKeywordParserc '}' anyChar
+
+semiColParserc :: ParsecT String u IO String
+semiColParserc = pure <$> buildKeywordParserc ';' anyChar
+
+keyIntParserS :: ParsecT String u IO String
+keyIntParserS = buildKeywordParserc "int" symbolExtract
+
+keyVoidParserc :: ParsecT String u IO String
+keyVoidParserc = buildKeywordParserc "void" symbolExtract
+
+keyReturnParserc :: ParsecT String u IO String
+keyReturnParserc = buildKeywordParserc "return" symbolExtract
+
+keywordParserc :: ParsecT String u IO String
+keywordParserc = try keyIntParserS
+  <|> try keyVoidParserc
+  <|> try keyReturnParserc
+
+keyCharParserc :: ParsecT String u IO String
+keyCharParserc = try openPParserc
+  <|> try closePParserc
+  <|> try openCurParserc
+  <|> try closeCurParserc
+  <|> try semiColParserc
+
+keySymbolParserc :: ParsecT String u IO String
+keySymbolParserc = keywordParserc <|> keyCharParserc
+
+identifierParserc :: ParsecT String u IO String
+identifierParserc = symbolExtract
+
+intParserc :: ParsecT String u IO String
+intParserc = skipMany spaceNlTabParser >> many1 digit
+
+tokenParserc :: ParsecT String u IO String
+tokenParserc = skipMany spaceNlTabParser
+  >> (try keySymbolParserc <|> identifierParserc <|> intParserc)
+
+fileParserc :: ParsecT String u IO [String]
+fileParserc = many (try tokenParserc)
+  >>= (\toks -> skipMany spaceNlTabParser >> eof >> pure toks)
+
+exprParser :: ParsecT String u IO Expr
+exprParser = Constant . IntValue <$> intParserc
+
+returnStatParser :: ParsecT String u IO Statment
+returnStatParser = do
+  _ <- keyReturnParserc
+  num <- intParserc
+  _ <- semiColParserc
+  pure $ Return $ Constant $ IntValue num
 
 buildKeywordParser :: (Monad m, O.Alternative m, Eq a) => a -> b -> m a -> m b
 buildKeywordParser k t p = do
@@ -175,11 +245,14 @@ main = do
   printArgs =<< O.execParser
     (O.info (argsParser O.<**> O.helper)
     (O.fullDesc <> O.progDesc "aaaa" <> O.header "bbb"))
-  print =<< runParserT fileParser () "" "int int   int; return intt; 234 void3;;;  "
-  print =<< runParserT fileParser () "" "234 3 ;"
-  print =<< runParserT fileParser () "" ") return"
-  print =<< runParserT fileParser () "" "return   "
-  print =<< runParserT fileParser () "" "int main(void){return (3);}"
+  -- print =<< runParserT fileParser () "" "int int   int; return intt; 234 void3;;;  "
+  -- print =<< runParserT fileParserc () "" "int int   int; return intt; 234 void3;;;  "
+  -- print =<< runParserT fileParserc () "" "234 3 ;"
+  -- print =<< runParserT fileParserc () "" ") return"
+  -- print =<< runParserT fileParserc () "" "return   "
+  -- print =<< runParserT fileParserc () "" "int intmain(voidd){return (3);}"
+  print =<< runParserT fileParserc () "" "int main(void){return (3);}"
+  print =<< runParserT returnStatParser () "" "  return   1  ;"
 
 printArgs :: Args -> IO ()
 printArgs args = do
