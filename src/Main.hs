@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/03/07 18:51:45 by mayeung          ###   ########.fr       --
+--   Updated: 2025/03/07 19:31:48 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -49,7 +49,8 @@ main = do
   print =<< runParserT fileParser () "" "int main(void){return (3);}"
   print =<< runParserT functionDefineParser () "" "int main(a b  ,  c d){return 3;}"
   print =<< runParserT functionDefineParser () "" "int main(void){return 3;}"
-  print =<< runParserT functionDefineParser () "" "  int main  (  ) {  return (  3 )  ; } "
+  print =<< runParserT functionDefineParser () "" "  int main  ( int a, void b, int void ) {  return (  3 )  ; } "
+  print =<< runParserT functionDefineParser () "" "  int main  (  ) {  } "
   print =<< runParserT returnStatParser () "" "  return   (1 )  ;"
   print =<< runParserT (sepBy argPairParser commaParser) () "" "a b,c d"
 
