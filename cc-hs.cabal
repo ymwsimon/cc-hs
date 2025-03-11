@@ -72,7 +72,8 @@ executable cc-hs
                       optparse-applicative >= 0.16,
                       parsec >= 3.0,
                       process >= 1.6,
-                      hspec >= 2.10
+                      hspec >= 2.10,
+                      containers >= 0.6
 
     -- Directories containing source files.
     hs-source-dirs:   src

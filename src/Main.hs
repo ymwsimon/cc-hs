@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/03/07 19:31:48 by mayeung          ###   ########.fr       --
+--   Updated: 2025/03/11 13:07:15 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -16,7 +16,9 @@ import qualified Options.Applicative as O
 import Text.Parsec as P
 import Control.Monad
 
+import Data.Set as S
 import Parser
+-- import qualified Control.Applicative as Data.Set
 -- import System.IO
 
 data Args = Args
@@ -46,13 +48,12 @@ main = do
   -- print =<< runParserT fileParserc () "" ") return"
   -- print =<< runParserT fileParserc () "" "return   "
   -- print =<< runParserT fileParserc () "" "int intmain(voidd){return (3);}"
-  print =<< runParserT fileParser () "" "int main(void){return (3);}"
-  print =<< runParserT functionDefineParser () "" "int main(a b  ,  c d){return 3;}"
-  print =<< runParserT functionDefineParser () "" "int main(void){return 3;}"
-  print =<< runParserT functionDefineParser () "" "  int main  ( int a, void b, int void ) {  return (  3 )  ; } "
-  print =<< runParserT functionDefineParser () "" "  int main  (  ) {  } "
-  print =<< runParserT returnStatParser () "" "  return   (1 )  ;"
-  print =<< runParserT (sepBy argPairParser commaParser) () "" "a b,c d"
+  -- print =<< runParserT fileParser () "" "int main(void){return (3);}"
+  -- print =<< runParserT functionDefineParser () "" "int main(a b  ,  c d){return 3;}"
+  -- print =<< runParserT functionDefineParser () "" "int main(void){return 3;}"
+  -- print =<< runParserT functionDefineParser () "" "  int main  ( int a, void b, int void ) {  return (  3 )  ; } "
+  -- print =<< runParserT functionDefineParser () "" "  int main  (  ) {  } "
+  print =<< runParserT functionDefineParser S.empty "" "  int main  (  ) {  } "
 
 printArgs :: Args -> IO ()
 printArgs args = do

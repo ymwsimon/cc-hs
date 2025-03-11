@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/03/07 19:01:02 by mayeung          ###   ########.fr       --
+--   Updated: 2025/03/11 17:01:22 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -15,6 +15,7 @@ module Parser where
 -- import qualified Options.Applicative as O
 import Text.Parsec as P
 import Control.Monad
+import Data.Set as S
 
 type Program = [FunctionDefine]
 
@@ -42,6 +43,13 @@ data Expr = Constant String
   | Variable String
   | FunctionCall
   deriving (Show, Eq)
+
+data Operand = Imm Int
+  deriving (Show, Eq)
+
+data Register = Register String
+  deriving (Show, Eq)
+
 
 -- ??
 -- data Token = KeyInt 
@@ -168,8 +176,10 @@ argListParser = do
     "void" -> pure []
     _ -> try (sepBy argPairParser (try commaParser)) <|> pure []
 
-functionDefineParser :: ParsecT String u IO FunctionDefine
+-- functionDefineParser :: ParsecT String u IO FunctionDefine
+functionDefineParser :: (Ord u, Monoid u) => ParsecT String (Set u) IO FunctionDefine
 functionDefineParser = do
+  modifyState $ S.insert mempty
   retType <- identifierParser
   fName <- identifierParser
   argList <- between openPParser closePParser $ try argListParser
