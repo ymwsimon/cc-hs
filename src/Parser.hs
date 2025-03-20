@@ -6,14 +6,13 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/03/13 23:44:30 by mayeung          ###   ########.fr       --
+--   Updated: 2025/03/20 12:08:15 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
 module Parser where
 
 import Text.Parsec as P
-import Control.Monad
 import qualified Data.Set as S
 
 type CProgramAST = [FunctionDefine]
@@ -59,83 +58,74 @@ data Instruction = Mov {src :: Operand, dst :: Operand}
 data Operand = Imm Int | Register String
   deriving (Show, Eq)
 
-spaceNlTabParser :: ParsecT String u IO ()
-spaceNlTabParser = void (space <|> newline <|> tab)
+createSkipSpacesCharParser :: Char -> ParsecT String u IO Char
+createSkipSpacesCharParser = (spaces >>) . char
 
 ucLex :: ParsecT String u IO Char
-ucLex = char '_'
+ucLex = createSkipSpacesCharParser '_'
 
-slashLex :: ParsecT String u IO Char
-slashLex = char '/'
+symbolExtract :: ParsecT String u IO String
+symbolExtract = do
+  firstLetter <- letter <|> try ucLex
+  tailLetters <- many (alphaNum <|> try ucLex)
+  pure (firstLetter : tailLetters)
 
-doubleSlashLex :: ParsecT String u IO [Char]
-doubleSlashLex = (:) <$> slashLex <*> (pure <$> slashLex)
-
-symbolExtract :: ParsecT String u IO [Char]
-symbolExtract = (:) <$> (letter <|> ucLex) <*> many (alphaNum <|> ucLex)
-
-buildKeywordParser :: Eq b => b -> ParsecT String u IO b -> ParsecT String u IO b
-buildKeywordParser k p = do
-  skipMany spaceNlTabParser
-  symbol <- p
-  guard $ symbol == k
-  pure symbol
+createSkipSpacesStringParser :: String -> ParsecT String u IO String
+createSkipSpacesStringParser = (spaces >>) . string'
 
 openPParser :: ParsecT String u IO String
-openPParser = pure <$> buildKeywordParser '(' anyChar
+openPParser = createSkipSpacesStringParser "("
 
 closePParser :: ParsecT String u IO String
-closePParser = pure <$> buildKeywordParser ')' anyChar
+closePParser = createSkipSpacesStringParser ")"
 
 openCurParser :: ParsecT String u IO String
-openCurParser = pure <$> buildKeywordParser '{' anyChar
+openCurParser = createSkipSpacesStringParser "{"
 
 closeCurParser :: ParsecT String u IO String
-closeCurParser = pure <$> buildKeywordParser '}' anyChar
+closeCurParser = createSkipSpacesStringParser "}"
 
 semiColParser :: ParsecT String u IO String
-semiColParser = pure <$> buildKeywordParser ';' anyChar
+semiColParser = createSkipSpacesStringParser ";"
 
 commaParser :: ParsecT String u IO String
-commaParser = pure <$> buildKeywordParser ',' anyChar
+commaParser = createSkipSpacesStringParser ","
 
 keyIntParser :: ParsecT String u IO String
-keyIntParser = buildKeywordParser "int" symbolExtract
+keyIntParser = createSkipSpacesStringParser "int"
 
 keyVoidParser :: ParsecT String u IO String
-keyVoidParser = buildKeywordParser "void" symbolExtract
+keyVoidParser = createSkipSpacesStringParser "void"
 
 keyReturnParser :: ParsecT String u IO String
-keyReturnParser = buildKeywordParser "return" symbolExtract
+keyReturnParser = createSkipSpacesStringParser "return"
 
 keywordParser :: ParsecT String u IO String
-keywordParser = try keyIntParser
-  <|> try keyVoidParser
-  <|> try keyReturnParser
+keywordParser = keyIntParser
+  <|> keyVoidParser
+  <|> keyReturnParser
 
 keyCharParser :: ParsecT String u IO String
-keyCharParser = try openPParser
-  <|> try closePParser
-  <|> try openCurParser
-  <|> try closeCurParser
-  <|> try semiColParser
+keyCharParser = openPParser
+  <|> closePParser
+  <|> openCurParser
+  <|> closeCurParser
+  <|> semiColParser
 
 keySymbolParser :: ParsecT String u IO String
 keySymbolParser = keywordParser <|> keyCharParser
 
 identifierParser :: ParsecT String u IO String
-identifierParser = skipMany spaceNlTabParser >> symbolExtract
+identifierParser = spaces >> symbolExtract
 
 intParser :: ParsecT String u IO String
-intParser = skipMany spaceNlTabParser >> many1 digit
+intParser = spaces >> many1 digit
 
 tokenParser :: ParsecT String u IO String
-tokenParser = skipMany spaceNlTabParser
-  >> (try keySymbolParser <|> identifierParser <|> intParser)
+tokenParser = keySymbolParser <|> identifierParser <|> intParser
 
 fileParser :: (Ord u, Monoid u) => ParsecT String (S.Set u) IO CProgramAST
-fileParser = many (try functionDefineParser)
-  >>= (\funcs -> skipMany spaceNlTabParser >> eof >> pure funcs)
+fileParser = manyTill functionDefineParser (try (spaces >> eof))
 
 exprParser :: ParsecT String u IO Expr
 exprParser = Constant <$> intParser
@@ -161,22 +151,15 @@ argListParser = do
     "void" -> pure []
     _ -> try (sepBy argPairParser (try commaParser)) <|> pure []
 
-notNewLine :: ParsecT String u IO ()
-notNewLine = do
-  c <- anyChar
-  guard $ c /= '\n'
-  pure ()
-
-asteriskLex :: ParsecT String u IO Char
-asteriskLex = char '*'
-
 functionDefineParser :: (Ord u, Monoid u) => ParsecT String (S.Set u) IO FunctionDefine
 functionDefineParser = do
   modifyState $ S.insert mempty
-  retType <- identifierParser
+  -- retType <- identifierParser -- <|> keyIntParser <|> keyVoidParser <|> identifierParser
+  retType <- (keyIntParser <|> keyVoidParser) <* notFollowedBy (alphaNum <|> try ucLex)
   fName <- identifierParser
   argList <- between openPParser closePParser $ try argListParser
-  statments <- between openCurParser closeCurParser $ many $ try returnStatParser
+  _ <- openCurParser
+  statments <- manyTill returnStatParser (try closeCurParser)
   pure $ FunctionDefine retType fName argList statments
 
 cASTToAsmAST :: CProgramAST -> AsmProgramAST
@@ -239,3 +222,28 @@ asmFunctionDefineToStr (AsmFunctionDefine fname instrs) =
 --   void $ commentBlockStartParser
 --     >> skipMany (try notAsterisk)
 --     >> commentBlockEndParser
+
+-- spaceNlTabParser :: ParsecT String u IO ()
+-- spaceNlTabParser = void (space <|> newline <|> tab)
+
+-- slashLex :: ParsecT String u IO Char
+-- slashLex = createSkipSpacesCharParser '/'
+
+-- doubleSlashLex :: ParsecT String u IO String
+-- doubleSlashLex = (:) <$> slashLex <*> (pure <$> slashLex)
+
+-- buildKeywordParser :: Eq b => b -> ParsecT String u IO b -> ParsecT String u IO b
+-- buildKeywordParser k p = do
+--   spaces
+--   symbol <- p
+--   guard $ symbol == k
+--   pure symbol
+
+-- notNewLine :: ParsecT String u IO ()
+-- notNewLine = do
+--   c <- anyChar
+--   guard $ c /= '\n'
+--   pure ()
+
+-- asteriskLex :: ParsecT String u IO Char
+-- asteriskLex = char '*'

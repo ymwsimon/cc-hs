@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/03/13 23:47:24 by mayeung          ###   ########.fr       --
+--   Updated: 2025/03/20 12:13:51 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -43,9 +43,9 @@ readNParse path = do
   content <- hGetContents' hout
   putStrLn $ "filename: " ++ path
   res <- runParserT fileParser (S.empty :: S.Set String) "" content
-  print res
+  either (const (pure ())) print res 
   print $ cASTToAsmAST <$> res
-  putStr $ concat $
+  putStrLn $ concat $
     either
       (const [""])
       ((++ [noExecutableStackString]). map asmFunctionDefineToStr . cASTToAsmAST)
