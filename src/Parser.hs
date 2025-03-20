@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/03/20 12:08:15 by mayeung          ###   ########.fr       --
+--   Updated: 2025/03/20 18:57:22 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -14,6 +14,7 @@ module Parser where
 
 import Text.Parsec as P
 import qualified Data.Set as S
+import Control.Monad
 
 type CProgramAST = [FunctionDefine]
 
@@ -42,6 +43,11 @@ data Statment = VariableDecl
 data Expr = Constant String
   | Variable String
   | FunctionCall
+  | Unary UnaryOp Expr
+  deriving (Show, Eq)
+
+data UnaryOp = Complement
+  | Negate
   deriving (Show, Eq)
 
 data AsmFunctionDefine = AsmFunctionDefine
@@ -63,6 +69,15 @@ createSkipSpacesCharParser = (spaces >>) . char
 
 ucLex :: ParsecT String u IO Char
 ucLex = createSkipSpacesCharParser '_'
+
+minusLex :: ParsecT String u IO String
+minusLex = createSkipSpacesStringParser "-"
+
+complementLex :: ParsecT String u IO String
+complementLex = createSkipSpacesStringParser "~"
+
+decrementLex :: ParsecT String u IO String
+decrementLex = createSkipSpacesStringParser "--"
 
 symbolExtract :: ParsecT String u IO String
 symbolExtract = do
@@ -105,41 +120,38 @@ keywordParser = keyIntParser
   <|> keyVoidParser
   <|> keyReturnParser
 
-keyCharParser :: ParsecT String u IO String
-keyCharParser = openPParser
-  <|> closePParser
-  <|> openCurParser
-  <|> closeCurParser
-  <|> semiColParser
-
-keySymbolParser :: ParsecT String u IO String
-keySymbolParser = keywordParser <|> keyCharParser
-
 identifierParser :: ParsecT String u IO String
 identifierParser = spaces >> symbolExtract
 
 intParser :: ParsecT String u IO String
 intParser = spaces >> many1 digit
 
-tokenParser :: ParsecT String u IO String
-tokenParser = keySymbolParser <|> identifierParser <|> intParser
-
 fileParser :: (Ord u, Monoid u) => ParsecT String (S.Set u) IO CProgramAST
 fileParser = manyTill functionDefineParser (try (spaces >> eof))
 
 exprParser :: ParsecT String u IO Expr
-exprParser = Constant <$> intParser
+exprParser = do
+  op <- try openPParser
+    <|> try (minusLex <* notFollowedBy minusLex)
+    <|> try complementLex
+    <|> pure []
+  -- _ <- liftIO $ print op
+  expr <- case op of
+    "-" -> Unary Negate <$> exprParser
+    "~" -> Unary Complement <$> exprParser
+    "(" -> exprParser
+    _ -> Constant <$> intParser
+  void $ case op of
+    "(" -> closePParser
+    _ -> pure []
+  pure expr
 
 returnStatParser :: ParsecT String u IO Statment
 returnStatParser = do
-  _ <- keyReturnParser
-  openP <- try openPParser <|> pure []
-  num <- intParser
-  _ <- case openP of
-          "(" -> closePParser
-          _ -> pure []
-  _ <- semiColParser
-  pure $ Return $ Constant num
+  void keyReturnParser
+  expr <- exprParser
+  void semiColParser
+  pure $ Return expr
 
 argPairParser :: ParsecT String u IO InputArgPair
 argPairParser = ArgPair <$> identifierParser <*> identifierParser
@@ -154,11 +166,11 @@ argListParser = do
 functionDefineParser :: (Ord u, Monoid u) => ParsecT String (S.Set u) IO FunctionDefine
 functionDefineParser = do
   modifyState $ S.insert mempty
-  -- retType <- identifierParser -- <|> keyIntParser <|> keyVoidParser <|> identifierParser
-  retType <- (keyIntParser <|> keyVoidParser) <* notFollowedBy (alphaNum <|> try ucLex)
+  -- retType <- keyIntParser <|> keyVoidParser <|> identifierParser
+  retType <- (keyIntParser <|> keyVoidParser) <* notFollowedBy (alphaNum <|> try ucLex) <?> "test"
   fName <- identifierParser
   argList <- between openPParser closePParser $ try argListParser
-  _ <- openCurParser
+  void openCurParser
   statments <- manyTill returnStatParser (try closeCurParser)
   pure $ FunctionDefine retType fName argList statments
 
@@ -247,3 +259,16 @@ asmFunctionDefineToStr (AsmFunctionDefine fname instrs) =
 
 -- asteriskLex :: ParsecT String u IO Char
 -- asteriskLex = char '*'
+
+-- keyCharParser :: ParsecT String u IO String
+-- keyCharParser = openPParser
+--   <|> closePParser
+--   <|> openCurParser
+--   <|> closeCurParser
+--   <|> semiColParser
+
+-- keySymbolParser :: ParsecT String u IO String
+-- keySymbolParser = keywordParser <|> keyCharParser
+
+-- tokenParser :: ParsecT String u IO String
+-- tokenParser = keySymbolParser <|> identifierParser <|> intParser
