@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/03/20 18:57:22 by mayeung          ###   ########.fr       --
+--   Updated: 2025/03/21 19:49:26 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -15,10 +15,9 @@ module Parser where
 import Text.Parsec as P
 import qualified Data.Set as S
 import Control.Monad
+import Control.Monad.State
 
 type CProgramAST = [FunctionDefine]
-
-type AsmProgramAST = [AsmFunctionDefine]
 
 data FunctionDefine = FunctionDefine
   {
@@ -50,14 +49,33 @@ data UnaryOp = Complement
   | Negate
   deriving (Show, Eq)
 
-data AsmFunctionDefine = AsmFunctionDefine
+type IRProgram = [IRFunctionDefine]
+
+data IRFunctionDefine = IRFunctionDefine
   {
-    asmFuncName :: String,
-    instructions :: [Instruction]
+    irFuncName :: String,
+    irInstruction :: [IRInstruction]
   }
   deriving (Show, Eq)
 
-data Instruction = Mov {src :: Operand, dst :: Operand}
+data IRInstruction = IRReturn IRVal
+  | IRUnary {irOp :: UnaryOp, irSrc :: IRVal, irDst :: IRVal}
+  deriving (Show, Eq)
+
+data IRVal = IRConstant String
+  | IRVar String
+  deriving (Show, Eq)
+
+type AsmProgramAST = [AsmFunctionDefine]
+
+data AsmFunctionDefine = AsmFunctionDefine
+  {
+    asmFuncName :: String,
+    instructions :: [AsmInstruction]
+  }
+  deriving (Show, Eq)
+
+data AsmInstruction = Mov {src :: Operand, dst :: Operand}
   | Ret
   deriving (Show, Eq)
 
@@ -186,7 +204,7 @@ evalExpr :: Expr -> Operand
 evalExpr (Constant s) = Imm $ read s
 evalExpr _ = Imm 0
 
-cStatmentToAsmInstructions :: Statment -> [Instruction]
+cStatmentToAsmInstructions :: Statment -> [AsmInstruction]
 cStatmentToAsmInstructions s =
   case s of
     Return expr -> [Mov (evalExpr expr)  (Register "eax"), Ret]
@@ -202,7 +220,7 @@ operandToStr :: Operand -> String
 operandToStr (Register s) = "%" ++ s
 operandToStr (Imm i) = "$" ++ show i
 
-instructionToStr :: Instruction -> String
+instructionToStr :: AsmInstruction -> String
 instructionToStr Ret = "ret\n"
 instructionToStr (Mov s d) = "movl " ++ operandToStr s ++ ", " ++ operandToStr d ++ "\n"
 

@@ -73,7 +73,8 @@ executable cc-hs
                       parsec >= 3.0,
                       process >= 1.6,
                       hspec >= 2.10,
-                      containers >= 0.6
+                      containers >= 0.6,
+                      mtl >= 2.0
 
     -- Directories containing source files.
     hs-source-dirs:   src
