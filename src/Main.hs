@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/03/20 12:13:51 by mayeung          ###   ########.fr       --
+--   Updated: 2025/03/24 02:27:42 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -44,11 +44,17 @@ readNParse path = do
   putStrLn $ "filename: " ++ path
   res <- runParserT fileParser (S.empty :: S.Set String) "" content
   either (const (pure ())) print res 
-  print $ cASTToAsmAST <$> res
+  print $ map replacePseudoRegAllocateStackFixDoubleStackOperand
+    . irASTToAsmAST
+    . cASTToIrAST
+    <$> res
   putStrLn $ concat $
     either
       (const [""])
-      ((++ [noExecutableStackString]). map asmFunctionDefineToStr . cASTToAsmAST)
+      ((++ [noExecutableStackString])
+        . map (asmFunctionDefineToStr . replacePseudoRegAllocateStackFixDoubleStackOperand)
+        . irASTToAsmAST
+        . cASTToIrAST)
       res
   pure res
 

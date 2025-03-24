@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/03/21 19:49:26 by mayeung          ###   ########.fr       --
+--   Updated: 2025/03/24 12:48:38 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -15,11 +15,13 @@ module Parser where
 import Text.Parsec as P
 import qualified Data.Set as S
 import Control.Monad
-import Control.Monad.State
+import Data.List
+-- import Control.Monad.State
 
 type CProgramAST = [FunctionDefine]
 
-data FunctionDefine = FunctionDefine
+data FunctionDefine =
+  FunctionDefine
   {
     returnType :: String,
     funName :: String,
@@ -28,59 +30,105 @@ data FunctionDefine = FunctionDefine
   }
   deriving (Show, Eq)
 
-data InputArgPair = ArgPair 
+data InputArgPair =
+  ArgPair 
   {
     dataType :: String,
     varName :: String
   }
   deriving (Show, Eq)
 
-data Statment = VariableDecl
+data Statment =
+  VariableDecl
   | Return Expr
   deriving (Show, Eq)
 
-data Expr = Constant String
+data Expr =
+  Constant String
   | Variable String
   | FunctionCall
   | Unary UnaryOp Expr
   deriving (Show, Eq)
 
-data UnaryOp = Complement
+data UnaryOp =
+  Complement
   | Negate
   deriving (Show, Eq)
 
-type IRProgram = [IRFunctionDefine]
+type IRProgramAST = [IRFunctionDefine]
 
-data IRFunctionDefine = IRFunctionDefine
+data IRFunctionDefine =
+  IRFunctionDefine
   {
     irFuncName :: String,
     irInstruction :: [IRInstruction]
   }
   deriving (Show, Eq)
 
-data IRInstruction = IRReturn IRVal
-  | IRUnary {irOp :: UnaryOp, irSrc :: IRVal, irDst :: IRVal}
+data IRInstruction =
+  IRReturn IRVal
+  | IRUnary
+    {
+      irOp :: UnaryOp,
+      irSrc :: IRVal,
+      irDst :: IRVal
+    }
   deriving (Show, Eq)
 
-data IRVal = IRConstant String
+data IRVal =
+  IRConstant String
   | IRVar String
   deriving (Show, Eq)
 
 type AsmProgramAST = [AsmFunctionDefine]
 
-data AsmFunctionDefine = AsmFunctionDefine
+data AsmFunctionDefine =
+  AsmFunctionDefine
   {
     asmFuncName :: String,
     instructions :: [AsmInstruction]
   }
   deriving (Show, Eq)
 
-data AsmInstruction = Mov {src :: Operand, dst :: Operand}
+data AsmInstruction =
+  Mov {src :: Operand, dst :: Operand}
   | Ret
+  | AsmUnary AsmUnaryOp Operand
+  | AllocateStack Int
   deriving (Show, Eq)
 
-data Operand = Imm Int | Register String
-  deriving (Show, Eq)
+data Operand =
+  Imm Int
+  | Register Reg
+  | Pseudo {identifier :: String}
+  | Stack Int
+  deriving Eq
+
+data AsmUnaryOp =
+  AsmNeg
+  | AsmNot
+  deriving Eq
+
+data Reg =
+  AX
+  | R10
+  | R10D
+  deriving Eq
+
+instance Show AsmUnaryOp where
+  show AsmNeg = "negl"
+  show AsmNot = "notl"
+
+instance Show Operand where
+  show (Imm i) = "$" ++ show i
+  show (Register s) = "%" ++ show s
+  show (Pseudo ident) = "tmpVar." ++ show ident
+  show (Stack i) = show i ++ "(%rbp)"
+
+instance Show Reg where
+  show AX = "eax"
+  show R10 = "r10"
+  show R10D = "r10d"
 
 createSkipSpacesCharParser :: Char -> ParsecT String u IO Char
 createSkipSpacesCharParser = (spaces >>) . char
@@ -185,108 +233,138 @@ functionDefineParser :: (Ord u, Monoid u) => ParsecT String (S.Set u) IO Functio
 functionDefineParser = do
   modifyState $ S.insert mempty
   -- retType <- keyIntParser <|> keyVoidParser <|> identifierParser
-  retType <- (keyIntParser <|> keyVoidParser) <* notFollowedBy (alphaNum <|> try ucLex) <?> "test"
+  retType <- (keyIntParser <|> keyVoidParser) <* notFollowedBy (alphaNum <|> try ucLex)
   fName <- identifierParser
   argList <- between openPParser closePParser $ try argListParser
   void openCurParser
   statments <- manyTill returnStatParser (try closeCurParser)
   pure $ FunctionDefine retType fName argList statments
 
-cASTToAsmAST :: CProgramAST -> AsmProgramAST
-cASTToAsmAST = map cFuncDefineToAsmFuncDefine
+makeVarName :: Show a => a -> String
+makeVarName i = "tmp." ++ show i
 
-cFuncDefineToAsmFuncDefine :: FunctionDefine -> AsmFunctionDefine
-cFuncDefineToAsmFuncDefine fd =
-  AsmFunctionDefine (funName fd) $ 
-    concatMap cStatmentToAsmInstructions $ body fd
+exprToIRList :: Int -> Expr -> [IRInstruction] -> (Int, [IRInstruction], IRVal)
+exprToIRList i expr irs = case expr of
+  Constant s -> (i, irs, IRConstant s)
+  Unary op uexpr ->
+    let (newi, oldIRList, irVal) = exprToIRList i uexpr irs in
+      (newi + 1,
+        oldIRList ++ [IRUnary op irVal (IRVar $ show newi)],
+        IRVar $ show newi)
+  _ -> undefined
+  
+addReturnToIRList :: (a, [IRInstruction], IRVal) -> [IRInstruction]
+addReturnToIRList (_, irs, irVal) = irs ++ [IRReturn irVal]
 
-evalExpr :: Expr -> Operand
-evalExpr (Constant s) = Imm $ read s
-evalExpr _ = Imm 0
+cReturnStatmentToIRList :: Expr -> [IRInstruction]
+cReturnStatmentToIRList expr = addReturnToIRList $ exprToIRList 1 expr []
 
-cStatmentToAsmInstructions :: Statment -> [AsmInstruction]
-cStatmentToAsmInstructions s =
-  case s of
-    Return expr -> [Mov (evalExpr expr)  (Register "eax"), Ret]
-    _ -> []
+cStatmentToIRInstructions :: Statment -> [IRInstruction]
+cStatmentToIRInstructions (Return expr) = cReturnStatmentToIRList expr
+cStatmentToIRInstructions _ = []
+
+cFuncDefineToIRFuncDefine :: FunctionDefine -> IRFunctionDefine
+cFuncDefineToIRFuncDefine fd =
+  IRFunctionDefine (funName fd) (concatMap cStatmentToIRInstructions $ body fd)
+
+cASTToIrAST :: CProgramAST -> IRProgramAST
+cASTToIrAST = map cFuncDefineToIRFuncDefine
+
+irASTToAsmAST :: IRProgramAST -> AsmProgramAST
+irASTToAsmAST = map irFuncDefineToAsmFuncDefine
+
+irFuncDefineToAsmFuncDefine :: IRFunctionDefine -> AsmFunctionDefine
+irFuncDefineToAsmFuncDefine fd =
+  AsmFunctionDefine
+    (irFuncName fd)
+    (concatMap
+      irInstructionToAsmInstruction
+      (irInstruction fd))
+
+irOperandToAsmOperand :: IRVal -> Operand
+irOperandToAsmOperand (IRConstant i) = Imm $ read i
+irOperandToAsmOperand (IRVar s) = Pseudo s
+
+irOpToAsmOp :: UnaryOp -> AsmUnaryOp
+irOpToAsmOp Complement = AsmNot
+irOpToAsmOp Negate = AsmNeg
+
+irInstructionToAsmInstruction :: IRInstruction -> [AsmInstruction]
+irInstructionToAsmInstruction (IRReturn val) =
+  [Mov (irOperandToAsmOperand val) (Register AX),
+    Ret]
+irInstructionToAsmInstruction (IRUnary op s d) =
+  [Mov (irOperandToAsmOperand s) (irOperandToAsmOperand d),
+    AsmUnary (irOpToAsmOp op) (irOperandToAsmOperand d)]
 
 noExecutableStackString :: String
-noExecutableStackString = "\t.section\t.note.GNU-stack,\"\",@progbits\n"
+noExecutableStackString =  tabulate [".section", ".note.GNU-stack,\"\",@progbits"] ++ "\n"
+
+convertAsmTempVarToStackAddr :: [AsmInstruction] -> [AsmInstruction]
+convertAsmTempVarToStackAddr = map convertInstr
+  where convertInstr instr =
+          case instr of
+            Mov s d -> Mov (convertOperand s) (convertOperand d)
+            AsmUnary op d -> AsmUnary op $ convertOperand d
+            _ -> instr
+        convertOperand operand = 
+          case operand of
+            Pseudo ident -> Stack ((-4) * read ident)
+            _ -> operand
+
+addAllocateStackToFunc :: [AsmInstruction] -> [AsmInstruction]
+addAllocateStackToFunc instrs = AllocateStack ((-1) * getStackSize instrs) : instrs
+
+getStackSize :: [AsmInstruction] -> Int
+getStackSize = foldl getMinSize 0
+  where getMinSize x y = min x $ takeMaxValFromInstr y
+        takeMaxValFromInstr instr =
+          case instr of
+            Mov s d -> max (takeValFromOperand s) (takeValFromOperand d)
+            AsmUnary _ d -> takeValFromOperand d
+            _ -> 0
+        takeValFromOperand operand =
+          case operand of
+            Stack i -> i
+            _ -> 0
+
+replacePseudoRegAllocateStackFixDoubleStackOperand :: AsmFunctionDefine -> AsmFunctionDefine
+replacePseudoRegAllocateStackFixDoubleStackOperand afd =
+  afd {instructions = concatMap resolveDoubleStackOperand
+                    $ addAllocateStackToFunc
+                    $ convertAsmTempVarToStackAddr
+                    $ instructions afd}
+
+resolveDoubleStackOperand :: AsmInstruction -> [AsmInstruction]
+resolveDoubleStackOperand instr =
+  case instr of
+    Mov (Stack i) (Stack j) ->
+      [Mov (Stack i) (Register R10D),
+        Mov (Register R10D) (Stack j)]
+    _ -> [instr]
 
 asmProgramASTToAsm :: [AsmFunctionDefine] -> String
 asmProgramASTToAsm = unlines . map asmFunctionDefineToStr
 
-operandToStr :: Operand -> String
-operandToStr (Register s) = "%" ++ s
-operandToStr (Imm i) = "$" ++ show i
+tabulate :: [String] -> String
+tabulate = intercalate "\t" . ("" :)
 
-instructionToStr :: AsmInstruction -> String
-instructionToStr Ret = "ret\n"
-instructionToStr (Mov s d) = "movl " ++ operandToStr s ++ ", " ++ operandToStr d ++ "\n"
+asmFuncReturnStr :: [String]
+asmFuncReturnStr = 
+  [tabulate ["movq", "%rbp, %rsp"],
+  tabulate ["popq", "%rbp"],
+  tabulate ["ret"]]
+
+asmInstructionToStr :: AsmInstruction -> [String]
+asmInstructionToStr Ret = asmFuncReturnStr
+asmInstructionToStr (Mov s d) = pure $ tabulate ["movl", show s ++ ", " ++ show d]
+asmInstructionToStr (AsmUnary op d) = pure $ tabulate [show op, show d]
+asmInstructionToStr (AllocateStack i) = pure $ tabulate ["subq", "$" ++ show i ++ ", %rsp"]
 
 asmFunctionDefineToStr :: AsmFunctionDefine -> String
 asmFunctionDefineToStr (AsmFunctionDefine fname instrs) =
-  "\t.globl\t" ++ fname ++ "\n" ++ fname ++ ":\n"
-    ++ concatMap (("\t" ++) . instructionToStr) instrs
-
--- notAsterisk :: ParsecT String u IO ()
--- notAsterisk = do
---   c <- anyChar
---   guard $ c /= '*'
---   pure ()
-
--- commentParser :: ParsecT String u IO ()
--- commentParser =
---   void $ doubleSlashLex
---     >> skipMany (try notNewLine)
---     >> try newline
-
--- commentBlockStartParser :: ParsecT String u IO ()
--- commentBlockStartParser = void $ slashLex >> asteriskLex
-
--- commentBlockEndParser :: ParsecT String u IO ()
--- commentBlockEndParser = void $ asteriskLex >> slashLex
-
--- commentBlockParser :: ParsecT String u IO ()
--- commentBlockParser =
---   void $ commentBlockStartParser
---     >> skipMany (try notAsterisk)
---     >> commentBlockEndParser
-
--- spaceNlTabParser :: ParsecT String u IO ()
--- spaceNlTabParser = void (space <|> newline <|> tab)
-
--- slashLex :: ParsecT String u IO Char
--- slashLex = createSkipSpacesCharParser '/'
-
--- doubleSlashLex :: ParsecT String u IO String
--- doubleSlashLex = (:) <$> slashLex <*> (pure <$> slashLex)
-
--- buildKeywordParser :: Eq b => b -> ParsecT String u IO b -> ParsecT String u IO b
--- buildKeywordParser k p = do
---   spaces
---   symbol <- p
---   guard $ symbol == k
---   pure symbol
-
--- notNewLine :: ParsecT String u IO ()
--- notNewLine = do
---   c <- anyChar
---   guard $ c /= '\n'
---   pure ()
-
--- asteriskLex :: ParsecT String u IO Char
--- asteriskLex = char '*'
-
--- keyCharParser :: ParsecT String u IO String
--- keyCharParser = openPParser
---   <|> closePParser
---   <|> openCurParser
---   <|> closeCurParser
---   <|> semiColParser
-
--- keySymbolParser :: ParsecT String u IO String
--- keySymbolParser = keywordParser <|> keyCharParser
-
--- tokenParser :: ParsecT String u IO String
--- tokenParser = keySymbolParser <|> identifierParser <|> intParser
+  unlines [tabulate [".globl", fname],
+    fname ++ ":",
+    tabulate ["pushq", "%rbp"],
+    tabulate ["movq", "%rsp, %rbp"],
+    unlines $ concatMap asmInstructionToStr instrs]
