@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/03/24 12:48:38 by mayeung          ###   ########.fr       --
+--   Updated: 2025/03/24 15:18:02 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -359,7 +359,10 @@ asmInstructionToStr :: AsmInstruction -> [String]
 asmInstructionToStr Ret = asmFuncReturnStr
 asmInstructionToStr (Mov s d) = pure $ tabulate ["movl", show s ++ ", " ++ show d]
 asmInstructionToStr (AsmUnary op d) = pure $ tabulate [show op, show d]
-asmInstructionToStr (AllocateStack i) = pure $ tabulate ["subq", "$" ++ show i ++ ", %rsp"]
+asmInstructionToStr (AllocateStack i) = 
+  case i of
+    0 -> []
+    _ -> pure $ tabulate ["subq", "$" ++ show i ++ ", %rsp"]
 
 asmFunctionDefineToStr :: AsmFunctionDefine -> String
 asmFunctionDefineToStr (AsmFunctionDefine fname instrs) =
