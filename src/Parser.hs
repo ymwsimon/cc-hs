@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/03/24 15:18:02 by mayeung          ###   ########.fr       --
+--   Updated: 2025/03/25 18:49:21 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -48,11 +48,20 @@ data Expr =
   | Variable String
   | FunctionCall
   | Unary UnaryOp Expr
+  | Binary BinaryOp Expr Expr
   deriving (Show, Eq)
 
 data UnaryOp =
   Complement
   | Negate
+  deriving (Show, Eq)
+
+data BinaryOp =
+  Plus
+  | Minus
+  | Multiply
+  | Division
+  | Modulo
   deriving (Show, Eq)
 
 type IRProgramAST = [IRFunctionDefine]
@@ -94,6 +103,7 @@ data AsmInstruction =
   Mov {src :: Operand, dst :: Operand}
   | Ret
   | AsmUnary AsmUnaryOp Operand
+  | AsmBinary AsmBinaryOp Operand Operand
   | AllocateStack Int
   deriving (Show, Eq)
 
@@ -108,6 +118,14 @@ data AsmUnaryOp =
   AsmNeg
   | AsmNot
   deriving Eq
+
+data AsmBinaryOp =
+  AsmPlus
+  | AsmMius
+  | AsmMul
+  | AsmDiv
+  | AsmMod
+  deriving (Show, Eq)
 
 data Reg =
   AX
@@ -138,6 +156,18 @@ ucLex = createSkipSpacesCharParser '_'
 
 minusLex :: ParsecT String u IO String
 minusLex = createSkipSpacesStringParser "-"
+
+divLex :: ParsecT String u IO String
+divLex = createSkipSpacesStringParser "/"
+
+plusLex :: ParsecT String u IO String
+plusLex = createSkipSpacesStringParser "+"
+
+mulLex :: ParsecT String u IO String
+mulLex = createSkipSpacesStringParser "*"
+
+percentLex :: ParsecT String u IO String
+percentLex = createSkipSpacesStringParser "%"
 
 complementLex :: ParsecT String u IO String
 complementLex = createSkipSpacesStringParser "~"
