@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/03/27 20:27:06 by mayeung          ###   ########.fr       --
+--   Updated: 2025/03/28 22:30:34 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -43,7 +43,8 @@ readNParse path = do
   content <- hGetContents' hout
   putStrLn $ "filename: " ++ path
   res <- runParserT fileParser (S.empty :: S.Set String, 0) "" content
-  either (const (pure ())) print res 
+  print res
+  -- either (const (pure ())) print res 
   -- print $ map replacePseudoRegAllocateStackFixDoubleStackOperand
   --   . irASTToAsmAST
   --   . cASTToIrAST

@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/03/28 02:27:02 by mayeung          ###   ########.fr       --
+--   Updated: 2025/03/28 22:25:16 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -17,7 +17,7 @@ module Parser where
 import Text.Parsec as P
 import qualified Data.Set as S
 import Control.Monad
--- import Control.Monad.IO.Class
+import Control.Monad.IO.Class
 import Data.List
 import qualified Data.Map.Strict as M
 -- import Control.Monad.State
@@ -254,7 +254,7 @@ fileParser = manyTill functionDefineParser (try (spaces >> eof))
 
 binaryOpParser :: ParsecT String u IO BinaryOp
 binaryOpParser = try (plusLex >> pure Plus)
-   <|> try ((minusLex <* notFollowedBy minusLex) >> pure Minus)
+   <|> try ((minusLex <* notFollowedBy (char '-')) >> pure Minus)
    <|> try (mulLex >> pure Multiply)
    <|> try (divLex >> pure Division)
    <|> try (percentLex >> pure Modulo)
@@ -283,13 +283,14 @@ isEqOrHigherPrecedence binOp p = (binaryOpPrecedence M.! binOp) >= p
 exprRightParser :: Expr -> ParsecT String (ds, Int) IO Expr
 exprRightParser lExpr = do
   binOp <- lookAhead $ spaces >> anyChar
+  -- void $ liftIO $ print (show lExpr ++ show binOp)
   (_, p) <- getState
   if isBinaryOpChar binOp && isEqOrHigherPrecedence binOp p
     then
       do
         op <- binaryOpParser
         modifyState $ updatePrecedence $ binaryOpPrecedence M.! binOp
-        rExpr <- factorParser
+        rExpr <- exprParser
         modifyState $ revokePrecedence p
         exprRightParser $ Binary op lExpr rExpr
     else
@@ -297,13 +298,17 @@ exprRightParser lExpr = do
 
 negateOpParser :: ParsecT String (ds, Int) IO Expr
 negateOpParser = do
+  (_, p) <- getState
   void (minusLex <* notFollowedBy (char '-'))
-  Unary Negate <$> exprParser
+  modifyState $ updatePrecedence 6
+  (Unary Negate <$> exprParser) <* modifyState (revokePrecedence p)
 
 complementOpParser :: ParsecT String (ds, Int) IO Expr
 complementOpParser = do
+  (_, p) <- getState
   void complementLex
-  Unary Complement <$> exprParser
+  modifyState $ updatePrecedence 6
+  (Unary Complement <$> exprParser) <* modifyState (revokePrecedence p)
 
 intOperandParser :: ParsecT String u IO Expr
 intOperandParser = Constant <$> intParser
@@ -311,8 +316,11 @@ intOperandParser = Constant <$> intParser
 parenExprParser :: ParsecT String (ds, Int) IO Expr
 parenExprParser = do
   void openPParser
+  (_, p) <- getState
+  modifyState $ updatePrecedence (-1)
   expr <- exprParser
   void closePParser
+  modifyState (revokePrecedence p)
   pure expr
 
 factorParser :: ParsecT String (ds, Int) IO Expr
