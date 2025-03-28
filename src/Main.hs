@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/03/24 02:27:42 by mayeung          ###   ########.fr       --
+--   Updated: 2025/03/27 20:27:06 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -42,20 +42,20 @@ readNParse path = do
   (_, Just hout, _, _) <- createProcess (proc "cc" ["-P", "-E", path]) { std_out = CreatePipe }
   content <- hGetContents' hout
   putStrLn $ "filename: " ++ path
-  res <- runParserT fileParser (S.empty :: S.Set String) "" content
+  res <- runParserT fileParser (S.empty :: S.Set String, 0) "" content
   either (const (pure ())) print res 
-  print $ map replacePseudoRegAllocateStackFixDoubleStackOperand
-    . irASTToAsmAST
-    . cASTToIrAST
-    <$> res
-  putStrLn $ concat $
-    either
-      (const [""])
-      ((++ [noExecutableStackString])
-        . map (asmFunctionDefineToStr . replacePseudoRegAllocateStackFixDoubleStackOperand)
-        . irASTToAsmAST
-        . cASTToIrAST)
-      res
+  -- print $ map replacePseudoRegAllocateStackFixDoubleStackOperand
+  --   . irASTToAsmAST
+  --   . cASTToIrAST
+  --   <$> res
+  -- putStrLn $ concat $
+  --   either
+  --     (const [""])
+  --     ((++ [noExecutableStackString])
+  --       . map (asmFunctionDefineToStr . replacePseudoRegAllocateStackFixDoubleStackOperand)
+  --       . irASTToAsmAST
+  --       . cASTToIrAST)
+  --     res
   pure res
 
 main :: IO ()

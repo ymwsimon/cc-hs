@@ -6,16 +6,20 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/03/25 18:49:21 by mayeung          ###   ########.fr       --
+--   Updated: 2025/03/28 02:27:02 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
+
+{-# LANGUAGE TupleSections #-}
 
 module Parser where
 
 import Text.Parsec as P
 import qualified Data.Set as S
 import Control.Monad
+-- import Control.Monad.IO.Class
 import Data.List
+import qualified Data.Map.Strict as M
 -- import Control.Monad.State
 
 type CProgramAST = [FunctionDefine]
@@ -148,6 +152,12 @@ instance Show Reg where
   show R10 = "r10"
   show R10D = "r10d"
 
+allBinaryOp :: String
+allBinaryOp = "+-*/%"
+
+binaryOpPrecedence :: M.Map Char Int
+binaryOpPrecedence = M.fromList $ zip allBinaryOp [4, 4, 5, 5, 5]
+
 createSkipSpacesCharParser :: Char -> ParsecT String u IO Char
 createSkipSpacesCharParser = (spaces >>) . char
 
@@ -222,27 +232,96 @@ identifierParser = spaces >> symbolExtract
 intParser :: ParsecT String u IO String
 intParser = spaces >> many1 digit
 
-fileParser :: (Ord u, Monoid u) => ParsecT String (S.Set u) IO CProgramAST
+fileParser :: (Ord u, Monoid u) => ParsecT String (S.Set u, Int) IO CProgramAST
 fileParser = manyTill functionDefineParser (try (spaces >> eof))
 
-exprParser :: ParsecT String u IO Expr
-exprParser = do
-  op <- try openPParser
-    <|> try (minusLex <* notFollowedBy minusLex)
-    <|> try complementLex
-    <|> pure []
-  -- _ <- liftIO $ print op
-  expr <- case op of
-    "-" -> Unary Negate <$> exprParser
-    "~" -> Unary Complement <$> exprParser
-    "(" -> exprParser
-    _ -> Constant <$> intParser
-  void $ case op of
-    "(" -> closePParser
-    _ -> pure []
+-- oldexprParser :: ParsecT String u IO Expr
+-- oldexprParser = do
+--   op <- try openPParser
+--     <|> try (minusLex <* notFollowedBy minusLex)
+--     <|> try complementLex
+--     <|> pure []
+--   -- _ <- liftIO $ print op
+--   expr <- case op of
+--     "-" -> Unary Negate <$> oldexprParser
+--     "~" -> Unary Complement <$> oldexprParser
+--     "(" -> oldexprParser
+--     _ -> Constant <$> intParser
+--   void $ case op of
+--     "(" -> closePParser
+--     _ -> pure []
+--   pure expr
+
+binaryOpParser :: ParsecT String u IO BinaryOp
+binaryOpParser = try (plusLex >> pure Plus)
+   <|> try ((minusLex <* notFollowedBy minusLex) >> pure Minus)
+   <|> try (mulLex >> pure Multiply)
+   <|> try (divLex >> pure Division)
+   <|> try (percentLex >> pure Modulo)
+
+binaryExprParser :: ParsecT String (ds, Int) IO Expr
+binaryExprParser = flip Binary
+  <$> factorParser
+  <*> binaryOpParser
+  <*> factorParser
+
+exprParser :: ParsecT String (ds, Int) IO Expr
+exprParser = factorParser >>= exprRightParser
+
+isBinaryOpChar :: Char -> Bool
+isBinaryOpChar = flip elem allBinaryOp
+
+updatePrecedence :: Num b => b -> (a, c) -> (a, b)
+updatePrecedence p = (, p + 1) . fst
+
+revokePrecedence :: b -> (a, c) -> (a, b)
+revokePrecedence p = (, p) . fst
+
+isEqOrHigherPrecedence :: Char -> Int -> Bool
+isEqOrHigherPrecedence binOp p = (binaryOpPrecedence M.! binOp) >= p
+
+exprRightParser :: Expr -> ParsecT String (ds, Int) IO Expr
+exprRightParser lExpr = do
+  binOp <- lookAhead $ spaces >> anyChar
+  (_, p) <- getState
+  if isBinaryOpChar binOp && isEqOrHigherPrecedence binOp p
+    then
+      do
+        op <- binaryOpParser
+        modifyState $ updatePrecedence $ binaryOpPrecedence M.! binOp
+        rExpr <- factorParser
+        modifyState $ revokePrecedence p
+        exprRightParser $ Binary op lExpr rExpr
+    else
+      pure lExpr
+
+negateOpParser :: ParsecT String (ds, Int) IO Expr
+negateOpParser = do
+  void (minusLex <* notFollowedBy (char '-'))
+  Unary Negate <$> exprParser
+
+complementOpParser :: ParsecT String (ds, Int) IO Expr
+complementOpParser = do
+  void complementLex
+  Unary Complement <$> exprParser
+
+intOperandParser :: ParsecT String u IO Expr
+intOperandParser = Constant <$> intParser
+
+parenExprParser :: ParsecT String (ds, Int) IO Expr
+parenExprParser = do
+  void openPParser
+  expr <- exprParser
+  void closePParser
   pure expr
 
-returnStatParser :: ParsecT String u IO Statment
+factorParser :: ParsecT String (ds, Int) IO Expr
+factorParser = try intOperandParser
+  <|> try negateOpParser
+  <|> try complementOpParser
+  <|> try parenExprParser
+
+returnStatParser :: ParsecT String (ds, Int) IO Statment
 returnStatParser = do
   void keyReturnParser
   expr <- exprParser
@@ -259,9 +338,9 @@ argListParser = do
     "void" -> pure []
     _ -> try (sepBy argPairParser (try commaParser)) <|> pure []
 
-functionDefineParser :: (Ord u, Monoid u) => ParsecT String (S.Set u) IO FunctionDefine
+functionDefineParser :: (Ord u, Monoid u) => ParsecT String (S.Set u, Int) IO FunctionDefine
 functionDefineParser = do
-  modifyState $ S.insert mempty
+  -- modifyState $ S.insert mempty
   -- retType <- keyIntParser <|> keyVoidParser <|> identifierParser
   retType <- (keyIntParser <|> keyVoidParser) <* notFollowedBy (alphaNum <|> try ucLex)
   fName <- identifierParser
@@ -393,6 +472,7 @@ asmInstructionToStr (AllocateStack i) =
   case i of
     0 -> []
     _ -> pure $ tabulate ["subq", "$" ++ show i ++ ", %rsp"]
+asmInstructionToStr _ = undefined
 
 asmFunctionDefineToStr :: AsmFunctionDefine -> String
 asmFunctionDefineToStr (AsmFunctionDefine fname instrs) =
