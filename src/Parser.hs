@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/03/28 22:25:16 by mayeung          ###   ########.fr       --
+--   Updated: 2025/03/31 21:40:23 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -66,6 +66,11 @@ data BinaryOp =
   | Multiply
   | Division
   | Modulo
+  | BitOr
+  | BitAnd
+  | BitXor
+  | BitShiftLeft
+  | BitShiftRight
   deriving (Show, Eq)
 
 type IRProgramAST = [IRFunctionDefine]
@@ -152,11 +157,14 @@ instance Show Reg where
   show R10 = "r10"
   show R10D = "r10d"
 
-allBinaryOp :: String
-allBinaryOp = "+-*/%"
+lowestPrecedence :: Int
+lowestPrecedence = 16
 
-binaryOpPrecedence :: M.Map Char Int
-binaryOpPrecedence = M.fromList $ zip allBinaryOp [4, 4, 5, 5, 5]
+allBinaryOp :: [String]
+allBinaryOp = ["+", "-", "*", "/", "%", "&&", "||", "&", "|", ">>", "<<", "^"]
+
+binaryOpPrecedence :: M.Map String Int
+binaryOpPrecedence = M.fromList $ zip allBinaryOp [4, 4, 3, 3, 3, 11, 12, 8, 10, 5, 5, 9]
 
 createSkipSpacesCharParser :: Char -> ParsecT String u IO Char
 createSkipSpacesCharParser = (spaces >>) . char
@@ -182,14 +190,35 @@ percentLex = createSkipSpacesStringParser "%"
 complementLex :: ParsecT String u IO String
 complementLex = createSkipSpacesStringParser "~"
 
+bitAndLex :: ParsecT String u IO String
+bitAndLex = createSkipSpacesStringParser "&"
+
+bitOrLex :: ParsecT String u IO String
+bitOrLex = createSkipSpacesStringParser "|"
+
+bitXorLex :: ParsecT String u IO String
+bitXorLex = createSkipSpacesStringParser "^"
+
+bitShiftLeftLex :: ParsecT String u IO String
+bitShiftLeftLex = createSkipSpacesStringParser "<<"
+
+bitShiftRightLex :: ParsecT String u IO String
+bitShiftRightLex = createSkipSpacesStringParser ">>"
+
+logicAndLex :: ParsecT String u IO String
+logicAndLex = createSkipSpacesStringParser "&&"
+
+logicOrLex :: ParsecT String u IO String
+logicOrLex = createSkipSpacesStringParser "||"
+
 decrementLex :: ParsecT String u IO String
 decrementLex = createSkipSpacesStringParser "--"
 
 symbolExtract :: ParsecT String u IO String
 symbolExtract = do
   firstLetter <- letter <|> try ucLex
-  tailLetters <- many (alphaNum <|> try ucLex)
-  pure (firstLetter : tailLetters)
+  tailLetters <- many $ alphaNum <|> try ucLex
+  pure $ firstLetter : tailLetters
 
 createSkipSpacesStringParser :: String -> ParsecT String u IO String
 createSkipSpacesStringParser = (spaces >>) . string'
@@ -233,7 +262,7 @@ intParser :: ParsecT String u IO String
 intParser = spaces >> many1 digit
 
 fileParser :: (Ord u, Monoid u) => ParsecT String (S.Set u, Int) IO CProgramAST
-fileParser = manyTill functionDefineParser (try (spaces >> eof))
+fileParser = manyTill functionDefineParser $ try $ spaces >> eof
 
 -- oldexprParser :: ParsecT String u IO Expr
 -- oldexprParser = do
@@ -253,11 +282,29 @@ fileParser = manyTill functionDefineParser (try (spaces >> eof))
 --   pure expr
 
 binaryOpParser :: ParsecT String u IO BinaryOp
-binaryOpParser = try (plusLex >> pure Plus)
+binaryOpParser = try (bitAndLex >> pure BitAnd)
+   <|> try (bitOrLex >> pure BitOr)
+   <|> try (bitXorLex >> pure BitXor)
+   <|> try (bitShiftLeftLex >> pure BitShiftLeft)
+   <|> try (bitShiftRightLex >> pure BitShiftRight)
+   <|> try (plusLex >> pure Plus)
    <|> try ((minusLex <* notFollowedBy (char '-')) >> pure Minus)
    <|> try (mulLex >> pure Multiply)
    <|> try (divLex >> pure Division)
    <|> try (percentLex >> pure Modulo)
+
+binaryOpStringParser :: ParsecT String u IO String
+binaryOpStringParser = foldl1 (<|>) $
+  map try [bitAndLex,
+  bitOrLex,
+  bitXorLex,
+  bitShiftLeftLex,
+  bitShiftRightLex,
+  plusLex,
+  minusLex <* notFollowedBy (char '-'),
+  mulLex,
+  divLex,
+  percentLex]
 
 binaryExprParser :: ParsecT String (ds, Int) IO Expr
 binaryExprParser = flip Binary
@@ -268,28 +315,32 @@ binaryExprParser = flip Binary
 exprParser :: ParsecT String (ds, Int) IO Expr
 exprParser = factorParser >>= exprRightParser
 
-isBinaryOpChar :: Char -> Bool
+isBinaryOpChar :: String -> Bool
 isBinaryOpChar = flip elem allBinaryOp
 
+getPrecedence :: String -> Int
+getPrecedence = (binaryOpPrecedence M.!)
+
 updatePrecedence :: Num b => b -> (a, c) -> (a, b)
-updatePrecedence p = (, p + 1) . fst
+updatePrecedence p = (, p - 1) . fst
 
 revokePrecedence :: b -> (a, c) -> (a, b)
 revokePrecedence p = (, p) . fst
 
-isEqOrHigherPrecedence :: Char -> Int -> Bool
-isEqOrHigherPrecedence binOp p = (binaryOpPrecedence M.! binOp) >= p
+isEqOrHigherPrecedence :: String -> Int -> Bool
+isEqOrHigherPrecedence binOp p = (binaryOpPrecedence M.! binOp) <= p
 
 exprRightParser :: Expr -> ParsecT String (ds, Int) IO Expr
 exprRightParser lExpr = do
-  binOp <- lookAhead $ spaces >> anyChar
+  -- binOp <- lookAhead $ spaces >> anyChar
+  binOp <- lookAhead binaryOpStringParser <|> pure []
   -- void $ liftIO $ print (show lExpr ++ show binOp)
   (_, p) <- getState
   if isBinaryOpChar binOp && isEqOrHigherPrecedence binOp p
     then
       do
         op <- binaryOpParser
-        modifyState $ updatePrecedence $ binaryOpPrecedence M.! binOp
+        modifyState $ updatePrecedence $ getPrecedence binOp
         rExpr <- exprParser
         modifyState $ revokePrecedence p
         exprRightParser $ Binary op lExpr rExpr
@@ -299,15 +350,15 @@ exprRightParser lExpr = do
 negateOpParser :: ParsecT String (ds, Int) IO Expr
 negateOpParser = do
   (_, p) <- getState
-  void (minusLex <* notFollowedBy (char '-'))
-  modifyState $ updatePrecedence 6
+  void $ minusLex <* notFollowedBy (char '-')
+  modifyState $ updatePrecedence 2
   (Unary Negate <$> exprParser) <* modifyState (revokePrecedence p)
 
 complementOpParser :: ParsecT String (ds, Int) IO Expr
 complementOpParser = do
   (_, p) <- getState
   void complementLex
-  modifyState $ updatePrecedence 6
+  modifyState $ updatePrecedence 2
   (Unary Complement <$> exprParser) <* modifyState (revokePrecedence p)
 
 intOperandParser :: ParsecT String u IO Expr
@@ -317,10 +368,10 @@ parenExprParser :: ParsecT String (ds, Int) IO Expr
 parenExprParser = do
   void openPParser
   (_, p) <- getState
-  modifyState $ updatePrecedence (-1)
+  modifyState $ updatePrecedence lowestPrecedence
   expr <- exprParser
   void closePParser
-  modifyState (revokePrecedence p)
+  modifyState $ revokePrecedence p
   pure expr
 
 factorParser :: ParsecT String (ds, Int) IO Expr
@@ -354,7 +405,7 @@ functionDefineParser = do
   fName <- identifierParser
   argList <- between openPParser closePParser $ try argListParser
   void openCurParser
-  statments <- manyTill returnStatParser (try closeCurParser)
+  statments <- manyTill returnStatParser $ try closeCurParser
   pure $ FunctionDefine retType fName argList statments
 
 makeVarName :: Show a => a -> String
@@ -426,7 +477,7 @@ convertAsmTempVarToStackAddr = map convertInstr
             _ -> instr
         convertOperand operand = 
           case operand of
-            Pseudo ident -> Stack ((-4) * read ident)
+            Pseudo ident -> Stack $ (-4) * read ident
             _ -> operand
 
 addAllocateStackToFunc :: [AsmInstruction] -> [AsmInstruction]

@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/03/28 22:30:34 by mayeung          ###   ########.fr       --
+--   Updated: 2025/03/31 19:20:03 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -37,12 +37,15 @@ argsParser = Args
   <*> O.switch (O.long "parse")
   <*> O.switch (O.long "codegen")
 
+defaultParsecState :: (S.Set String, Int)
+defaultParsecState = (S.empty :: S.Set String, lowestPrecedence)
+
 readNParse :: FilePath -> IO (Either ParseError [FunctionDefine])
 readNParse path = do
   (_, Just hout, _, _) <- createProcess (proc "cc" ["-P", "-E", path]) { std_out = CreatePipe }
   content <- hGetContents' hout
   putStrLn $ "filename: " ++ path
-  res <- runParserT fileParser (S.empty :: S.Set String, 0) "" content
+  res <- runParserT fileParser defaultParsecState "" content
   print res
   -- either (const (pure ())) print res 
   -- print $ map replacePseudoRegAllocateStackFixDoubleStackOperand
