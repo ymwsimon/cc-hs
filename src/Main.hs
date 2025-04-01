@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/03/31 19:20:03 by mayeung          ###   ########.fr       --
+--   Updated: 2025/04/01 21:20:18 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -47,6 +47,7 @@ readNParse path = do
   putStrLn $ "filename: " ++ path
   res <- runParserT fileParser defaultParsecState "" content
   print res
+  print $ cASTToIrAST <$> res
   -- either (const (pure ())) print res 
   -- print $ map replacePseudoRegAllocateStackFixDoubleStackOperand
   --   . irASTToAsmAST

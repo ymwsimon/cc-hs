@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/03/31 21:40:23 by mayeung          ###   ########.fr       --
+--   Updated: 2025/04/01 22:46:17 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -87,9 +87,16 @@ data IRInstruction =
   IRReturn IRVal
   | IRUnary
     {
-      irOp :: UnaryOp,
-      irSrc :: IRVal,
-      irDst :: IRVal
+      irUnaryOp :: UnaryOp,
+      irUnarySrc :: IRVal,
+      irUnaryDst :: IRVal
+    }
+  | IRBinary
+    {
+      irBinaryOp :: BinaryOp,
+      irLOperand :: IRVal,
+      irROperand :: IRVal,
+      irBinaryDst :: IRVal
     }
   deriving (Show, Eq)
 
@@ -134,17 +141,26 @@ data AsmBinaryOp =
   | AsmMul
   | AsmDiv
   | AsmMod
-  deriving (Show, Eq)
+  deriving Eq
 
 data Reg =
   AX
+  | DX
   | R10
   | R10D
+  | R11
+  | R11D
   deriving Eq
 
 instance Show AsmUnaryOp where
   show AsmNeg = "negl"
   show AsmNot = "notl"
+
+instance Show AsmBinaryOp where
+  show AsmPlus = "addl"
+  show AsmMius = "subl"
+  show AsmMul = "imull"
+  show _ = ""
 
 instance Show Operand where
   show (Imm i) = "$" ++ show i
@@ -154,8 +170,11 @@ instance Show Operand where
 
 instance Show Reg where
   show AX = "eax"
+  show DX = "edx"
   show R10 = "r10"
   show R10D = "r10d"
+  show R11 = "r11"
+  show R11D = "r11d"
 
 lowestPrecedence :: Int
 lowestPrecedence = 16
@@ -264,23 +283,6 @@ intParser = spaces >> many1 digit
 fileParser :: (Ord u, Monoid u) => ParsecT String (S.Set u, Int) IO CProgramAST
 fileParser = manyTill functionDefineParser $ try $ spaces >> eof
 
--- oldexprParser :: ParsecT String u IO Expr
--- oldexprParser = do
---   op <- try openPParser
---     <|> try (minusLex <* notFollowedBy minusLex)
---     <|> try complementLex
---     <|> pure []
---   -- _ <- liftIO $ print op
---   expr <- case op of
---     "-" -> Unary Negate <$> oldexprParser
---     "~" -> Unary Complement <$> oldexprParser
---     "(" -> oldexprParser
---     _ -> Constant <$> intParser
---   void $ case op of
---     "(" -> closePParser
---     _ -> pure []
---   pure expr
-
 binaryOpParser :: ParsecT String u IO BinaryOp
 binaryOpParser = try (bitAndLex >> pure BitAnd)
    <|> try (bitOrLex >> pure BitOr)
@@ -295,16 +297,17 @@ binaryOpParser = try (bitAndLex >> pure BitAnd)
 
 binaryOpStringParser :: ParsecT String u IO String
 binaryOpStringParser = foldl1 (<|>) $
-  map try [bitAndLex,
-  bitOrLex,
-  bitXorLex,
-  bitShiftLeftLex,
-  bitShiftRightLex,
-  plusLex,
-  minusLex <* notFollowedBy (char '-'),
-  mulLex,
-  divLex,
-  percentLex]
+  map try
+    [bitAndLex,
+    bitOrLex,
+    bitXorLex,
+    bitShiftLeftLex,
+    bitShiftRightLex,
+    plusLex,
+    minusLex <* notFollowedBy (char '-'),
+    mulLex,
+    divLex,
+    percentLex]
 
 binaryExprParser :: ParsecT String (ds, Int) IO Expr
 binaryExprParser = flip Binary
@@ -419,6 +422,16 @@ exprToIRList i expr irs = case expr of
       (newi + 1,
         oldIRList ++ [IRUnary op irVal (IRVar $ show newi)],
         IRVar $ show newi)
+  Binary op lExpr rExpr ->
+    let (newiFromL, oldIRListFromL, irValFromL) = exprToIRList i lExpr irs 
+        (newiFromR, oldIRListFromR, irValFromR) = exprToIRList newiFromL rExpr oldIRListFromL in
+      (newiFromR + 1,
+        oldIRListFromR ++ [IRBinary
+                            op
+                            (IRVar $ show irValFromL)
+                            (IRVar $ show irValFromR)
+                            (IRVar $ show newiFromR)],
+        IRVar $ show newiFromR)
   _ -> undefined
   
 addReturnToIRList :: (a, [IRInstruction], IRVal) -> [IRInstruction]
@@ -453,9 +466,17 @@ irOperandToAsmOperand :: IRVal -> Operand
 irOperandToAsmOperand (IRConstant i) = Imm $ read i
 irOperandToAsmOperand (IRVar s) = Pseudo s
 
-irOpToAsmOp :: UnaryOp -> AsmUnaryOp
-irOpToAsmOp Complement = AsmNot
-irOpToAsmOp Negate = AsmNeg
+irUnaryOpToAsmOp :: UnaryOp -> AsmUnaryOp
+irUnaryOpToAsmOp Complement = AsmNot
+irUnaryOpToAsmOp Negate = AsmNeg
+
+irBinaryOpToAsmOp :: BinaryOp -> AsmBinaryOp
+irBinaryOpToAsmOp Plus = AsmPlus
+irBinaryOpToAsmOp Minus = AsmMius
+irBinaryOpToAsmOp Multiply = AsmMul
+irBinaryOpToAsmOp Division = AsmDiv
+irBinaryOpToAsmOp Modulo = AsmMod
+irBinaryOpToAsmOp _ = undefined
 
 irInstructionToAsmInstruction :: IRInstruction -> [AsmInstruction]
 irInstructionToAsmInstruction (IRReturn val) =
@@ -463,7 +484,10 @@ irInstructionToAsmInstruction (IRReturn val) =
     Ret]
 irInstructionToAsmInstruction (IRUnary op s d) =
   [Mov (irOperandToAsmOperand s) (irOperandToAsmOperand d),
-    AsmUnary (irOpToAsmOp op) (irOperandToAsmOperand d)]
+    AsmUnary (irUnaryOpToAsmOp op) (irOperandToAsmOperand d)]
+irInstructionToAsmInstruction (IRBinary op lVal rVal bDst) =
+  [Mov (irOperandToAsmOperand lVal) (irOperandToAsmOperand bDst),
+    AsmBinary (irBinaryOpToAsmOp op) (irOperandToAsmOperand rVal) (irOperandToAsmOperand bDst)]
 
 noExecutableStackString :: String
 noExecutableStackString =  tabulate [".section", ".note.GNU-stack,\"\",@progbits"] ++ "\n"
