@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/04/01 21:20:18 by mayeung          ###   ########.fr       --
+--   Updated: 2025/04/02 22:42:44 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -14,6 +14,7 @@ module Main where
 
 import qualified Options.Applicative as O
 import Text.Parsec as P
+import Data.List
 import Control.Monad
 import System.IO
 import qualified Data.Set as S
@@ -40,28 +41,38 @@ argsParser = Args
 defaultParsecState :: (S.Set String, Int)
 defaultParsecState = (S.empty :: S.Set String, lowestPrecedence)
 
+outFileName :: String -> String
+outFileName fileName
+  | ".c" `isSuffixOf` fileName && length fileName > 2 =
+      take (length fileName - 2) fileName ++ ".s"
+  | otherwise = ""
+
 readNParse :: FilePath -> IO (Either ParseError [FunctionDefine])
-readNParse path = do
-  (_, Just hout, _, _) <- createProcess (proc "cc" ["-P", "-E", path]) { std_out = CreatePipe }
-  content <- hGetContents' hout
-  putStrLn $ "filename: " ++ path
-  res <- runParserT fileParser defaultParsecState "" content
-  print res
-  print $ cASTToIrAST <$> res
-  -- either (const (pure ())) print res 
-  -- print $ map replacePseudoRegAllocateStackFixDoubleStackOperand
-  --   . irASTToAsmAST
-  --   . cASTToIrAST
-  --   <$> res
-  -- putStrLn $ concat $
-  --   either
-  --     (const [""])
-  --     ((++ [noExecutableStackString])
-  --       . map (asmFunctionDefineToStr . replacePseudoRegAllocateStackFixDoubleStackOperand)
-  --       . irASTToAsmAST
-  --       . cASTToIrAST)
-  --     res
-  pure res
+readNParse path =
+  if null $ outFileName path
+    then do
+        putStrLn "Incorrect file name"
+        pure $ parse (parserFail "") "" ""
+    else do
+      (_, Just hout, _, _) <-
+        createProcess
+          (proc "cc" ["-P", "-E", path])
+          { std_out = CreatePipe }
+      content <- hGetContents' hout
+      putStrLn $ "filename:\n\t" ++ path
+      putStrLn $ "content:\n" ++ content
+      res <- runParserT fileParser defaultParsecState "" content
+      either
+        (\parseError -> do
+          print parseError
+          pure $ Left parseError)
+        (\parseOk -> do
+          let converted = convertCASTToAsmStr parseOk
+          writeFile (outFileName path) converted
+          void $ createProcess (proc "cc" [outFileName path])
+          putStrLn converted
+          pure $ Right parseOk)
+        res
 
 main :: IO ()
 main = do
