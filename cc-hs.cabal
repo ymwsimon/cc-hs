@@ -62,7 +62,10 @@ executable cc-hs
     main-is:          Main.hs
 
     -- Modules included in this executable, other than Main.
-    other-modules:    Parser
+    other-modules:    Parser,
+                      Operation,
+                      IR,
+                      Assembly
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:

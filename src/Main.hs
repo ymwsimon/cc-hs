@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/04/02 22:42:44 by mayeung          ###   ########.fr       --
+--   Updated: 2025/04/03 12:45:48 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -19,6 +19,8 @@ import Control.Monad
 import System.IO
 import qualified Data.Set as S
 import Parser
+import IR
+import Assembly
 import System.Exit
 import System.Process
 
@@ -46,6 +48,17 @@ outFileName fileName
   | ".c" `isSuffixOf` fileName && length fileName > 2 =
       take (length fileName - 2) fileName ++ ".s"
   | otherwise = ""
+
+convertCASTToAsmStr :: CProgramAST -> String
+convertCASTToAsmStr =       
+  concat
+    . (++ [noExecutableStackString])
+    . map
+      (asmFunctionDefineToStr
+        . replacePseudoRegAllocateStackFixDoubleStackOperand)
+    . irASTToAsmAST
+    . cASTToIrAST
+
 
 readNParse :: FilePath -> IO (Either ParseError [FunctionDefine])
 readNParse path =
