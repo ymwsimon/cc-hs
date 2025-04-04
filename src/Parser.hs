@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/04/04 18:39:51 by mayeung          ###   ########.fr       --
+--   Updated: 2025/04/04 21:54:21 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -17,7 +17,7 @@ module Parser where
 import Text.Parsec as P
 import qualified Data.Set as S
 import Control.Monad
-import Control.Monad.IO.Class
+-- import Control.Monad.IO.Class
 import Operation
 import qualified Data.Map.Strict as M
 -- import Control.Monad.State
@@ -194,24 +194,50 @@ fileParser :: (Ord u, Monoid u) => ParsecT String (S.Set u, Int) IO CProgramAST
 fileParser = manyTill functionDefineParser $ try $ spaces >> eof
 
 binaryOpParser :: ParsecT String u IO BinaryOp
-binaryOpParser = try ((bitAndLex <* notFollowedBy (char '&')) >> pure BitAnd)
-   <|> try ((bitOrLex <* notFollowedBy (char '|')) >> pure BitOr)
-   <|> try (bitXorLex >> pure BitXor)
-   <|> try (bitShiftLeftLex >> pure BitShiftLeft)
-   <|> try (bitShiftRightLex >> pure BitShiftRight)
-   <|> try ((plusLex <* notFollowedBy (char '+')) >> pure Plus)
-   <|> try ((minusLex <* notFollowedBy (char '-')) >> pure Minus)
-   <|> try (mulLex >> pure Multiply)
-   <|> try (divLex >> pure Division)
-   <|> try (percentLex >> pure Modulo)
-   <|> try (logicAndLex >> pure LogicAnd)
-   <|> try (logicOrLex >> pure LogicOr)
-   <|> try (equalRelationLex >> pure EqualRelation)
-   <|> try (notEqualRelationLex >> pure NotEqualRelation)
-   <|> try (lessEqualThanRelationLex >> pure LessEqualRelation)
-   <|> try (lessThanRelationLex >> pure LessThanRelation)
-   <|> try (greatEqualThanRelationLex >> pure GreaterEqualRelation)
-   <|> try (greatThanRelationLex >> pure GreaterThanRelation)
+binaryOpParser = foldl1 (<|>) $
+  map try $
+    zipWith (>>)
+      [
+        bitAndLex <* notFollowedBy (char '&'),
+        bitOrLex <* notFollowedBy (char '|'),
+        bitXorLex,
+        bitShiftLeftLex,
+        bitShiftRightLex,
+        plusLex <* notFollowedBy (char '+'),
+        minusLex <* notFollowedBy (char '-'),
+        mulLex,
+        divLex,
+        percentLex,
+        logicAndLex,
+        logicOrLex,
+        equalRelationLex,
+        notEqualRelationLex,
+        lessEqualThanRelationLex,
+        lessThanRelationLex,
+        greatEqualThanRelationLex,
+        greatThanRelationLex
+      ] $
+      map pure
+        [
+          BitAnd,
+          BitOr,
+          BitXor,
+          BitShiftLeft,
+          BitShiftRight,
+          Plus,
+          Minus,
+          Multiply,
+          Division,
+          Modulo,
+          LogicAnd,
+          LogicOr,
+          EqualRelation,
+          NotEqualRelation,
+          LessEqualRelation,
+          LessThanRelation,
+          GreaterEqualRelation,
+          GreaterThanRelation
+        ]
 
 binaryOpStringParser :: ParsecT String u IO String
 binaryOpStringParser = foldl1 (<|>) $

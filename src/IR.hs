@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/04/03 12:51:42 by mayeung          ###   ########.fr       --
+--   Updated: 2025/04/04 20:32:01 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -40,6 +40,15 @@ data IRInstruction =
       irROperand :: IRVal,
       irBinaryDst :: IRVal
     }
+  | IRCopy
+    {
+      irCopySrc :: IRVal,
+      irCopyDst :: IRVal
+    }
+  | IRJump {irJumpTarget :: String}
+  | IRJumpIfZero {irJumpZeroTarget :: String}
+  | IRJumpIfNotZero {irJumpNZeroTarget :: String}
+  | Label {lableName :: String}
   deriving (Show, Eq)
 
 data IRVal =
