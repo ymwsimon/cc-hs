@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/04/03 12:45:48 by mayeung          ###   ########.fr       --
+--   Updated: 2025/04/03 17:10:54 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -67,25 +67,38 @@ readNParse path =
         putStrLn "Incorrect file name"
         pure $ parse (parserFail "") "" ""
     else do
-      (_, Just hout, _, _) <-
+      (_, Just hout, _, ppid) <-
         createProcess
           (proc "cc" ["-P", "-E", path])
           { std_out = CreatePipe }
-      content <- hGetContents' hout
-      putStrLn $ "filename:\n\t" ++ path
-      putStrLn $ "content:\n" ++ content
-      res <- runParserT fileParser defaultParsecState "" content
-      either
-        (\parseError -> do
-          print parseError
-          pure $ Left parseError)
-        (\parseOk -> do
-          let converted = convertCASTToAsmStr parseOk
-          writeFile (outFileName path) converted
-          void $ createProcess (proc "cc" [outFileName path])
-          putStrLn converted
-          pure $ Right parseOk)
-        res
+      ppEC <- waitForProcess ppid
+      if ppEC /= ExitSuccess
+        then do
+          putStrLn "Preprocesser fail"
+          pure $ parse (parserFail "") "" ""
+        else do
+          content <- hGetContents' hout
+          putStrLn $ "filename:\n\t" ++ path
+          putStrLn $ "content:\n" ++ content
+          res <- runParserT fileParser defaultParsecState "" content
+          either
+            (\parseError -> do
+              print parseError
+              pure $ Left parseError)
+            (\parseOk ->
+              let converted = convertCASTToAsmStr parseOk in
+                do
+                  writeFile (outFileName path) converted
+                  (_, _, _, assemblerPid) <- createProcess (proc "cc" [outFileName path])
+                  assemblerEC <- waitForProcess assemblerPid
+                  if assemblerEC == ExitSuccess
+                    then
+                      do
+                        putStrLn converted
+                        pure $ Right parseOk
+                    else
+                      pure $ parse (parserFail "") "" "")
+            res
 
 main :: IO ()
 main = do
@@ -93,7 +106,8 @@ main = do
     (O.info (argsParser O.<**> O.helper)
     (O.fullDesc <> O.progDesc "desc" <> O.header "header"))
   res <- mapM readNParse $ ifiles args
-  unless (all (either (const False) (const True)) res) exitFailure
+  -- unless (all (either (const False) (const True)) res) exitFailure
+  (`unless` exitFailure) $ (`all` res) $ either (const False) (const True)
 
 printArgs :: Args -> IO ()
 printArgs args = do
