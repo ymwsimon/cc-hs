@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/04/03 13:29:33 by mayeung          ###   ########.fr       --
+--   Updated: 2025/04/04 18:39:51 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -59,10 +59,20 @@ lowestPrecedence :: Int
 lowestPrecedence = 16
 
 allBinaryOp :: [String]
-allBinaryOp = ["+", "-", "*", "/", "%", "&&", "||", "&", "|", ">>", "<<", "^"]
+allBinaryOp =
+ ["+", "-", "*", "/",
+ "%", "&&", "||", "&",
+ "|", ">>", "<<", "^",
+ "==", "!=", "<", ">",
+ "<=", ">=", "!"]
 
 binaryOpPrecedence :: M.Map String Int
-binaryOpPrecedence = M.fromList $ zip allBinaryOp [4, 4, 3, 3, 3, 11, 12, 8, 10, 5, 5, 9]
+binaryOpPrecedence = M.fromList $ zip allBinaryOp
+  [4, 4, 3, 3,
+  3, 11, 12, 8,
+  10, 5, 5, 9,
+  7, 7, 6, 6,
+  6, 6, 2]
 
 createSkipSpacesCharParser :: Char -> ParsecT String u IO Char
 createSkipSpacesCharParser = (spaces >>) . char
@@ -103,11 +113,32 @@ bitShiftLeftLex = createSkipSpacesStringParser "<<"
 bitShiftRightLex :: ParsecT String u IO String
 bitShiftRightLex = createSkipSpacesStringParser ">>"
 
+exclaimLex :: ParsecT String u IO String
+exclaimLex = createSkipSpacesStringParser "!"
+
 logicAndLex :: ParsecT String u IO String
 logicAndLex = createSkipSpacesStringParser "&&"
 
 logicOrLex :: ParsecT String u IO String
 logicOrLex = createSkipSpacesStringParser "||"
+
+equalRelationLex :: ParsecT String u IO String
+equalRelationLex = createSkipSpacesStringParser "=="
+
+notEqualRelationLex :: ParsecT String u IO String
+notEqualRelationLex = createSkipSpacesStringParser "!="
+
+lessThanRelationLex :: ParsecT String u IO String
+lessThanRelationLex = createSkipSpacesStringParser "<"
+
+greatThanRelationLex :: ParsecT String u IO String
+greatThanRelationLex = createSkipSpacesStringParser ">"
+
+lessEqualThanRelationLex :: ParsecT String u IO String
+lessEqualThanRelationLex = createSkipSpacesStringParser "<="
+
+greatEqualThanRelationLex :: ParsecT String u IO String
+greatEqualThanRelationLex = createSkipSpacesStringParser ">="
 
 decrementLex :: ParsecT String u IO String
 decrementLex = createSkipSpacesStringParser "--"
@@ -163,30 +194,46 @@ fileParser :: (Ord u, Monoid u) => ParsecT String (S.Set u, Int) IO CProgramAST
 fileParser = manyTill functionDefineParser $ try $ spaces >> eof
 
 binaryOpParser :: ParsecT String u IO BinaryOp
-binaryOpParser = try (bitAndLex >> pure BitAnd)
-   <|> try (bitOrLex >> pure BitOr)
+binaryOpParser = try ((bitAndLex <* notFollowedBy (char '&')) >> pure BitAnd)
+   <|> try ((bitOrLex <* notFollowedBy (char '|')) >> pure BitOr)
    <|> try (bitXorLex >> pure BitXor)
    <|> try (bitShiftLeftLex >> pure BitShiftLeft)
    <|> try (bitShiftRightLex >> pure BitShiftRight)
-   <|> try (plusLex >> pure Plus)
+   <|> try ((plusLex <* notFollowedBy (char '+')) >> pure Plus)
    <|> try ((minusLex <* notFollowedBy (char '-')) >> pure Minus)
    <|> try (mulLex >> pure Multiply)
    <|> try (divLex >> pure Division)
    <|> try (percentLex >> pure Modulo)
+   <|> try (logicAndLex >> pure LogicAnd)
+   <|> try (logicOrLex >> pure LogicOr)
+   <|> try (equalRelationLex >> pure EqualRelation)
+   <|> try (notEqualRelationLex >> pure NotEqualRelation)
+   <|> try (lessEqualThanRelationLex >> pure LessEqualRelation)
+   <|> try (lessThanRelationLex >> pure LessThanRelation)
+   <|> try (greatEqualThanRelationLex >> pure GreaterEqualRelation)
+   <|> try (greatThanRelationLex >> pure GreaterThanRelation)
 
 binaryOpStringParser :: ParsecT String u IO String
 binaryOpStringParser = foldl1 (<|>) $
   map try
-    [bitAndLex,
-    bitOrLex,
+    [bitAndLex <* notFollowedBy (char '&'),
+    bitOrLex <* notFollowedBy (char '|'),
     bitXorLex,
     bitShiftLeftLex,
     bitShiftRightLex,
-    plusLex,
+    plusLex <* notFollowedBy (char '+'),
     minusLex <* notFollowedBy (char '-'),
     mulLex,
     divLex,
-    percentLex]
+    percentLex,
+    logicAndLex,
+    logicOrLex,
+    equalRelationLex,
+    notEqualRelationLex,
+    lessThanRelationLex,
+    lessEqualThanRelationLex,
+    greatThanRelationLex,
+    greatEqualThanRelationLex]
 
 binaryExprParser :: ParsecT String (ds, Int) IO Expr
 binaryExprParser = flip Binary
@@ -227,6 +274,11 @@ exprRightParser lExpr = do
     else
       pure lExpr
 
+unaryOpParser :: ParsecT String (ds, Int) IO Expr
+unaryOpParser = try negateOpParser
+  <|> try complementOpParser
+  <|> try notRelationOpParser
+
 negateOpParser :: ParsecT String (ds, Int) IO Expr
 negateOpParser = do
   (_, p) <- getState
@@ -240,6 +292,13 @@ complementOpParser = do
   void complementLex
   modifyState $ updatePrecedence 2
   (Unary Complement <$> exprParser) <* modifyState (revokePrecedence p)
+
+notRelationOpParser :: ParsecT String (ds, Int) IO Expr
+notRelationOpParser = do
+  (_, p) <- getState
+  void exclaimLex
+  modifyState $ updatePrecedence 2
+  (Unary NotRelation <$> exprParser) <* modifyState (revokePrecedence p)
 
 intOperandParser :: ParsecT String u IO Expr
 intOperandParser = Constant <$> intParser
@@ -256,8 +315,7 @@ parenExprParser = do
 
 factorParser :: ParsecT String (ds, Int) IO Expr
 factorParser = try intOperandParser
-  <|> try negateOpParser
-  <|> try complementOpParser
+  <|> try unaryOpParser
   <|> try parenExprParser
 
 returnStatParser :: ParsecT String (ds, Int) IO Statment

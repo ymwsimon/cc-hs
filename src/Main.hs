@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/04/03 17:10:54 by mayeung          ###   ########.fr       --
+--   Updated: 2025/04/04 17:24:46 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -81,24 +81,26 @@ readNParse path =
           putStrLn $ "filename:\n\t" ++ path
           putStrLn $ "content:\n" ++ content
           res <- runParserT fileParser defaultParsecState "" content
-          either
-            (\parseError -> do
-              print parseError
-              pure $ Left parseError)
-            (\parseOk ->
-              let converted = convertCASTToAsmStr parseOk in
-                do
-                  writeFile (outFileName path) converted
-                  (_, _, _, assemblerPid) <- createProcess (proc "cc" [outFileName path])
-                  assemblerEC <- waitForProcess assemblerPid
-                  if assemblerEC == ExitSuccess
-                    then
-                      do
-                        putStrLn converted
-                        pure $ Right parseOk
-                    else
-                      pure $ parse (parserFail "") "" "")
-            res
+          print res
+          pure res
+          -- either
+          --   (\parseError -> do
+          --     print parseError
+          --     pure $ Left parseError)
+          --   (\parseOk ->
+          --     let converted = convertCASTToAsmStr parseOk in
+          --       do
+          --         writeFile (outFileName path) converted
+          --         (_, _, _, assemblerPid) <- createProcess (proc "cc" [outFileName path])
+          --         assemblerEC <- waitForProcess assemblerPid
+          --         if assemblerEC == ExitSuccess
+          --           then
+          --             do
+          --               putStrLn converted
+          --               pure $ Right parseOk
+          --           else
+          --             pure $ parse (parserFail "") "" "")
+            -- res
 
 main :: IO ()
 main = do

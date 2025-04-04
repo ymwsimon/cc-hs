@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/04/03 12:52:01 by mayeung          ###   ########.fr       --
+--   Updated: 2025/04/04 17:17:16 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -125,6 +125,7 @@ irOperandToAsmOperand (IRVar s) = Pseudo s
 irUnaryOpToAsmOp :: UnaryOp -> AsmUnaryOp
 irUnaryOpToAsmOp Complement = AsmNot
 irUnaryOpToAsmOp Negate = AsmNeg
+irUnaryOpToAsmOp _ = undefined
 
 irBinaryOpToAsmOp :: BinaryOp -> AsmBinaryOp
 irBinaryOpToAsmOp Plus = AsmPlus
@@ -137,6 +138,7 @@ irBinaryOpToAsmOp BitOr = AsmBitOr
 irBinaryOpToAsmOp BitXor = AsmBitXor
 irBinaryOpToAsmOp BitShiftLeft = AsmShiftL
 irBinaryOpToAsmOp BitShiftRight = AsmShiftR
+irBinaryOpToAsmOp _ = undefined
 
 irInstructionToAsmInstruction :: IRInstruction -> [AsmInstruction]
 irInstructionToAsmInstruction (IRReturn val) =
