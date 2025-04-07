@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/04/04 17:24:46 by mayeung          ###   ########.fr       --
+--   Updated: 2025/04/07 12:39:56 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -81,7 +81,7 @@ readNParse path =
           putStrLn $ "filename:\n\t" ++ path
           putStrLn $ "content:\n" ++ content
           res <- runParserT fileParser defaultParsecState "" content
-          print res
+          print $ cASTToIrAST <$> res
           pure res
           -- either
           --   (\parseError -> do

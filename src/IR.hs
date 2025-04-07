@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/04/04 20:32:01 by mayeung          ###   ########.fr       --
+--   Updated: 2025/04/06 19:47:40 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -56,33 +56,35 @@ data IRVal =
   | IRVar String
   deriving (Show, Eq)
 
-exprToIRList :: Int -> Expr -> [IRInstruction] -> (Int, [IRInstruction], IRVal)
-exprToIRList i expr irs = case expr of
-  Constant s -> (i, irs, IRConstant s)
+exprToIRList :: (Int, Int) -> Expr -> [IRInstruction] -> ((Int, Int), [IRInstruction], IRVal)
+exprToIRList (varI, lableI) expr irs = case expr of
+  Constant s -> ((varI, lableI), irs, IRConstant s)
   Unary op uexpr ->
-    let (newi, oldIRList, irVal) = exprToIRList i uexpr irs in
-      (newi + 1,
-        oldIRList ++ [IRUnary op irVal (IRVar $ show newi)],
-        IRVar $ show newi)
+    let ((newVarI, newLableI), oldIRList, irVal) = exprToIRList (varI, lableI) uexpr irs in
+      ((newVarI + 1, newLableI),
+        oldIRList ++ [IRUnary op irVal (IRVar $ show newVarI)],
+        IRVar $ show newVarI)
+  Binary LogicAnd lExpr rExpr -> undefined
+  Binary LogicOr lExpr rExpr -> undefined
   Binary op lExpr rExpr ->
-    let (newiFromL, oldIRListFromL, irValFromL) =
-          exprToIRList i lExpr irs 
-        (newiFromR, oldIRListFromR, irValFromR) =
-          exprToIRList newiFromL rExpr oldIRListFromL in
-      (newiFromR + 1,
+    let ((newVarIFromL, newLabelIFromL), oldIRListFromL, irValFromL) =
+          exprToIRList (varI, lableI) lExpr irs
+        ((newVarIFromR, newLableIFromR), oldIRListFromR, irValFromR) =
+          exprToIRList (newVarIFromL, newLabelIFromL) rExpr oldIRListFromL in
+      ((newVarIFromR + 1, newLableIFromR),
         oldIRListFromR ++ [IRBinary
                             op
                             irValFromL
                             irValFromR
-                            (IRVar $ show newiFromR)],
-        IRVar $ show newiFromR)
+                            (IRVar $ show newVarIFromR)],
+        IRVar $ show newVarIFromR)
   _ -> undefined
   
 addReturnToIRList :: (a, [IRInstruction], IRVal) -> [IRInstruction]
 addReturnToIRList (_, irs, irVal) = irs ++ [IRReturn irVal]
 
 cReturnStatmentToIRList :: Expr -> [IRInstruction]
-cReturnStatmentToIRList expr = addReturnToIRList $ exprToIRList 1 expr []
+cReturnStatmentToIRList expr = addReturnToIRList $ exprToIRList (1, 1) expr []
 
 cStatmentToIRInstructions :: Statment -> [IRInstruction]
 cStatmentToIRInstructions (Return expr) = cReturnStatmentToIRList expr
