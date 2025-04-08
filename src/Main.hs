@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/04/08 15:31:35 by mayeung          ###   ########.fr       --
+--   Updated: 2025/04/08 22:50:04 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -20,9 +20,9 @@ import System.IO
 import qualified Data.Set as S
 import Parser
 import IR
-import Assembly
 import System.Exit
 import System.Process
+import Control.Monad.State
 
 data Args = Args
   {
@@ -49,15 +49,15 @@ outFileName fileName
       take (length fileName - 2) fileName ++ ".s"
   | otherwise = ""
 
-convertCASTToAsmStr :: CProgramAST -> String
-convertCASTToAsmStr =       
-  concat
-    . (++ [noExecutableStackString])
-    . map
-      (asmFunctionDefineToStr
-        . replacePseudoRegAllocateStackFixDoubleStackOperand)
-    . irASTToAsmAST
-    . cASTToIrAST
+-- convertCASTToAsmStr :: CProgramAST -> String
+-- convertCASTToAsmStr =       
+--   concat
+--     . (++ [noExecutableStackString])
+--     . map
+--       (asmFunctionDefineToStr
+--         . replacePseudoRegAllocateStackFixDoubleStackOperand)
+--     . irASTToAsmAST
+--     . cASTToIrAST
 
 
 readNParse :: FilePath -> IO (Either ParseError [FunctionDefine])
@@ -81,8 +81,7 @@ readNParse path =
           putStrLn $ "filename:\n\t" ++ path
           putStrLn $ "content:\n" ++ content
           res <- runParserT fileParser defaultParsecState "" content
-          print $ cASTToIrAST <$> res
-          -- print $ newcToIR <$> res
+          print $ flip evalState (1, 1) . cASTToIrAST <$> res
           pure res
           -- either
           --   (\parseError -> do

@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/04/08 17:05:43 by mayeung          ###   ########.fr       --
+--   Updated: 2025/04/08 22:48:11 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -47,8 +47,8 @@ data IRInstruction =
       irCopyDst :: IRVal
     }
   | IRJump {irJumpTarget :: String}
-  | IRJumpIfZero {irJumpZeroTarget :: String}
-  | IRJumpIfNotZero {irJumpNZeroTarget :: String}
+  | IRJumpIfZero {val :: IRVal, irJumpZeroTarget :: String}
+  | IRJumpIfNotZero {val :: IRVal, irJumpNZeroTarget :: String}
   | Label {labelName :: String}
   deriving (Show, Eq)
 
@@ -57,69 +57,19 @@ data IRVal =
   | IRVar String
   deriving (Show, Eq)
 
-exprToIRList :: (Int, Int) -> Expr -> [IRInstruction] -> ((Int, Int), [IRInstruction], IRVal)
-exprToIRList (varI, labelI) expr irs = case expr of
-  Constant s -> ((varI, labelI), irs, IRConstant s)
-  Unary op uexpr ->
-    let ((newVarI, newLableI), oldIRList, irVal) = exprToIRList (varI, labelI) uexpr irs in
-      ((newVarI + 1, newLableI),
-        oldIRList ++ [IRUnary op irVal (IRVar $ show newVarI)],
-        IRVar $ show newVarI)
-  Binary op lExpr rExpr ->
-    let ((newVarIFromL, newLabelIFromL), oldIRListFromL, irValFromL) =
-          exprToIRList (varI, labelI) lExpr irs
-        (appendCondJump, newLabelIFromCondJump) =
-          case op of
-            LogicAnd -> (oldIRListFromL ++ [IRJump $ show newLabelIFromL], newLabelIFromL + 1)
-            _ -> (oldIRListFromL, newLabelIFromL)
-        ((newVarIFromR, newLableIFromR), oldIRListFromR, irValFromR) =
-          exprToIRList (newVarIFromL, newLabelIFromCondJump) rExpr appendCondJump in
-            ((newVarIFromR + 1, newLableIFromR),
-              oldIRListFromR ++ [IRBinary
-                                  op
-                                  irValFromL
-                                  irValFromR
-                                  (IRVar $ show newVarIFromR)],
-              IRVar $ show newVarIFromR)
-  _ -> undefined
-  
-addReturnToIRList :: (a, [IRInstruction], IRVal) -> [IRInstruction]
-addReturnToIRList (_, irs, irVal) = irs ++ [IRReturn irVal]
+cStatmentToIRInstructions :: Statment -> State (Int, Int) [IRInstruction]
+cStatmentToIRInstructions (Return expr) = exprToReturnIRs expr
+cStatmentToIRInstructions _ = undefined
 
-cReturnStatmentToIRList :: Expr -> [IRInstruction]
-cReturnStatmentToIRList expr = addReturnToIRList $ exprToIRList (1, 1) expr []
+resetIRValId :: Num c => (a, b) -> (c, b)
+resetIRValId (_, b) = (1, b) 
 
-cStatmentToIRInstructions :: Statment -> [IRInstruction]
-cStatmentToIRInstructions (Return expr) = newReturn expr
--- cStatmentToIRInstructions (Return expr) = cReturnStatmentToIRList expr
-cStatmentToIRInstructions _ = []
-
-cFuncDefineToIRFuncDefine :: FunctionDefine -> IRFunctionDefine
+cFuncDefineToIRFuncDefine :: FunctionDefine -> State (Int, Int) IRFunctionDefine
 cFuncDefineToIRFuncDefine fd =
-  IRFunctionDefine 
-    (funName fd)
-    (concatMap cStatmentToIRInstructions $ body fd)
+  IRFunctionDefine (funName fd) . concat <$> (modify resetIRValId >> mapM cStatmentToIRInstructions (body fd))
 
-cASTToIrAST :: CProgramAST -> IRProgramAST
-cASTToIrAST = map cFuncDefineToIRFuncDefine
-
-newaddReturnToIRList :: ((Int, Int), [IRInstruction], IRVal) -> (Int, Int, [IRInstruction])
-newaddReturnToIRList ((varI, labelI), irs, irVal) = (varI, labelI, irs ++ [IRReturn irVal])
-
-newcReturnStatmentToIRList :: Int -> Int -> Expr -> [IRInstruction] -> (Int, Int, [IRInstruction])
-newcReturnStatmentToIRList varI labelI expr irs = newaddReturnToIRList $ exprToIRList (varI, labelI) expr irs
-
-newcStatmentToIRInstructions :: (Int, Int, [IRInstruction]) -> Statment -> (Int, Int, [IRInstruction])
-newcStatmentToIRInstructions (varI, labelI, irs) (Return expr) = newcReturnStatmentToIRList varI labelI expr irs
-newcStatmentToIRInstructions (varI, labelI, irs) _ = (varI, labelI, irs)
-
-newcFuncDefineToIRFuncDefine :: (Int, [IRFunctionDefine]) -> FunctionDefine -> (Int, [IRFunctionDefine])
-newcFuncDefineToIRFuncDefine (labelI, irs) fd =
-  let (_, newLabelI, newIRs) = foldl newcStatmentToIRInstructions (1, labelI, []) (body fd)in
-    (newLabelI, irs ++ [IRFunctionDefine (funName fd) newIRs])
-
-newcToIR :: CProgramAST -> IRProgramAST
-newcToIR = snd . foldl newcFuncDefineToIRFuncDefine (1, [])
+cASTToIrAST :: CProgramAST -> State (Int, Int) IRProgramAST
+cASTToIrAST = mapM cFuncDefineToIRFuncDefine
 
 bumpOneToVarId :: Num a => (a, b) -> (a, b)
 bumpOneToVarId (a, b) = (a + 1, b)
@@ -127,37 +77,55 @@ bumpOneToVarId (a, b) = (a + 1, b)
 bumpOneToLabelId :: Num b => (a, b) -> (a, b)
 bumpOneToLabelId (a, b) = (a, b + 1)
 
-newReturn :: Expr -> [IRInstruction]
-newReturn = (\(irs, irVal) -> irs ++ [IRReturn irVal]) . flip evalState (1, 1) . exprToIRs
+exprToReturnIRs :: Expr -> State (Int, Int) [IRInstruction]
+exprToReturnIRs expr = do
+  (irs, irVal) <- exprToIRs expr
+  pure $ irs ++ [IRReturn irVal]
 
 unaryOperationToIRs :: UnaryOp -> Expr -> State (Int, Int) ([IRInstruction], IRVal)
 unaryOperationToIRs op uExpr =  do
-      (oldIRs, irVal) <- exprToIRs uExpr
-      varI <- gets fst
-      modify bumpOneToVarId
-      pure (oldIRs ++ [IRUnary op irVal (IRVar $ show varI)], IRVar $ show varI)
+  (oldIRs, irVal) <- exprToIRs uExpr
+  varId <- gets fst
+  modify bumpOneToVarId
+  pure (oldIRs ++ [IRUnary op irVal (IRVar $ show varId)], IRVar $ show varId)
+
+genJumpIRsIfNeeded :: BinaryOp -> IRVal -> State (Int, Int) [IRInstruction]
+genJumpIRsIfNeeded op irVal =
+  case op of
+    LogicAnd -> do
+      labelId <- gets snd
+      pure [IRJumpIfZero irVal $ "false_label" ++ show labelId]
+    _ -> pure []
 
 binaryOperationToIRs :: BinaryOp -> Expr -> Expr -> State (Int, Int) ([IRInstruction], IRVal)
 binaryOperationToIRs op lExpr rExpr = do
-      (oldIRsFromL, irValFromL) <- exprToIRs lExpr
-      appendCondJumpIRs <- do
-          case op of
-            LogicAnd -> do
-              labelId <- gets snd
-              modify bumpOneToLabelId
-              pure $ oldIRsFromL ++ [IRJump $ show labelId]
-            _ -> pure oldIRsFromL
-      (oldIRsFromR, irValFromR) <- exprToIRs rExpr
-      varI <- gets fst
-      modify bumpOneToVarId
-      pure (
-        appendCondJumpIRs ++
-          oldIRsFromR ++
-          [IRBinary op irValFromL irValFromR (IRVar $ show varI)],
-        IRVar $ show varI)
+  (irsFromLExpr, irValFromLExpr) <- exprToIRs lExpr
+  lExprCondJumpIRs <- genJumpIRsIfNeeded op irValFromLExpr
+  (irsFromRExpr, irValFromRExpr) <- exprToIRs rExpr
+  rExprCondJumpIRs <- genJumpIRsIfNeeded op irValFromRExpr
+  varId <- gets fst
+  resultIRVal <-
+    case op of
+      LogicAnd -> do
+        labelId <- gets snd
+        modify bumpOneToLabelId
+        endLabelId <- gets snd
+        modify bumpOneToLabelId
+        pure $ [IRCopy (IRConstant "1") (IRVar $ show varId)] ++
+          [IRJump ("end_label" ++ show endLabelId)] ++
+          [Label ("false_label" ++ show labelId)] ++
+          [IRCopy (IRConstant "0") (IRVar $ show varId)] ++
+          [Label ("end_label" ++ show endLabelId)]
+      _ -> do
+        modify bumpOneToVarId
+        pure [IRBinary op irValFromLExpr irValFromRExpr (IRVar $ show varId)]
+  pure (
+    irsFromLExpr ++ lExprCondJumpIRs ++
+      irsFromRExpr ++ rExprCondJumpIRs ++ resultIRVal,
+    IRVar $ show varId)
 
 exprToIRs :: Expr -> State (Int, Int) ([IRInstruction], IRVal)
-exprToIRs expr = 
+exprToIRs expr =
   case expr of
     Constant s -> pure ([], IRConstant s)
     Unary op uExpr -> unaryOperationToIRs op uExpr
