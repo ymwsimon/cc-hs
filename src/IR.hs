@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/04/08 22:48:11 by mayeung          ###   ########.fr       --
+--   Updated: 2025/04/09 18:17:12 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -48,7 +48,7 @@ data IRInstruction =
     }
   | IRJump {irJumpTarget :: String}
   | IRJumpIfZero {val :: IRVal, irJumpZeroTarget :: String}
-  | IRJumpIfNotZero {val :: IRVal, irJumpNZeroTarget :: String}
+  | IRJumpIfNotZero {val :: IRVal, irJumpNotZeroTarget :: String}
   | Label {labelName :: String}
   deriving (Show, Eq)
 
@@ -66,7 +66,8 @@ resetIRValId (_, b) = (1, b)
 
 cFuncDefineToIRFuncDefine :: FunctionDefine -> State (Int, Int) IRFunctionDefine
 cFuncDefineToIRFuncDefine fd =
-  IRFunctionDefine (funName fd) . concat <$> (modify resetIRValId >> mapM cStatmentToIRInstructions (body fd))
+  IRFunctionDefine (funName fd) . concat
+    <$> (modify resetIRValId >> mapM cStatmentToIRInstructions (body fd))
 
 cASTToIrAST :: CProgramAST -> State (Int, Int) IRProgramAST
 cASTToIrAST = mapM cFuncDefineToIRFuncDefine
@@ -87,7 +88,7 @@ unaryOperationToIRs op uExpr =  do
   (oldIRs, irVal) <- exprToIRs uExpr
   varId <- gets fst
   modify bumpOneToVarId
-  pure (oldIRs ++ [IRUnary op irVal (IRVar $ show varId)], IRVar $ show varId)
+  pure (oldIRs ++ [IRUnary op irVal $ IRVar $ show varId], IRVar $ show varId)
 
 genJumpIRsIfNeeded :: BinaryOp -> IRVal -> State (Int, Int) [IRInstruction]
 genJumpIRsIfNeeded op irVal =
@@ -95,7 +96,22 @@ genJumpIRsIfNeeded op irVal =
     LogicAnd -> do
       labelId <- gets snd
       pure [IRJumpIfZero irVal $ "false_label" ++ show labelId]
+    LogicOr -> do
+      labelId <- gets snd
+      pure [IRJumpIfNotZero irVal $ "false_label" ++ show labelId]
     _ -> pure []
+
+genJumpIRsAndLabel :: Int -> IRVal -> IRVal -> State (Int, Int) [IRInstruction]
+genJumpIRsAndLabel varId fstVal sndVal = do
+  labelId <- gets snd
+  modify bumpOneToLabelId
+  endLabelId <- gets snd
+  modify bumpOneToLabelId
+  pure [IRCopy fstVal $ IRVar $ show varId,
+    IRJump $ "end_label" ++ show endLabelId,
+    Label $ "false_label" ++ show labelId,
+    IRCopy sndVal $ IRVar $ show varId,
+    Label $ "end_label" ++ show endLabelId]
 
 binaryOperationToIRs :: BinaryOp -> Expr -> Expr -> State (Int, Int) ([IRInstruction], IRVal)
 binaryOperationToIRs op lExpr rExpr = do
@@ -104,24 +120,16 @@ binaryOperationToIRs op lExpr rExpr = do
   (irsFromRExpr, irValFromRExpr) <- exprToIRs rExpr
   rExprCondJumpIRs <- genJumpIRsIfNeeded op irValFromRExpr
   varId <- gets fst
+  modify bumpOneToVarId
   resultIRVal <-
-    case op of
-      LogicAnd -> do
-        labelId <- gets snd
-        modify bumpOneToLabelId
-        endLabelId <- gets snd
-        modify bumpOneToLabelId
-        pure $ [IRCopy (IRConstant "1") (IRVar $ show varId)] ++
-          [IRJump ("end_label" ++ show endLabelId)] ++
-          [Label ("false_label" ++ show labelId)] ++
-          [IRCopy (IRConstant "0") (IRVar $ show varId)] ++
-          [Label ("end_label" ++ show endLabelId)]
-      _ -> do
-        modify bumpOneToVarId
-        pure [IRBinary op irValFromLExpr irValFromRExpr (IRVar $ show varId)]
-  pure (
-    irsFromLExpr ++ lExprCondJumpIRs ++
-      irsFromRExpr ++ rExprCondJumpIRs ++ resultIRVal,
+    let trueVal = IRConstant "1"
+        falseVal = IRConstant "0" in
+      case op of
+        LogicAnd -> genJumpIRsAndLabel varId trueVal falseVal
+        LogicOr -> genJumpIRsAndLabel varId falseVal trueVal
+        _ -> pure [IRBinary op irValFromLExpr irValFromRExpr $ IRVar $ show varId]
+  pure (concat
+    [irsFromLExpr, lExprCondJumpIRs, irsFromRExpr, rExprCondJumpIRs, resultIRVal],
     IRVar $ show varId)
 
 exprToIRs :: Expr -> State (Int, Int) ([IRInstruction], IRVal)
