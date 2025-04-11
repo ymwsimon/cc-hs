@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/04/11 12:03:37 by mayeung          ###   ########.fr       --
+--   Updated: 2025/04/11 19:10:53 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -203,6 +203,10 @@ irInstructionToAsmInstruction (IRJumpIfZero valToCheck jmpTarget) =
 irInstructionToAsmInstruction (IRJumpIfNotZero valToCheck jmpTarget) =
   [Cmp (Imm 0) (irOperandToAsmOperand valToCheck),
     JmpCC NE jmpTarget]
+irInstructionToAsmInstruction (IRBinary EqualRelation valL valR d) =
+  buildAsmIntrsForIRRelationOp E valL valR d
+irInstructionToAsmInstruction (IRBinary NotEqualRelation valL valR d) =
+  buildAsmIntrsForIRRelationOp NE valL valR d
 irInstructionToAsmInstruction (IRBinary GreaterThanRelation valL valR d) =
   buildAsmIntrsForIRRelationOp G valL valR d
 irInstructionToAsmInstruction (IRBinary GreaterEqualRelation valL valR d) =
@@ -254,11 +258,16 @@ addAllocateStackToFunc instrs = AllocateStack ((-1) * getStackSize instrs) : ins
 
 getStackSize :: [AsmInstruction] -> Int
 getStackSize = foldl getMinSize 0
-  where getMinSize x y = min x $ takeMaxValFromInstr y
-        takeMaxValFromInstr instr =
+  where getMinSize x y = min x $ takeMinValFromInstr y
+        takeMinValFromInstr instr =
           case instr of
-            Mov s d -> max (takeValFromOperand s) (takeValFromOperand d)
+            Mov s d -> min (takeValFromOperand s) (takeValFromOperand d)
+            Movb s d -> min (takeValFromOperand s) (takeValFromOperand d)
             AsmUnary _ d -> takeValFromOperand d
+            AsmBinary _ l r -> min (takeValFromOperand l) (takeValFromOperand r)
+            AsmIdiv d -> takeValFromOperand d
+            Cmp l r -> min (takeValFromOperand l) (takeValFromOperand r)
+            SetCC _ d -> takeValFromOperand d
             _ -> 0
         takeValFromOperand operand =
           case operand of
@@ -290,7 +299,7 @@ resolveDoubleStackOperand instr =
         AsmBinary op (Register R10D) (Stack j)]
     Cmp (Stack i) (Stack j) ->
       [Mov (Stack i) (Register R10D),
-        Cmp (Register R10D) (Stack j)]
+        Cmp (Stack j) (Register R10D)]
     _ -> [instr]
 
 fixDivConstant :: AsmInstruction -> [AsmInstruction]

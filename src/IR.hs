@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/04/10 23:39:38 by mayeung          ###   ########.fr       --
+--   Updated: 2025/04/11 18:38:50 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -90,43 +90,52 @@ unaryOperationToIRs op uExpr =  do
   modify bumpOneToVarId
   pure (oldIRs ++ [IRUnary op irVal $ IRVar $ show varId], IRVar $ show varId)
 
-genJumpIRsIfNeeded :: BinaryOp -> IRVal -> State (Int, Int) [IRInstruction]
-genJumpIRsIfNeeded op irVal =
+genJumpIRsIfNeeded :: BinaryOp -> [Int] -> IRVal -> State (Int, Int) [IRInstruction]
+genJumpIRsIfNeeded op labelId irVal =
   case op of
-    LogicAnd -> do
-      labelId <- gets snd
-      pure [IRJumpIfZero irVal $ "false_label" ++ show labelId]
-    LogicOr -> do
-      labelId <- gets snd
-      pure [IRJumpIfNotZero irVal $ "false_label" ++ show labelId]
+    LogicAnd ->
+      pure [IRJumpIfZero irVal $ "false_label" ++ show (head labelId)]
+    LogicOr ->
+      pure [IRJumpIfNotZero irVal $ "false_label" ++ show (head labelId)]
     _ -> pure []
 
-genJumpIRsAndLabel :: Int -> IRVal -> IRVal -> State (Int, Int) [IRInstruction]
-genJumpIRsAndLabel varId fstVal sndVal = do
-  labelId <- gets snd
-  modify bumpOneToLabelId
-  endLabelId <- gets snd
-  modify bumpOneToLabelId
+genJumpIRsAndLabel :: Int -> [Int] -> IRVal -> IRVal -> State (Int, Int) [IRInstruction]
+genJumpIRsAndLabel varId ids fstVal sndVal = do
   pure [IRCopy fstVal $ IRVar $ show varId,
-    IRJump $ "end_label" ++ show endLabelId,
-    IRLabel $ "false_label" ++ show labelId,
+    IRJump $ "end_label" ++ show (ids !! 1),
+    IRLabel $ "false_label" ++ show (head ids),
     IRCopy sndVal $ IRVar $ show varId,
-    IRLabel $ "end_label" ++ show endLabelId]
+    IRLabel $ "end_label" ++ show (ids !! 1)]
+
+genLabelIfNeeded :: BinaryOp -> State (Int, Int) [Int]
+genLabelIfNeeded op =
+  let getLabels =
+        do
+          labelId <- gets snd
+          modify bumpOneToLabelId
+          endLabelId <- gets snd
+          modify bumpOneToLabelId
+          pure [labelId, endLabelId] in
+  case op of
+    LogicAnd -> getLabels
+    LogicOr -> getLabels
+    _ -> pure []
 
 binaryOperationToIRs :: BinaryOp -> Expr -> Expr -> State (Int, Int) ([IRInstruction], IRVal)
 binaryOperationToIRs op lExpr rExpr = do
+  ids <- genLabelIfNeeded op
   (irsFromLExpr, irValFromLExpr) <- exprToIRs lExpr
-  lExprCondJumpIRs <- genJumpIRsIfNeeded op irValFromLExpr
+  lExprCondJumpIRs <- genJumpIRsIfNeeded op ids irValFromLExpr
   (irsFromRExpr, irValFromRExpr) <- exprToIRs rExpr
-  rExprCondJumpIRs <- genJumpIRsIfNeeded op irValFromRExpr
+  rExprCondJumpIRs <- genJumpIRsIfNeeded op ids irValFromRExpr
   varId <- gets fst
   modify bumpOneToVarId
   resultIRVal <-
     let trueVal = IRConstant "1"
         falseVal = IRConstant "0" in
       case op of
-        LogicAnd -> genJumpIRsAndLabel varId trueVal falseVal
-        LogicOr -> genJumpIRsAndLabel varId falseVal trueVal
+        LogicAnd -> genJumpIRsAndLabel varId ids trueVal falseVal
+        LogicOr -> genJumpIRsAndLabel varId ids falseVal trueVal
         _ -> pure [IRBinary op irValFromLExpr irValFromRExpr $ IRVar $ show varId]
   pure (concat
     [irsFromLExpr, lExprCondJumpIRs, irsFromRExpr, rExprCondJumpIRs, resultIRVal],
