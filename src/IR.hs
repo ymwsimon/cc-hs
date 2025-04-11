@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/04/09 18:17:12 by mayeung          ###   ########.fr       --
+--   Updated: 2025/04/10 23:39:38 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -47,9 +47,9 @@ data IRInstruction =
       irCopyDst :: IRVal
     }
   | IRJump {irJumpTarget :: String}
-  | IRJumpIfZero {val :: IRVal, irJumpZeroTarget :: String}
-  | IRJumpIfNotZero {val :: IRVal, irJumpNotZeroTarget :: String}
-  | Label {labelName :: String}
+  | IRJumpIfZero {irJumpZVal :: IRVal, irJumpZeroTarget :: String}
+  | IRJumpIfNotZero {irJumpNZVal :: IRVal, irJumpNotZeroTarget :: String}
+  | IRLabel {labelName :: String}
   deriving (Show, Eq)
 
 data IRVal =
@@ -109,9 +109,9 @@ genJumpIRsAndLabel varId fstVal sndVal = do
   modify bumpOneToLabelId
   pure [IRCopy fstVal $ IRVar $ show varId,
     IRJump $ "end_label" ++ show endLabelId,
-    Label $ "false_label" ++ show labelId,
+    IRLabel $ "false_label" ++ show labelId,
     IRCopy sndVal $ IRVar $ show varId,
-    Label $ "end_label" ++ show endLabelId]
+    IRLabel $ "end_label" ++ show endLabelId]
 
 binaryOperationToIRs :: BinaryOp -> Expr -> Expr -> State (Int, Int) ([IRInstruction], IRVal)
 binaryOperationToIRs op lExpr rExpr = do

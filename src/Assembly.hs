@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/04/04 17:17:16 by mayeung          ###   ########.fr       --
+--   Updated: 2025/04/11 12:03:37 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -27,14 +27,19 @@ data AsmFunctionDefine =
   deriving (Show, Eq)
 
 data AsmInstruction =
-  Mov {src :: Operand, dst :: Operand}
-  | Movb {srcB :: Operand, dstB :: Operand}
+  Mov {asmMovSrc :: Operand, asmMovDst :: Operand}
+  | Movb {asmMovsrcB :: Operand, asmMovDstB :: Operand}
   | Ret
   | AsmUnary AsmUnaryOp Operand
   | AsmBinary AsmBinaryOp Operand Operand
   | AsmIdiv Operand
   | Cdq
   | AllocateStack Int
+  | Cmp Operand Operand
+  | AsmJmp {jumpIdentifier :: String}
+  | JmpCC {cond :: CondCode, jumpCCIdentifier :: String}
+  | SetCC {cond :: CondCode, setCCDst :: Operand}
+  | AsmLabel {labelIdentifier :: String}
   deriving (Show, Eq)
 
 data AsmUnaryOp =
@@ -53,6 +58,15 @@ data AsmBinaryOp =
   | AsmBitXor
   | AsmShiftL
   | AsmShiftR
+  deriving Eq
+
+data CondCode =
+  E
+  | NE
+  | G
+  | GE
+  | L
+  | LE
   deriving Eq
 
 data Reg =
@@ -95,6 +109,14 @@ instance Show AsmBinaryOp where
   show AsmBitXor = "xorl"
   show AsmShiftL = "sall"
   show AsmShiftR = "sarl"
+
+instance Show CondCode where
+  show E = "e"
+  show NE = "ne"
+  show G = "g"
+  show GE = "ge"
+  show L = "l"
+  show LE = "le"
 
 instance Show Reg where
   show AX = "eax"
@@ -144,39 +166,67 @@ irInstructionToAsmInstruction :: IRInstruction -> [AsmInstruction]
 irInstructionToAsmInstruction (IRReturn val) =
   [Mov (irOperandToAsmOperand val) (Register AX),
     Ret]
+irInstructionToAsmInstruction (IRUnary NotRelation s d) =
+  [Cmp (Imm 0) (irOperandToAsmOperand s),
+    Mov (Imm 0) (irOperandToAsmOperand d),
+    SetCC E (irOperandToAsmOperand d)]
 irInstructionToAsmInstruction (IRUnary op s d) =
   [Mov (irOperandToAsmOperand s) (irOperandToAsmOperand d),
     AsmUnary (irUnaryOpToAsmOp op) (irOperandToAsmOperand d)]
-irInstructionToAsmInstruction (IRBinary Division lVal rVal bDst) =
+irInstructionToAsmInstruction (IRBinary Division lVal rVal d) =
   [Mov (irOperandToAsmOperand lVal) (Register AX),
     Cdq,
     AsmIdiv (irOperandToAsmOperand rVal),
-    Mov (Register AX) (irOperandToAsmOperand bDst)]
-irInstructionToAsmInstruction (IRBinary Modulo lVal rVal bDst) =
+    Mov (Register AX) (irOperandToAsmOperand d)]
+irInstructionToAsmInstruction (IRBinary Modulo lVal rVal d) =
   [Mov (irOperandToAsmOperand lVal) (Register AX),
     Cdq,
     AsmIdiv (irOperandToAsmOperand rVal),
-    Mov (Register DX) (irOperandToAsmOperand bDst)]
-irInstructionToAsmInstruction (IRBinary BitShiftLeft lVal rVal bDst) =
+    Mov (Register DX) (irOperandToAsmOperand d)]
+irInstructionToAsmInstruction (IRBinary BitShiftLeft lVal rVal d) =
   [Mov (irOperandToAsmOperand lVal) (Register R12D),
     AsmBinary
       (irBinaryOpToAsmOp BitShiftLeft)
       (irOperandToAsmOperand rVal)
       (Register R12D),
-    Mov (Register R12D) (irOperandToAsmOperand bDst)]
-irInstructionToAsmInstruction (IRBinary BitShiftRight lVal rVal bDst) =
+    Mov (Register R12D) (irOperandToAsmOperand d)]
+irInstructionToAsmInstruction (IRBinary BitShiftRight lVal rVal d) =
   [Mov (irOperandToAsmOperand lVal) (Register R12D),
     AsmBinary
       (irBinaryOpToAsmOp BitShiftRight)
       (irOperandToAsmOperand rVal)
       (Register R12D),
-    Mov (Register R12D) (irOperandToAsmOperand bDst)]
-irInstructionToAsmInstruction (IRBinary op lVal rVal bDst) =
-  [Mov (irOperandToAsmOperand lVal) (irOperandToAsmOperand bDst),
+    Mov (Register R12D) (irOperandToAsmOperand d)]
+irInstructionToAsmInstruction (IRJumpIfZero valToCheck jmpTarget) =
+  [Cmp (Imm 0) (irOperandToAsmOperand valToCheck),
+    JmpCC E jmpTarget]
+irInstructionToAsmInstruction (IRJumpIfNotZero valToCheck jmpTarget) =
+  [Cmp (Imm 0) (irOperandToAsmOperand valToCheck),
+    JmpCC NE jmpTarget]
+irInstructionToAsmInstruction (IRBinary GreaterThanRelation valL valR d) =
+  buildAsmIntrsForIRRelationOp G valL valR d
+irInstructionToAsmInstruction (IRBinary GreaterEqualRelation valL valR d) =
+  buildAsmIntrsForIRRelationOp GE valL valR d
+irInstructionToAsmInstruction (IRBinary LessThanRelation valL valR d) =
+  buildAsmIntrsForIRRelationOp L valL valR d
+irInstructionToAsmInstruction (IRBinary LessEqualRelation valL valR d) =
+  buildAsmIntrsForIRRelationOp LE valL valR d
+irInstructionToAsmInstruction (IRBinary op lVal rVal d) =
+  [Mov (irOperandToAsmOperand lVal) (irOperandToAsmOperand d),
     AsmBinary
       (irBinaryOpToAsmOp op)
       (irOperandToAsmOperand rVal)
-      (irOperandToAsmOperand bDst)]
+      (irOperandToAsmOperand d)]
+irInstructionToAsmInstruction (IRJump target) = [AsmJmp target]
+irInstructionToAsmInstruction (IRLabel target) = [AsmLabel target]
+irInstructionToAsmInstruction (IRCopy s d) = 
+  [Mov (irOperandToAsmOperand s) (irOperandToAsmOperand d)]
+
+buildAsmIntrsForIRRelationOp :: CondCode -> IRVal -> IRVal -> IRVal -> [AsmInstruction]
+buildAsmIntrsForIRRelationOp condCode valL valR setDst =
+  [Cmp (irOperandToAsmOperand valL) (irOperandToAsmOperand valR),
+    Mov (Imm 0) (irOperandToAsmOperand setDst),
+    SetCC condCode (irOperandToAsmOperand setDst)]
 
 noExecutableStackString :: String
 noExecutableStackString =
@@ -187,9 +237,12 @@ convertAsmTempVarToStackAddr = map convertInstr
   where convertInstr instr =
           case instr of
             Mov s d -> Mov (convertOperand s) (convertOperand d)
+            Movb s d -> Movb (convertOperand s) (convertOperand d)
             AsmUnary op d -> AsmUnary op $ convertOperand d
             AsmBinary op l r -> AsmBinary op (convertOperand l) (convertOperand r)
             AsmIdiv operand -> AsmIdiv $ convertOperand operand
+            Cmp l r -> Cmp (convertOperand l) (convertOperand r)
+            SetCC code d -> SetCC code (convertOperand d)
             _ -> instr
         convertOperand operand = 
           case operand of
@@ -215,6 +268,7 @@ getStackSize = foldl getMinSize 0
 replacePseudoRegAllocateStackFixDoubleStackOperand :: AsmFunctionDefine -> AsmFunctionDefine
 replacePseudoRegAllocateStackFixDoubleStackOperand afd =
   afd {instructions = concatMap resolveDoubleStackOperand
+                    $ concatMap fixCmpConstant
                     $ concatMap fixBitShiftNonImm
                     $ concatMap fixDivConstant
                     $ addAllocateStackToFunc
@@ -227,13 +281,16 @@ resolveDoubleStackOperand instr =
     Mov (Stack i) (Stack j) ->
       [Mov (Stack i) (Register R10D),
         Mov (Register R10D) (Stack j)]
-    AsmBinary AsmMul val (Stack i) ->
+    AsmBinary AsmMul mulVal (Stack i) ->
       [Mov (Stack i) (Register R11D),
-        AsmBinary AsmMul val (Register R11D),
+        AsmBinary AsmMul mulVal (Register R11D),
         Mov (Register R11D) (Stack i) ]
     AsmBinary op (Stack i) (Stack j) ->
       [Mov (Stack i) (Register R10D),
         AsmBinary op (Register R10D) (Stack j)]
+    Cmp (Stack i) (Stack j) ->
+      [Mov (Stack i) (Register R10D),
+        Cmp (Register R10D) (Stack j)]
     _ -> [instr]
 
 fixDivConstant :: AsmInstruction -> [AsmInstruction]
@@ -249,6 +306,15 @@ fixBitShiftNonImm (AsmBinary AsmShiftL (Stack i) d) =
 fixBitShiftNonImm (AsmBinary AsmShiftR (Stack i) d) =
   [Movb (Stack i) (Register CL), AsmBinary AsmShiftR (Register CL) d]
 fixBitShiftNonImm instr = [instr]
+
+fixCmpConstant :: AsmInstruction -> [AsmInstruction]
+fixCmpConstant (Cmp (Imm i) (Imm j)) =
+  [Mov (Imm i) (Register R10D),
+    Mov (Imm j) (Register R11D), 
+    Cmp (Register R11D) (Register R10D)]
+fixCmpConstant (Cmp (Imm i) r) = [Mov (Imm i) (Register R10D), Cmp r (Register R10D)]
+fixCmpConstant (Cmp l (Imm i)) = [Mov (Imm i) (Register R11D), Cmp (Register R11D) l]
+fixCmpConstant instr = [instr]
 
 asmProgramASTToAsm :: [AsmFunctionDefine] -> String
 asmProgramASTToAsm = unlines . map asmFunctionDefineToStr
@@ -273,6 +339,11 @@ asmInstructionToStr (AllocateStack i) =
   case i of
     0 -> []
     _ -> pure $ tabulate ["subq", "$" ++ show i ++ ", %rsp"]
+asmInstructionToStr (Cmp l r) = pure $ tabulate ["cmpl", show l ++ ", " ++ show r]
+asmInstructionToStr (AsmJmp target) = pure $ tabulate ["jmp", ".L" ++ target]
+asmInstructionToStr (JmpCC code target) = pure $ tabulate ["j" ++ show code, ".L" ++ target]
+asmInstructionToStr (SetCC code dst) = pure $ tabulate ["set" ++ show code, show dst]
+asmInstructionToStr (AsmLabel target) =  [".L" ++  target ++ ":"]
 
 asmFunctionDefineToStr :: AsmFunctionDefine -> String
 asmFunctionDefineToStr (AsmFunctionDefine fname instrs) =
