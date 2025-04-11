@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/04/11 19:10:53 by mayeung          ###   ########.fr       --
+--   Updated: 2025/04/11 20:39:50 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -228,7 +228,7 @@ irInstructionToAsmInstruction (IRCopy s d) =
 
 buildAsmIntrsForIRRelationOp :: CondCode -> IRVal -> IRVal -> IRVal -> [AsmInstruction]
 buildAsmIntrsForIRRelationOp condCode valL valR setDst =
-  [Cmp (irOperandToAsmOperand valL) (irOperandToAsmOperand valR),
+  [Cmp (irOperandToAsmOperand valR) (irOperandToAsmOperand valL),
     Mov (Imm 0) (irOperandToAsmOperand setDst),
     SetCC condCode (irOperandToAsmOperand setDst)]
 
@@ -243,9 +243,9 @@ convertAsmTempVarToStackAddr = map convertInstr
             Mov s d -> Mov (convertOperand s) (convertOperand d)
             Movb s d -> Movb (convertOperand s) (convertOperand d)
             AsmUnary op d -> AsmUnary op $ convertOperand d
-            AsmBinary op l r -> AsmBinary op (convertOperand l) (convertOperand r)
+            AsmBinary op r l -> AsmBinary op (convertOperand r) (convertOperand l)
             AsmIdiv operand -> AsmIdiv $ convertOperand operand
-            Cmp l r -> Cmp (convertOperand l) (convertOperand r)
+            Cmp r l -> Cmp (convertOperand r) (convertOperand l)
             SetCC code d -> SetCC code (convertOperand d)
             _ -> instr
         convertOperand operand = 
@@ -264,9 +264,9 @@ getStackSize = foldl getMinSize 0
             Mov s d -> min (takeValFromOperand s) (takeValFromOperand d)
             Movb s d -> min (takeValFromOperand s) (takeValFromOperand d)
             AsmUnary _ d -> takeValFromOperand d
-            AsmBinary _ l r -> min (takeValFromOperand l) (takeValFromOperand r)
+            AsmBinary _ r l -> min (takeValFromOperand r) (takeValFromOperand l)
             AsmIdiv d -> takeValFromOperand d
-            Cmp l r -> min (takeValFromOperand l) (takeValFromOperand r)
+            Cmp r l -> min (takeValFromOperand r) (takeValFromOperand l)
             SetCC _ d -> takeValFromOperand d
             _ -> 0
         takeValFromOperand operand =
@@ -298,8 +298,8 @@ resolveDoubleStackOperand instr =
       [Mov (Stack i) (Register R10D),
         AsmBinary op (Register R10D) (Stack j)]
     Cmp (Stack i) (Stack j) ->
-      [Mov (Stack i) (Register R10D),
-        Cmp (Stack j) (Register R10D)]
+      [Mov (Stack j) (Register R10D),
+        Cmp (Stack i) (Register R10D)]
     _ -> [instr]
 
 fixDivConstant :: AsmInstruction -> [AsmInstruction]
@@ -317,12 +317,7 @@ fixBitShiftNonImm (AsmBinary AsmShiftR (Stack i) d) =
 fixBitShiftNonImm instr = [instr]
 
 fixCmpConstant :: AsmInstruction -> [AsmInstruction]
-fixCmpConstant (Cmp (Imm i) (Imm j)) =
-  [Mov (Imm i) (Register R10D),
-    Mov (Imm j) (Register R11D), 
-    Cmp (Register R11D) (Register R10D)]
-fixCmpConstant (Cmp (Imm i) r) = [Mov (Imm i) (Register R10D), Cmp r (Register R10D)]
-fixCmpConstant (Cmp l (Imm i)) = [Mov (Imm i) (Register R11D), Cmp (Register R11D) l]
+fixCmpConstant (Cmp r (Imm l)) = [Mov (Imm l) (Register R11D), Cmp r (Register R11D)]
 fixCmpConstant instr = [instr]
 
 asmProgramASTToAsm :: [AsmFunctionDefine] -> String
@@ -341,14 +336,14 @@ asmInstructionToStr Ret = asmFuncReturnStr
 asmInstructionToStr (Mov s d) = pure $ tabulate ["movl", show s ++ ", " ++ show d]
 asmInstructionToStr (Movb s d) = pure $ tabulate ["movb", show s ++ ", " ++ show d]
 asmInstructionToStr (AsmUnary op d) = pure $ tabulate [show op, show d]
-asmInstructionToStr (AsmBinary op s d) = pure $ tabulate [show op, show s ++ ", " ++ show d]
+asmInstructionToStr (AsmBinary op r l) = pure $ tabulate [show op, show r ++ ", " ++ show l]
 asmInstructionToStr Cdq = pure $ tabulate ["cdq"]
 asmInstructionToStr (AsmIdiv operand) = pure $ tabulate ["idiv", show operand]
 asmInstructionToStr (AllocateStack i) = 
   case i of
     0 -> []
     _ -> pure $ tabulate ["subq", "$" ++ show i ++ ", %rsp"]
-asmInstructionToStr (Cmp l r) = pure $ tabulate ["cmpl", show l ++ ", " ++ show r]
+asmInstructionToStr (Cmp r l) = pure $ tabulate ["cmpl", show r ++ ", " ++ show l]
 asmInstructionToStr (AsmJmp target) = pure $ tabulate ["jmp", ".L" ++ target]
 asmInstructionToStr (JmpCC code target) = pure $ tabulate ["j" ++ show code, ".L" ++ target]
 asmInstructionToStr (SetCC code dst) = pure $ tabulate ["set" ++ show code, show dst]
