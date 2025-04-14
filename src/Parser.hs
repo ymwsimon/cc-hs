@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/04/04 21:54:21 by mayeung          ###   ########.fr       --
+--   Updated: 2025/04/14 15:41:45 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -288,7 +288,7 @@ isEqOrHigherPrecedence binOp p = (binaryOpPrecedence M.! binOp) <= p
 exprRightParser :: Expr -> ParsecT String (ds, Int) IO Expr
 exprRightParser lExpr = do
   binOp <- lookAhead binaryOpStringParser <|> pure []
-  (_, p) <- getState
+  p <- snd <$> getState
   if isBinaryOpChar binOp && isEqOrHigherPrecedence binOp p
     then
       do
@@ -307,21 +307,21 @@ unaryOpParser = try negateOpParser
 
 negateOpParser :: ParsecT String (ds, Int) IO Expr
 negateOpParser = do
-  (_, p) <- getState
+  p <- snd <$> getState
   void $ minusLex <* notFollowedBy (char '-')
   modifyState $ updatePrecedence 2
   (Unary Negate <$> exprParser) <* modifyState (revokePrecedence p)
 
 complementOpParser :: ParsecT String (ds, Int) IO Expr
 complementOpParser = do
-  (_, p) <- getState
+  p <- snd <$> getState
   void complementLex
   modifyState $ updatePrecedence 2
   (Unary Complement <$> exprParser) <* modifyState (revokePrecedence p)
 
 notRelationOpParser :: ParsecT String (ds, Int) IO Expr
 notRelationOpParser = do
-  (_, p) <- getState
+  p <- snd <$> getState
   void exclaimLex
   modifyState $ updatePrecedence 2
   (Unary NotRelation <$> exprParser) <* modifyState (revokePrecedence p)
@@ -332,7 +332,7 @@ intOperandParser = Constant <$> intParser
 parenExprParser :: ParsecT String (ds, Int) IO Expr
 parenExprParser = do
   void openPParser
-  (_, p) <- getState
+  p <- snd <$> getState
   modifyState $ updatePrecedence lowestPrecedence
   expr <- exprParser
   void closePParser
@@ -359,7 +359,7 @@ argListParser = do
   res <- try keyVoidParser <|> pure []
   case res of
     "void" -> pure []
-    _ -> try (sepBy argPairParser (try commaParser)) <|> pure []
+    _ -> try (sepBy argPairParser $ try commaParser) <|> pure []
 
 functionDefineParser :: (Ord u, Monoid u) => ParsecT String (S.Set u, Int) IO FunctionDefine
 functionDefineParser = do

@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/04/11 20:39:50 by mayeung          ###   ########.fr       --
+--   Updated: 2025/04/14 15:59:10 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -102,8 +102,8 @@ instance Show AsmBinaryOp where
   show AsmPlus = "addl"
   show AsmMius = "subl"
   show AsmMul = "imull"
-  show AsmDiv = "error???"
-  show AsmMod = "error???"
+  show AsmDiv = undefined
+  show AsmMod = undefined
   show AsmBitAnd = "andl"
   show AsmBitOr = "orl"
   show AsmBitXor = "xorl"
@@ -169,19 +169,19 @@ irInstructionToAsmInstruction (IRReturn val) =
 irInstructionToAsmInstruction (IRUnary NotRelation s d) =
   [Cmp (Imm 0) (irOperandToAsmOperand s),
     Mov (Imm 0) (irOperandToAsmOperand d),
-    SetCC E (irOperandToAsmOperand d)]
+    SetCC E $ irOperandToAsmOperand d]
 irInstructionToAsmInstruction (IRUnary op s d) =
   [Mov (irOperandToAsmOperand s) (irOperandToAsmOperand d),
     AsmUnary (irUnaryOpToAsmOp op) (irOperandToAsmOperand d)]
 irInstructionToAsmInstruction (IRBinary Division lVal rVal d) =
   [Mov (irOperandToAsmOperand lVal) (Register AX),
     Cdq,
-    AsmIdiv (irOperandToAsmOperand rVal),
+    AsmIdiv $ irOperandToAsmOperand rVal,
     Mov (Register AX) (irOperandToAsmOperand d)]
 irInstructionToAsmInstruction (IRBinary Modulo lVal rVal d) =
   [Mov (irOperandToAsmOperand lVal) (Register AX),
     Cdq,
-    AsmIdiv (irOperandToAsmOperand rVal),
+    AsmIdiv $ irOperandToAsmOperand rVal,
     Mov (Register DX) (irOperandToAsmOperand d)]
 irInstructionToAsmInstruction (IRBinary BitShiftLeft lVal rVal d) =
   [Mov (irOperandToAsmOperand lVal) (Register R12D),
@@ -230,7 +230,7 @@ buildAsmIntrsForIRRelationOp :: CondCode -> IRVal -> IRVal -> IRVal -> [AsmInstr
 buildAsmIntrsForIRRelationOp condCode valL valR setDst =
   [Cmp (irOperandToAsmOperand valR) (irOperandToAsmOperand valL),
     Mov (Imm 0) (irOperandToAsmOperand setDst),
-    SetCC condCode (irOperandToAsmOperand setDst)]
+    SetCC condCode $ irOperandToAsmOperand setDst]
 
 noExecutableStackString :: String
 noExecutableStackString =
@@ -292,7 +292,7 @@ resolveDoubleStackOperand instr =
         Mov (Register R10D) (Stack j)]
     AsmBinary AsmMul mulVal (Stack i) ->
       [Mov (Stack i) (Register R11D),
-        AsmBinary AsmMul mulVal (Register R11D),
+        AsmBinary AsmMul mulVal $ Register R11D,
         Mov (Register R11D) (Stack i) ]
     AsmBinary op (Stack i) (Stack j) ->
       [Mov (Stack i) (Register R10D),
@@ -304,9 +304,9 @@ resolveDoubleStackOperand instr =
 
 fixDivConstant :: AsmInstruction -> [AsmInstruction]
 fixDivConstant (AsmIdiv (Imm i)) =
-  [Mov (Imm i) (Register R10D), AsmIdiv (Register R10D)]
+  [Mov (Imm i) (Register R10D), AsmIdiv $ Register R10D]
 fixDivConstant (AsmIdiv (Stack i)) =
-  [Mov (Stack i) (Register R10D), AsmIdiv (Register R10D)]
+  [Mov (Stack i) (Register R10D), AsmIdiv $ Register R10D]
 fixDivConstant instr = [instr]
 
 fixBitShiftNonImm :: AsmInstruction -> [AsmInstruction]
@@ -317,7 +317,7 @@ fixBitShiftNonImm (AsmBinary AsmShiftR (Stack i) d) =
 fixBitShiftNonImm instr = [instr]
 
 fixCmpConstant :: AsmInstruction -> [AsmInstruction]
-fixCmpConstant (Cmp r (Imm l)) = [Mov (Imm l) (Register R11D), Cmp r (Register R11D)]
+fixCmpConstant (Cmp r (Imm l)) = [Mov (Imm l) (Register R11D), Cmp r $ Register R11D]
 fixCmpConstant instr = [instr]
 
 asmProgramASTToAsm :: [AsmFunctionDefine] -> String
@@ -325,6 +325,7 @@ asmProgramASTToAsm = unlines . map asmFunctionDefineToStr
 
 tabulate :: [String] -> String
 tabulate = intercalate "\t" . ("" :)
+
 asmFuncReturnStr :: [String]
 asmFuncReturnStr = 
   [tabulate ["movq", "%rbp, %rsp"],

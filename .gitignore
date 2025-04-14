@@ -2,3 +2,4 @@ dist-newstyle/*
 *.out
 *.s
 test.c
+src/b.c
