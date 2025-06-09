@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/04/11 18:38:50 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/09 21:06:04 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -57,8 +57,11 @@ data IRVal =
   | IRVar String
   deriving (Show, Eq)
 
-cStatmentToIRInstructions :: Statment -> State (Int, Int) [IRInstruction]
-cStatmentToIRInstructions (Return expr) = exprToReturnIRs expr
+cStatmentToIRInstructions :: BlockItem -> State (Int, Int) [IRInstruction]
+cStatmentToIRInstructions (S (Return expr)) = exprToReturnIRs expr
+cStatmentToIRInstructions (S Null) = pure []
+cStatmentToIRInstructions (S (Expression _)) = pure []
+cStatmentToIRInstructions (D _) = pure []
 cStatmentToIRInstructions _ = undefined
 
 resetIRValId :: Num c => (a, b) -> (c, b)

@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/04/14 15:41:45 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/09 21:04:37 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -24,13 +24,17 @@ import qualified Data.Map.Strict as M
 
 type CProgramAST = [FunctionDefine]
 
+type VarType = String
+
+type IdentifierName = String
+
 data FunctionDefine =
   FunctionDefine
   {
     returnType :: String,
     funName :: String,
     inputArgs :: [InputArgPair],
-    body :: [Statment]
+    body :: [BlockItem]
   }
   deriving (Show, Eq)
 
@@ -42,9 +46,19 @@ data InputArgPair =
   }
   deriving (Show, Eq)
 
-data Statment =
-  VariableDecl
+data Statement =
+  Expression Expr
   | Return Expr
+  | Null
+  deriving (Show, Eq)
+
+data Declaration =
+  VariableDecl VarType IdentifierName (Maybe Expr)
+  deriving (Show, Eq)
+
+data BlockItem =
+  S Statement
+  | D Declaration
   deriving (Show, Eq)
 
 data Expr =
@@ -53,6 +67,7 @@ data Expr =
   | FunctionCall
   | Unary UnaryOp Expr
   | Binary BinaryOp Expr Expr
+  | Assignment Expr Expr
   deriving (Show, Eq)
 
 lowestPrecedence :: Int
@@ -64,7 +79,7 @@ allBinaryOp =
  "%", "&&", "||", "&",
  "|", ">>", "<<", "^",
  "==", "!=", "<", ">",
- "<=", ">=", "!"]
+ "<=", ">=", "!", "="]
 
 binaryOpPrecedence :: M.Map String Int
 binaryOpPrecedence = M.fromList $ zip allBinaryOp
@@ -72,7 +87,7 @@ binaryOpPrecedence = M.fromList $ zip allBinaryOp
   3, 11, 12, 8,
   10, 5, 5, 9,
   7, 7, 6, 6,
-  6, 6, 2]
+  6, 6, 2, 14]
 
 createSkipSpacesCharParser :: Char -> ParsecT String u IO Char
 createSkipSpacesCharParser = (spaces >>) . char
@@ -97,6 +112,9 @@ percentLex = createSkipSpacesStringParser "%"
 
 complementLex :: ParsecT String u IO String
 complementLex = createSkipSpacesStringParser "~"
+
+equalLex :: ParsecT String u IO String
+equalLex = createSkipSpacesStringParser "="
 
 bitAndLex :: ParsecT String u IO String
 bitAndLex = createSkipSpacesStringParser "&"
@@ -254,12 +272,14 @@ binaryOpStringParser = foldl1 (<|>) $
     percentLex,
     logicAndLex,
     logicOrLex,
+    equalLex <* notFollowedBy (char '='),
     equalRelationLex,
     notEqualRelationLex,
     lessThanRelationLex,
     lessEqualThanRelationLex,
     greatThanRelationLex,
-    greatEqualThanRelationLex]
+    greatEqualThanRelationLex
+    ]
 
 binaryExprParser :: ParsecT String (ds, Int) IO Expr
 binaryExprParser = flip Binary
@@ -291,12 +311,19 @@ exprRightParser lExpr = do
   p <- snd <$> getState
   if isBinaryOpChar binOp && isEqOrHigherPrecedence binOp p
     then
-      do
-        op <- binaryOpParser
-        modifyState $ updatePrecedence $ getPrecedence binOp
-        rExpr <- exprParser
-        modifyState $ revokePrecedence p
-        exprRightParser $ Binary op lExpr rExpr
+      if binOp == "="
+        then
+          do
+            void equalLex
+            rExpr <- exprParser
+            exprRightParser $ Assignment lExpr rExpr
+        else
+          do
+            op <- binaryOpParser
+            modifyState $ updatePrecedence $ getPrecedence binOp
+            rExpr <- exprParser
+            modifyState $ revokePrecedence p
+            exprRightParser $ Binary op lExpr rExpr
     else
       pure lExpr
 
@@ -343,8 +370,9 @@ factorParser :: ParsecT String (ds, Int) IO Expr
 factorParser = try intOperandParser
   <|> try unaryOpParser
   <|> try parenExprParser
+  <|> try (Variable <$> identifierParser)
 
-returnStatParser :: ParsecT String (ds, Int) IO Statment
+returnStatParser :: ParsecT String (ds, Int) IO Statement
 returnStatParser = do
   void keyReturnParser
   expr <- exprParser
@@ -361,6 +389,26 @@ argListParser = do
     "void" -> pure []
     _ -> try (sepBy argPairParser $ try commaParser) <|> pure []
 
+declarationParser :: ParsecT String (ds, Int) IO Declaration
+declarationParser = do
+  varType <- keyIntParser
+  vName <- identifierParser
+  initialiser <- optionMaybe (equalLex >> exprParser)
+  void semiColParser
+  pure $ VariableDecl varType vName initialiser
+
+expressionParser :: ParsecT String (ds, Int) IO Statement
+expressionParser = Expression <$> exprParser
+
+nullStatParser :: ParsecT String (ds, Int) IO Statement
+nullStatParser = semiColParser >> pure Null
+
+statementParser :: ParsecT String (ds, Int) IO Statement
+statementParser = try expressionParser <|> try returnStatParser <|> try nullStatParser
+
+blockItemParser :: ParsecT String (ds, Int) IO BlockItem
+blockItemParser = (D <$> try declarationParser) <|> (S <$> try statementParser)
+
 functionDefineParser :: (Ord u, Monoid u) => ParsecT String (S.Set u, Int) IO FunctionDefine
 functionDefineParser = do
   -- retType <- keyIntParser <|> keyVoidParser <|> identifierParser
@@ -368,5 +416,5 @@ functionDefineParser = do
   fName <- identifierParser
   argList <- between openPParser closePParser $ try argListParser
   void openCurParser
-  statments <- manyTill returnStatParser $ try closeCurParser
-  pure $ FunctionDefine retType fName argList statments
+  blockitems <- manyTill blockItemParser $ try closeCurParser
+  pure $ FunctionDefine retType fName argList blockitems
