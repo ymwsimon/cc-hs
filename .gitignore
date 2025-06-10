@@ -1,5 +1,6 @@
 dist-newstyle/*
 *.out
 *.s
+*.o
 test.c
 src/b.c
