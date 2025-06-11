@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/06/11 20:54:05 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/11 22:14:03 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -78,6 +78,10 @@ allBinaryOp =
  "|", ">>", "<<", "^",
  "==", "!=", "<", ">",
  "<=", ">=", "!", "="]
+
+keywordList :: [String]
+keywordList = 
+  ["int", "void", "return"]
 
 binaryOpPrecedence :: M.Map String Int
 binaryOpPrecedence = M.fromList $ zip allBinaryOp
@@ -186,14 +190,20 @@ semiColParser = createSkipSpacesStringParser ";"
 commaParser :: ParsecT String u IO String
 commaParser = createSkipSpacesStringParser ","
 
+keywordParserCreate :: String -> ParsecT String u IO String
+keywordParserCreate k = do
+  spaces
+  symbol <- symbolExtract
+  if symbol == k then pure k else unexpected symbol
+  
 keyIntParser :: ParsecT String u IO String
-keyIntParser = createSkipSpacesStringParser "int"
+keyIntParser = keywordParserCreate "int"
 
 keyVoidParser :: ParsecT String u IO String
-keyVoidParser = createSkipSpacesStringParser "void"
+keyVoidParser = keywordParserCreate "void"
 
 keyReturnParser :: ParsecT String u IO String
-keyReturnParser = createSkipSpacesStringParser "return"
+keyReturnParser = keywordParserCreate "return"
 
 keywordParser :: ParsecT String u IO String
 keywordParser = keyIntParser
@@ -201,7 +211,10 @@ keywordParser = keyIntParser
   <|> keyReturnParser
 
 identifierParser :: ParsecT String u IO String
-identifierParser = spaces >> symbolExtract
+identifierParser = do
+  spaces
+  symbol <- symbolExtract
+  if symbol `elem` keywordList then unexpected "Cannot use keyword as identifier" else pure symbol
 
 intParser :: ParsecT String u IO String
 intParser = spaces >> many1 digit
