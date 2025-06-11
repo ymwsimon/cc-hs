@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/06/11 12:53:07 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/11 15:46:19 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -279,13 +279,13 @@ binaryOpStringParser = foldl1 (<|>) $
     greatEqualThanRelationLex
     ]
 
-binaryExprParser :: ParsecT String (ds, Int) IO Expr
+binaryExprParser :: ParsecT String (M.Map String String, Int) IO Expr
 binaryExprParser = flip Binary
   <$> factorParser
   <*> binaryOpParser
   <*> factorParser
 
-exprParser :: ParsecT String (ds, Int) IO Expr
+exprParser :: ParsecT String (M.Map String String, Int) IO Expr
 exprParser = factorParser >>= exprRightParser
 
 isBinaryOpChar :: String -> Bool
@@ -303,7 +303,7 @@ revokePrecedence p = (, p) . fst
 isEqOrHigherPrecedence :: String -> Int -> Bool
 isEqOrHigherPrecedence binOp p = (binaryOpPrecedence M.! binOp) <= p
 
-exprRightParser :: Expr -> ParsecT String (ds, Int) IO Expr
+exprRightParser :: Expr -> ParsecT String (M.Map String String, Int) IO Expr
 exprRightParser lExpr = do
   binOp <- lookAhead binaryOpStringParser <|> pure []
   p <- snd <$> getState
@@ -325,26 +325,26 @@ exprRightParser lExpr = do
     else
       pure lExpr
 
-unaryOpParser :: ParsecT String (ds, Int) IO Expr
+unaryOpParser :: ParsecT String (M.Map String String, Int) IO Expr
 unaryOpParser = try negateOpParser
   <|> try complementOpParser
   <|> try notRelationOpParser
 
-negateOpParser :: ParsecT String (ds, Int) IO Expr
+negateOpParser :: ParsecT String (M.Map String String, Int) IO Expr
 negateOpParser = do
   p <- snd <$> getState
   void $ minusLex <* notFollowedBy (char '-')
   modifyState $ updatePrecedence 2
   (Unary Negate <$> exprParser) <* modifyState (revokePrecedence p)
 
-complementOpParser :: ParsecT String (ds, Int) IO Expr
+complementOpParser :: ParsecT String (M.Map String String, Int) IO Expr
 complementOpParser = do
   p <- snd <$> getState
   void complementLex
   modifyState $ updatePrecedence 2
   (Unary Complement <$> exprParser) <* modifyState (revokePrecedence p)
 
-notRelationOpParser :: ParsecT String (ds, Int) IO Expr
+notRelationOpParser :: ParsecT String (M.Map String String, Int) IO Expr
 notRelationOpParser = do
   p <- snd <$> getState
   void exclaimLex
@@ -354,7 +354,7 @@ notRelationOpParser = do
 intOperandParser :: ParsecT String u IO Expr
 intOperandParser = Constant <$> intParser
 
-parenExprParser :: ParsecT String (ds, Int) IO Expr
+parenExprParser :: ParsecT String (M.Map String String, Int) IO Expr
 parenExprParser = do
   void openPParser
   p <- snd <$> getState
@@ -364,13 +364,21 @@ parenExprParser = do
   modifyState $ revokePrecedence p
   pure expr
 
-factorParser :: ParsecT String (ds, Int) IO Expr
+variableParser :: ParsecT String (M.Map String String, Int) IO Expr
+variableParser = do
+  vName <- lookAhead $ try identifierParser
+  (varMap, _) <- getState
+  if not $ M.member vName varMap
+    then unexpected $ "Undefined variable " ++ vName
+    else identifierParser >> pure (Variable $ varMap M.! vName)
+
+factorParser :: ParsecT String (M.Map String String, Int) IO Expr
 factorParser = try intOperandParser
   <|> try unaryOpParser
   <|> try parenExprParser
-  <|> try (Variable <$> identifierParser)
+  <|> variableParser
 
-returnStatParser :: ParsecT String (ds, Int) IO Statement
+returnStatParser :: ParsecT String (M.Map String String, Int) IO Statement
 returnStatParser = do
   void keyReturnParser
   expr <- exprParser
@@ -401,17 +409,21 @@ declarationParser = do
             newVarName = vName ++ "#" ++ show newVarId
             newVarMap = M.adjust (const (show newVarId)) "#varid" varMap
         putState (M.insert vName newVarName newVarMap, p)
-        initialiser <- optionMaybe $ try $ equalLex >> exprParser
+        maybeInit <- lookAhead $ try equalLex <|> pure ""
+        initialiser <- if maybeInit == "="
+            then equalLex >> Just <$> exprParser
+            else pure Nothing
+        -- initialiser <- optionMaybe $ try $ equalLex >> exprParser
         void semiColParser
         pure $ VariableDecl varType newVarName initialiser
 
-expressionParser :: ParsecT String (ds, Int) IO Statement
+expressionParser :: ParsecT String (M.Map String String, Int) IO Statement
 expressionParser = Expression <$> exprParser
 
 nullStatParser :: ParsecT String (ds, Int) IO Statement
 nullStatParser = semiColParser >> pure Null
 
-statementParser :: ParsecT String (ds, Int) IO Statement
+statementParser :: ParsecT String (M.Map String String, Int) IO Statement
 statementParser = try nullStatParser <|> try returnStatParser <|> try expressionParser
 
 blockItemParser :: ParsecT String (M.Map String String, Int) IO BlockItem
@@ -420,6 +432,15 @@ blockItemParser = do
   if maybeType == "int"
     then D <$> declarationParser
     else S <$> statementParser
+
+undefinedVariableParser :: ParsecT String (M.Map String String, Int) IO [BlockItem]
+undefinedVariableParser = do
+  tryIdentifier <- lookAhead $ try identifierParser <|> pure ""
+  if not $ null tryIdentifier
+    then
+      unexpected $ "Variable undefined: " ++ tryIdentifier
+    else
+      pure []
 
 redeclareVarParser :: ParsecT String (M.Map String String, Int) IO [BlockItem]
 redeclareVarParser = do
@@ -443,5 +464,6 @@ functionDefineParser = do
   void openCurParser
   blockitems <- many $ try blockItemParser
   void $ try redeclareVarParser
+  void $ try undefinedVariableParser
   void closeCurParser
   pure $ FunctionDefine retType fName argList blockitems

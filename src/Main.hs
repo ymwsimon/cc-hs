@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/06/11 12:53:01 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/11 15:46:44 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -99,7 +99,7 @@ readNParse path =
                   -- print $ irASTToAsmAST $ flip evalState (1, 1) . cASTToIrAST parseOk
                   -- putStrLn converted
                   writeFile (outFileName path) converted
-                  (_, _, _, assemblerPid) <- createProcess $ proc "cc" ["-c", outFileName path]
+                  (_, _, _, assemblerPid) <- createProcess $ proc "cc" [outFileName path]
                   assemblerEC <- waitForProcess assemblerPid
                   if assemblerEC == ExitSuccess
                     then
