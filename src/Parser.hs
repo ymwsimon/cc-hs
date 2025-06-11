@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/06/09 21:04:37 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/11 12:09:28 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -17,10 +17,9 @@ module Parser where
 import Text.Parsec as P
 import qualified Data.Set as S
 import Control.Monad
--- import Control.Monad.IO.Class
+import Control.Monad.IO.Class
 import Operation
 import qualified Data.Map.Strict as M
--- import Control.Monad.State
 
 type CProgramAST = [FunctionDefine]
 
@@ -208,7 +207,7 @@ identifierParser = spaces >> symbolExtract
 intParser :: ParsecT String u IO String
 intParser = spaces >> many1 digit
 
-fileParser :: (Ord u, Monoid u) => ParsecT String (S.Set u, Int) IO CProgramAST
+fileParser :: ParsecT String (S.Set String, Int) IO [FunctionDefine]
 fileParser = manyTill functionDefineParser $ try $ spaces >> eof
 
 binaryOpParser :: ParsecT String u IO BinaryOp
@@ -389,13 +388,20 @@ argListParser = do
     "void" -> pure []
     _ -> try (sepBy argPairParser $ try commaParser) <|> pure []
 
-declarationParser :: ParsecT String (ds, Int) IO Declaration
+declarationParser :: ParsecT String (S.Set String, Int) IO Declaration
 declarationParser = do
   varType <- keyIntParser
   vName <- identifierParser
-  initialiser <- optionMaybe (equalLex >> exprParser)
-  void semiColParser
-  pure $ VariableDecl varType vName initialiser
+  (varSet, p) <- getState
+  if S.member vName varSet
+    then
+      unexpected $ "Var redeclare: " ++ vName
+    else
+      do
+        putState (S.insert vName varSet, p)
+        initialiser <- optionMaybe $ try $ equalLex >> exprParser
+        void semiColParser
+        pure $ VariableDecl varType vName initialiser
 
 expressionParser :: ParsecT String (ds, Int) IO Statement
 expressionParser = Expression <$> exprParser
@@ -404,17 +410,36 @@ nullStatParser :: ParsecT String (ds, Int) IO Statement
 nullStatParser = semiColParser >> pure Null
 
 statementParser :: ParsecT String (ds, Int) IO Statement
-statementParser = try expressionParser <|> try returnStatParser <|> try nullStatParser
+statementParser = try nullStatParser <|> try returnStatParser <|> try expressionParser
 
-blockItemParser :: ParsecT String (ds, Int) IO BlockItem
-blockItemParser = (D <$> try declarationParser) <|> (S <$> try statementParser)
+blockItemParser :: ParsecT String (S.Set String, Int) IO BlockItem
+blockItemParser = do
+  maybeType <- lookAhead (try keyIntParser) <|> pure ""
+  if maybeType == "int"
+    then D <$> declarationParser
+    else S <$> statementParser
 
-functionDefineParser :: (Ord u, Monoid u) => ParsecT String (S.Set u, Int) IO FunctionDefine
+redeclareVarParser :: ParsecT String (S.Set String, Int) IO [BlockItem]
+redeclareVarParser = do
+  tryInt <- lookAhead $ try keyIntParser <|> pure ""
+  if tryInt == "int"
+    then
+      do
+        void keyIntParser
+        var <- identifierParser
+        void semiColParser
+        unexpected $ "Variable Redeclare: " ++ var
+    else
+      pure []
+
+functionDefineParser :: ParsecT String (S.Set String, Int) IO FunctionDefine
 functionDefineParser = do
   -- retType <- keyIntParser <|> keyVoidParser <|> identifierParser
   retType <- (keyIntParser <|> keyVoidParser) <* notFollowedBy (alphaNum <|> try ucLex)
   fName <- identifierParser
   argList <- between openPParser closePParser $ try argListParser
   void openCurParser
-  blockitems <- manyTill blockItemParser $ try closeCurParser
+  blockitems <- many $ try blockItemParser
+  void $ try redeclareVarParser
+  void closeCurParser
   pure $ FunctionDefine retType fName argList blockitems
