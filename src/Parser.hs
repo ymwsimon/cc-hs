@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/06/11 15:46:19 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/11 20:54:05 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -311,10 +311,13 @@ exprRightParser lExpr = do
     then
       if binOp == "="
         then
-          do
-            void equalLex
-            rExpr <- exprParser
-            exprRightParser $ Assignment lExpr rExpr
+          case lExpr of
+            Variable _ ->
+              do
+                void equalLex
+                rExpr <- exprParser
+                exprRightParser $ Assignment lExpr rExpr
+            _ -> unexpected "Only lvalue allowed on the left side"
         else
           do
             op <- binaryOpParser
@@ -409,8 +412,8 @@ declarationParser = do
             newVarName = vName ++ "#" ++ show newVarId
             newVarMap = M.adjust (const (show newVarId)) "#varid" varMap
         putState (M.insert vName newVarName newVarMap, p)
-        maybeInit <- lookAhead $ try equalLex <|> pure ""
-        initialiser <- if maybeInit == "="
+        maybeEqual <- lookAhead $ try equalLex <|> pure ""
+        initialiser <- if maybeEqual == "="
             then equalLex >> Just <$> exprParser
             else pure Nothing
         -- initialiser <- optionMaybe $ try $ equalLex >> exprParser
@@ -424,7 +427,7 @@ nullStatParser :: ParsecT String (ds, Int) IO Statement
 nullStatParser = semiColParser >> pure Null
 
 statementParser :: ParsecT String (M.Map String String, Int) IO Statement
-statementParser = try nullStatParser <|> try returnStatParser <|> try expressionParser
+statementParser = try nullStatParser <|> try returnStatParser <|> try expressionParser <* semiColParser
 
 blockItemParser :: ParsecT String (M.Map String String, Int) IO BlockItem
 blockItemParser = do
@@ -438,7 +441,7 @@ undefinedVariableParser = do
   tryIdentifier <- lookAhead $ try identifierParser <|> pure ""
   if not $ null tryIdentifier
     then
-      unexpected $ "Variable undefined: " ++ tryIdentifier
+      unexpected $ "Variable Undefined: " ++ tryIdentifier
     else
       pure []
 
