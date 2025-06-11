@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/06/11 12:09:28 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/11 12:53:07 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -15,7 +15,6 @@
 module Parser where
 
 import Text.Parsec as P
-import qualified Data.Set as S
 import Control.Monad
 import Control.Monad.IO.Class
 import Operation
@@ -207,7 +206,7 @@ identifierParser = spaces >> symbolExtract
 intParser :: ParsecT String u IO String
 intParser = spaces >> many1 digit
 
-fileParser :: ParsecT String (S.Set String, Int) IO [FunctionDefine]
+fileParser :: ParsecT String (M.Map String String, Int) IO [FunctionDefine]
 fileParser = manyTill functionDefineParser $ try $ spaces >> eof
 
 binaryOpParser :: ParsecT String u IO BinaryOp
@@ -388,20 +387,23 @@ argListParser = do
     "void" -> pure []
     _ -> try (sepBy argPairParser $ try commaParser) <|> pure []
 
-declarationParser :: ParsecT String (S.Set String, Int) IO Declaration
+declarationParser :: ParsecT String (M.Map String String, Int) IO Declaration
 declarationParser = do
   varType <- keyIntParser
   vName <- identifierParser
-  (varSet, p) <- getState
-  if S.member vName varSet
+  (varMap, p) <- getState
+  if M.member vName varMap
     then
       unexpected $ "Var redeclare: " ++ vName
     else
       do
-        putState (S.insert vName varSet, p)
+        let newVarId = (+ (1 :: Int)) $ read $ varMap M.! "#varid"
+            newVarName = vName ++ "#" ++ show newVarId
+            newVarMap = M.adjust (const (show newVarId)) "#varid" varMap
+        putState (M.insert vName newVarName newVarMap, p)
         initialiser <- optionMaybe $ try $ equalLex >> exprParser
         void semiColParser
-        pure $ VariableDecl varType vName initialiser
+        pure $ VariableDecl varType newVarName initialiser
 
 expressionParser :: ParsecT String (ds, Int) IO Statement
 expressionParser = Expression <$> exprParser
@@ -412,14 +414,14 @@ nullStatParser = semiColParser >> pure Null
 statementParser :: ParsecT String (ds, Int) IO Statement
 statementParser = try nullStatParser <|> try returnStatParser <|> try expressionParser
 
-blockItemParser :: ParsecT String (S.Set String, Int) IO BlockItem
+blockItemParser :: ParsecT String (M.Map String String, Int) IO BlockItem
 blockItemParser = do
   maybeType <- lookAhead (try keyIntParser) <|> pure ""
   if maybeType == "int"
     then D <$> declarationParser
     else S <$> statementParser
 
-redeclareVarParser :: ParsecT String (S.Set String, Int) IO [BlockItem]
+redeclareVarParser :: ParsecT String (M.Map String String, Int) IO [BlockItem]
 redeclareVarParser = do
   tryInt <- lookAhead $ try keyIntParser <|> pure ""
   if tryInt == "int"
@@ -432,7 +434,7 @@ redeclareVarParser = do
     else
       pure []
 
-functionDefineParser :: ParsecT String (S.Set String, Int) IO FunctionDefine
+functionDefineParser :: ParsecT String (M.Map String String, Int) IO FunctionDefine
 functionDefineParser = do
   -- retType <- keyIntParser <|> keyVoidParser <|> identifierParser
   retType <- (keyIntParser <|> keyVoidParser) <* notFollowedBy (alphaNum <|> try ucLex)

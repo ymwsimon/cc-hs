@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/06/11 12:08:34 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/11 12:53:01 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -17,7 +17,7 @@ import Text.Parsec as P
 import Data.List
 import Control.Monad
 import System.IO
-import qualified Data.Set as S
+import qualified Data.Map as M
 import Parser
 import IR
 import Assembly
@@ -41,8 +41,8 @@ argsParser = Args
   <*> O.switch (O.long "parse")
   <*> O.switch (O.long "codegen")
 
-defaultParsecState :: (S.Set String, Int)
-defaultParsecState = (S.empty, lowestPrecedence)
+defaultParsecState :: (M.Map String String, Int)
+defaultParsecState = (M.singleton "#varid" "0", lowestPrecedence)
 
 outFileName :: String -> String
 outFileName fileName
