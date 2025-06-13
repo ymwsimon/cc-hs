@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/06/13 11:43:16 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/13 18:39:27 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -32,7 +32,8 @@ data FunctionDefine =
     returnType :: String,
     funName :: String,
     inputArgs :: [InputArgPair],
-    body :: [BlockItem]
+    body :: [BlockItem],
+    nextVarId :: Int
   }
   deriving (Show, Eq)
 
@@ -225,11 +226,7 @@ intParser :: ParsecT String u IO String
 intParser = spaces >> many1 digit
 
 fileParser :: ParsecT String (M.Map String String, Int) IO [FunctionDefine]
-fileParser = do
-  manyTill functionDefineParser $ try $ spaces >> eof
-  -- funcs <- many functionDefineParser
-  -- spaces >> eof
-  -- pure funcs
+fileParser = manyTill functionDefineParser $ try $ spaces >> eof
 
 binaryOpParser :: ParsecT String u IO BinaryOp
 binaryOpParser = foldl1 (<|>) $
@@ -423,9 +420,10 @@ declarationParser = do
   if M.member vName varMap
     then unexpected ("Variable redeclare: " ++ vName)
     else do
-      let newVarId = (+ (1 :: Int)) $ read $ varMap M.! "#varid"
-          newVarName = vName ++ "#" ++ show newVarId
-          newVarMap = M.adjust (const (show newVarId)) "#varid" varMap
+      let varId = read $ varMap M.! varIdMapKey
+          newVarId = (+ (1 :: Int)) varId
+          newVarName = vName ++ "#" ++ show varId
+          newVarMap = M.adjust (const (show newVarId)) varIdMapKey varMap
       putState (M.insert vName newVarName newVarMap, p)
       maybeEqual <- optionMaybe equalLex
       initialiser <-
@@ -458,7 +456,11 @@ functionDefineParser = do
   retType <- (keyIntParser <|> keyVoidParser) <* notFollowedBy (alphaNum <|> try ucLex)
   fName <- identifierParser
   argList <- between openPParser closePParser $ try argListParser
+  (ogVarMap, p) <- getState
+  putState (M.adjust (const "1") varIdMapKey ogVarMap, p)
   void openCurParser
   blockitems <- many blockItemParser
   void closeCurParser
-  pure $ FunctionDefine retType fName argList blockitems
+  varMap <- fst <$> getState
+  putState (ogVarMap, p)
+  pure $ FunctionDefine retType fName argList blockitems $ read $ varMap M.! varIdMapKey

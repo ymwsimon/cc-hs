@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/06/11 15:46:44 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/13 17:29:18 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -21,6 +21,7 @@ import qualified Data.Map as M
 import Parser
 import IR
 import Assembly
+import Operation
 import System.Exit
 import System.Process
 import Control.Monad.State
@@ -42,7 +43,7 @@ argsParser = Args
   <*> O.switch (O.long "codegen")
 
 defaultParsecState :: (M.Map String String, Int)
-defaultParsecState = (M.singleton "#varid" "0", lowestPrecedence)
+defaultParsecState = (M.singleton varIdMapKey "1", lowestPrecedence)
 
 outFileName :: String -> String
 outFileName fileName
@@ -90,7 +91,7 @@ readNParse path =
                 do
                   print parseOk
                   putStrLn ""
-                  -- print $ flip evalState (1, 1) $ cASTToIrAST parseOk
+                  print $ flip evalState (1, 1) $ cASTToIrAST parseOk
                   -- putStrLn ""
                   -- print $ irASTToAsmAST $ flip evalState (1, 1) $ cASTToIrAST parseOk
                   -- putStrLn ""
