@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/06/13 18:40:43 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/13 20:25:46 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -61,7 +61,7 @@ cStatmentToIRInstructions :: BlockItem -> State (Int, Int) [IRInstruction]
 cStatmentToIRInstructions (S (Return expr)) = exprToReturnIRs expr
 cStatmentToIRInstructions (S Null) = pure []
 cStatmentToIRInstructions (S (Expression expr)) = exprToExpressionIRs expr
-cStatmentToIRInstructions (D (VariableDecl _ var (Just expr))) = cStatmentToIRInstructions (S (Expression (Assignment (Variable var) expr)))
+cStatmentToIRInstructions (D (VariableDecl _ var (Just expr))) = cStatmentToIRInstructions (S (Expression (Assignment None (Variable var) expr)))
 cStatmentToIRInstructions (D _) = pure []
 
 initIRVarId :: a1 -> (a2, b) -> (a1, b)
@@ -151,9 +151,11 @@ binaryOperationToIRs op lExpr rExpr = do
 dropVarName :: String -> String
 dropVarName v = drop 1 $ dropWhile (/= '#') v
 
-assignmentToIRs :: Expr -> Expr -> State (Int, Int) ([IRInstruction], IRVal)
-assignmentToIRs var rExpr = do
-  (rIRs, rVal) <- exprToIRs rExpr
+assignmentToIRs :: BinaryOp -> Expr -> Expr -> State (Int, Int) ([IRInstruction], IRVal)
+assignmentToIRs op var rExpr = do
+  (rIRs, rVal) <- case op of
+    None -> exprToIRs rExpr
+    _ -> binaryOperationToIRs op var rExpr
   (varIRs, irVar) <- exprToIRs var
   pure (rIRs ++ varIRs ++ [IRCopy rVal irVar], irVar)
 
@@ -164,5 +166,5 @@ exprToIRs expr =
     Unary op uExpr -> unaryOperationToIRs op uExpr
     Binary op lExpr rExpr -> binaryOperationToIRs op lExpr rExpr
     Variable var -> pure ([], IRVar (dropVarName var))
-    Assignment (Variable var) rExpr -> assignmentToIRs (Variable var) rExpr
+    Assignment op (Variable var) rExpr -> assignmentToIRs op (Variable var) rExpr
     _ -> undefined

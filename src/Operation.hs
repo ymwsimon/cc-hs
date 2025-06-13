@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:50:42 by mayeung           #+#    #+#             --
---   Updated: 2025/06/13 16:37:29 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/13 19:47:41 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -37,6 +37,7 @@ data BinaryOp =
   | LessEqualRelation
   | GreaterThanRelation
   | GreaterEqualRelation
+  | None
   deriving (Show, Eq)
 
 varIdMapKey :: String

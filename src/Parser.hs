@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/06/13 18:39:27 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/13 21:19:37 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -66,7 +66,7 @@ data Expr =
   | FunctionCall
   | Unary UnaryOp Expr
   | Binary BinaryOp Expr Expr
-  | Assignment Expr Expr
+  | Assignment BinaryOp Expr Expr
   deriving (Show, Eq)
 
 lowestPrecedence :: Int
@@ -78,7 +78,15 @@ allBinaryOp =
  "%", "&&", "||", "&",
  "|", ">>", "<<", "^",
  "==", "!=", "<", ">",
- "<=", ">=", "!", "="]
+ "<=", ">=", "!", "=",
+ "+=", "-=", "*=", "/=",
+ "%=", "&=", "|=", "^=",
+ "<<=", ">>="]
+
+binaryAssignmentOp :: [String]
+binaryAssignmentOp =
+  ["=", "+=", "-=", "*=", "/=",
+  "%=", "&=", "|=", "^=", "<<=", ">>="]
 
 keywordList :: [String]
 keywordList = 
@@ -90,7 +98,10 @@ binaryOpPrecedence = M.fromList $ zip allBinaryOp
   3, 11, 12, 8,
   10, 5, 5, 9,
   7, 7, 6, 6,
-  6, 6, 2, 14]
+  6, 6, 2, 14,
+  14, 14, 14, 14,
+  14, 14, 14, 14,
+  14, 14]
 
 createSkipSpacesCharParser :: Char -> ParsecT String u IO Char
 createSkipSpacesCharParser = (spaces >>) . char
@@ -161,6 +172,42 @@ lessEqualThanRelationLex = createSkipSpacesStringParser "<="
 greatEqualThanRelationLex :: ParsecT String u IO String
 greatEqualThanRelationLex = createSkipSpacesStringParser ">="
 
+assignmentLex :: ParsecT String u IO String
+assignmentLex = createSkipSpacesStringParser "="
+
+plusAssignLex :: ParsecT String u IO String
+plusAssignLex = createSkipSpacesStringParser "+="
+
+minusAssignLex :: ParsecT String u IO String
+minusAssignLex = createSkipSpacesStringParser "-="
+
+multiAssignLex :: ParsecT String u IO String
+multiAssignLex = createSkipSpacesStringParser "*="
+
+divAssignLex :: ParsecT String u IO String
+divAssignLex = createSkipSpacesStringParser "/="
+
+modAssignLex :: ParsecT String u IO String
+modAssignLex = createSkipSpacesStringParser "%="
+
+bitAndAssignLex :: ParsecT String u IO String
+bitAndAssignLex = createSkipSpacesStringParser "&="
+
+bitOrAssignLex :: ParsecT String u IO String
+bitOrAssignLex = createSkipSpacesStringParser "|="
+
+bitXorAssignLex :: ParsecT String u IO String
+bitXorAssignLex = createSkipSpacesStringParser "^="
+
+bitLeftShiftAssignLex :: ParsecT String u IO String
+bitLeftShiftAssignLex = createSkipSpacesStringParser "<<="
+
+bitRightShiftAssignLex :: ParsecT String u IO String
+bitRightShiftAssignLex = createSkipSpacesStringParser ">>="
+
+incrementLex :: ParsecT String u IO String
+incrementLex = createSkipSpacesStringParser "++"
+
 decrementLex :: ParsecT String u IO String
 decrementLex = createSkipSpacesStringParser "--"
 
@@ -228,6 +275,38 @@ intParser = spaces >> many1 digit
 fileParser :: ParsecT String (M.Map String String, Int) IO [FunctionDefine]
 fileParser = manyTill functionDefineParser $ try $ spaces >> eof
 
+binaryAssignmentOpParser :: ParsecT String u IO BinaryOp
+binaryAssignmentOpParser = foldl1 (<|>) $
+  map try $
+    zipWith (>>)
+      [
+        plusAssignLex,
+        minusAssignLex,
+        multiAssignLex,
+        divAssignLex,
+        modAssignLex,
+        bitAndAssignLex,
+        bitOrAssignLex,
+        bitXorAssignLex,
+        bitLeftShiftAssignLex,
+        bitRightShiftAssignLex,
+        assignmentLex
+      ] $
+      map pure
+        [
+          Plus,
+          Minus,
+          Multiply,
+          Division,
+          Modulo,
+          BitAnd,
+          BitOr,
+          BitXor,
+          BitShiftLeft,
+          BitShiftRight,
+          None
+        ]
+
 binaryOpParser :: ParsecT String u IO BinaryOp
 binaryOpParser = foldl1 (<|>) $
   map try $
@@ -277,7 +356,17 @@ binaryOpParser = foldl1 (<|>) $
 binaryOpStringParser :: ParsecT String u IO String
 binaryOpStringParser = foldl1 (<|>) $
   map try
-    [bitAndLex <* notFollowedBy (char '&'),
+    [plusAssignLex,
+    minusAssignLex,
+    multiAssignLex,
+    divAssignLex,
+    modAssignLex,
+    bitAndAssignLex,
+    bitOrAssignLex,
+    bitXorAssignLex,
+    bitLeftShiftAssignLex,
+    bitRightShiftAssignLex,
+    bitAndLex <* notFollowedBy (char '&'),
     bitOrLex <* notFollowedBy (char '|'),
     bitXorLex,
     bitShiftLeftLex,
@@ -327,12 +416,12 @@ exprRightParser lExpr = do
   binOp <- lookAhead (try binaryOpStringParser) <|> pure ""
   p <- snd <$> getState
   if isBinaryOpChar binOp && isEqOrHigherPrecedence binOp p
-    then if binOp == "="
+    then if binOp `elem` binaryAssignmentOp
           then case lExpr of
                 Variable _ -> do
-                    void equalLex
+                    op <- binaryAssignmentOpParser
                     rExpr <- exprParser
-                    exprRightParser $ Assignment lExpr rExpr
+                    exprRightParser $ Assignment op lExpr rExpr
                 _ -> parserFail "Only lvalue allowed on the left side"
           else do
             op <- binaryOpParser
