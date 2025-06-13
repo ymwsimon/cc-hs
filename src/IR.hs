@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/06/13 13:04:06 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/13 15:10:37 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -60,9 +60,9 @@ data IRVal =
 cStatmentToIRInstructions :: BlockItem -> State (Int, Int) [IRInstruction]
 cStatmentToIRInstructions (S (Return expr)) = exprToReturnIRs expr
 cStatmentToIRInstructions (S Null) = pure []
-cStatmentToIRInstructions (S (Expression _)) = pure []
+cStatmentToIRInstructions (S (Expression expr)) = exprToExpressionIRs expr
+cStatmentToIRInstructions (D (VariableDecl _ var (Just expr))) = cStatmentToIRInstructions (S (Expression (Assignment (Variable var) expr)))
 cStatmentToIRInstructions (D _) = pure []
-cStatmentToIRInstructions _ = undefined
 
 resetIRValId :: Num c => (a, b) -> (c, b)
 resetIRValId (_, b) = (1, b) 
@@ -85,6 +85,11 @@ exprToReturnIRs :: Expr -> State (Int, Int) [IRInstruction]
 exprToReturnIRs expr = do
   (irs, irVal) <- exprToIRs expr
   pure $ irs ++ [IRReturn irVal]
+
+exprToExpressionIRs :: Expr -> State (Int, Int) [IRInstruction]
+exprToExpressionIRs expr = do
+  (irs, _) <- exprToIRs expr
+  pure irs
 
 unaryOperationToIRs :: UnaryOp -> Expr -> State (Int, Int) ([IRInstruction], IRVal)
 unaryOperationToIRs op uExpr =  do
