@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/06/09 21:06:04 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/13 13:04:06 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -144,10 +144,18 @@ binaryOperationToIRs op lExpr rExpr = do
     [irsFromLExpr, lExprCondJumpIRs, irsFromRExpr, rExprCondJumpIRs, resultIRVal],
     IRVar $ show varId)
 
+assignmentToIRs :: Expr -> Expr -> State (Int, Int) ([IRInstruction], IRVal)
+assignmentToIRs var rExpr = do
+  (rIRs, rVal) <- exprToIRs rExpr
+  (varIRs, irVar) <- exprToIRs var
+  pure (rIRs ++ varIRs ++ [IRCopy rVal irVar], irVar)
+
 exprToIRs :: Expr -> State (Int, Int) ([IRInstruction], IRVal)
 exprToIRs expr =
   case expr of
     Constant s -> pure ([], IRConstant s)
     Unary op uExpr -> unaryOperationToIRs op uExpr
     Binary op lExpr rExpr -> binaryOperationToIRs op lExpr rExpr
+    Variable var -> pure ([], IRVar var)
+    Assignment var rExpr -> assignmentToIRs var rExpr
     _ -> undefined
