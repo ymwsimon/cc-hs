@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/06/13 20:25:46 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/15 16:57:45 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -61,7 +61,8 @@ cStatmentToIRInstructions :: BlockItem -> State (Int, Int) [IRInstruction]
 cStatmentToIRInstructions (S (Return expr)) = exprToReturnIRs expr
 cStatmentToIRInstructions (S Null) = pure []
 cStatmentToIRInstructions (S (Expression expr)) = exprToExpressionIRs expr
-cStatmentToIRInstructions (D (VariableDecl _ var (Just expr))) = cStatmentToIRInstructions (S (Expression (Assignment None (Variable var) expr)))
+cStatmentToIRInstructions (D (VariableDecl _ var (Just expr))) =
+  cStatmentToIRInstructions (S (Expression (Assignment None (Variable var) expr)))
 cStatmentToIRInstructions (D _) = pure []
 
 initIRVarId :: a1 -> (a2, b) -> (a1, b)
@@ -90,12 +91,28 @@ exprToReturnIRs expr = do
 exprToExpressionIRs :: Expr -> State (Int, Int) [IRInstruction]
 exprToExpressionIRs expr = fst <$> exprToIRs expr
 
+postPrefixToBin :: UnaryOp -> BinaryOp
+postPrefixToBin op
+  | op `elem` [PostDecrement, PreDecrement] = Minus
+  | otherwise = Plus
+
 unaryOperationToIRs :: UnaryOp -> Expr -> State (Int, Int) ([IRInstruction], IRVal)
-unaryOperationToIRs op uExpr =  do
-  (oldIRs, irVal) <- exprToIRs uExpr
-  varId <- gets fst
-  modify bumpOneToVarId
-  pure (oldIRs ++ [IRUnary op irVal $ IRVar $ show varId], IRVar $ show varId)
+unaryOperationToIRs op uExpr
+  | op `elem` [PostDecrement, PostIncrement] = do
+    varId <- gets $ IRVar . show . fst
+    modify bumpOneToVarId
+    (oldIRs, irVal) <- exprToIRs $ Binary (postPrefixToBin op) uExpr (Constant "1")
+    (varIRs, irVar) <- exprToIRs uExpr
+    pure (concat [[IRCopy irVar varId], oldIRs, varIRs, [IRCopy irVal irVar]], varId)
+  | op `elem` [PreDecrement, PreIncrement] = do
+    (oldIRs, irVal) <- exprToIRs $ Binary (postPrefixToBin op) uExpr (Constant "1")
+    (varIRs, irVar) <- exprToIRs uExpr
+    pure (oldIRs ++ varIRs ++ [IRCopy irVal irVar], irVal)
+  | otherwise = do
+      (oldIRs, irVal) <- exprToIRs uExpr
+      varId <- gets fst
+      modify bumpOneToVarId
+      pure (oldIRs ++ [IRUnary op irVal $ IRVar $ show varId], IRVar $ show varId)
 
 genJumpIRsIfNeeded :: BinaryOp -> [Int] -> IRVal -> State (Int, Int) [IRInstruction]
 genJumpIRsIfNeeded op labelId irVal =

@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/06/13 17:29:18 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/16 14:39:56 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -51,6 +51,12 @@ outFileName fileName
       take (length fileName - 2) fileName ++ ".s"
   | otherwise = ""
 
+outExeFileName :: String -> String
+outExeFileName fileName
+  | ".c" `isSuffixOf` fileName && length fileName > 2 =
+      take (length fileName - 2) fileName
+  | otherwise = ""
+
 convertCASTToAsmStr :: CProgramAST -> String
 convertCASTToAsmStr =       
   concat
@@ -79,19 +85,19 @@ readNParse path =
           pure $ parse (parserFail "") "" ""
         else do
           content <- hGetContents' hout
-          putStrLn $ "filename:\n\t" ++ path
-          putStrLn $ "content:\n" ++ content
+          -- putStrLn $ "filename:\n\t" ++ path
+          -- putStrLn $ "content:\n" ++ content
           res <- runParserT fileParser defaultParsecState "" content
           either
             (\parseError -> do
-              print parseError
+              -- print parseError
               pure $ Left parseError)
             (\parseOk ->
               let converted = convertCASTToAsmStr parseOk in
                 do
-                  print parseOk
-                  putStrLn ""
-                  print $ flip evalState (1, 1) $ cASTToIrAST parseOk
+                  -- print parseOk
+                  -- putStrLn ""
+                  -- print $ flip evalState (1, 1) $ cASTToIrAST parseOk
                   -- putStrLn ""
                   -- print $ irASTToAsmAST $ flip evalState (1, 1) $ cASTToIrAST parseOk
                   -- putStrLn ""
@@ -100,12 +106,12 @@ readNParse path =
                   -- print $ irASTToAsmAST $ flip evalState (1, 1) . cASTToIrAST parseOk
                   -- putStrLn converted
                   writeFile (outFileName path) converted
-                  (_, _, _, assemblerPid) <- createProcess $ proc "cc" [outFileName path]
+                  (_, _, _, assemblerPid) <- createProcess $ proc "cc" [outFileName path, "-o", outExeFileName path]
                   assemblerEC <- waitForProcess assemblerPid
                   if assemblerEC == ExitSuccess
                     then
                       do
-                        putStrLn converted
+                        -- putStrLn converted
                         pure $ Right parseOk
                     else
                       pure $ parse (parserFail "") "" "")

@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/06/14 20:20:47 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/16 14:55:01 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -84,9 +84,13 @@ allBinaryOp =
  "%=", "&=", "|=", "^=",
  "<<=", ">>="]
 
-unaryOp :: [String]
-unaryOp =
-  ["!", "~", "-", "+"]
+allUnaryOp :: [String]
+allUnaryOp =
+  ["!", "~", "--", "++", "-", "+"]
+
+allPostUnaryOp :: [String]
+allPostUnaryOp =
+  ["++", "--"]
 
 binaryAssignmentOp :: [String]
 binaryAssignmentOp =
@@ -107,6 +111,12 @@ binaryOpPrecedence = M.fromList $ zip allBinaryOp
   14, 14, 14, 14,
   14, 14, 14, 14,
   14, 14]
+
+unaryOpPrecedence :: M.Map String Int
+unaryOpPrecedence = M.fromList $ map (, 2) allUnaryOp
+
+postUnaryOpPrecedence :: M.Map String Int
+postUnaryOpPrecedence = M.fromList $ map (, 1) allPostUnaryOp
 
 createSkipSpacesCharParser :: Char -> ParsecT String u IO Char
 createSkipSpacesCharParser = (spaces >>) . char
@@ -357,6 +367,42 @@ binaryOpParser = foldl1 (<|>) $
           GreaterThanRelation
         ]
 
+unaryOpParser :: ParsecT String u IO UnaryOp
+unaryOpParser = foldl1 (<|>) $
+  map try $
+    zipWith (>>)
+      [
+        incrementLex,
+        decrementLex,
+        plusLex,
+        minusLex,
+        exclaimLex,
+        complementLex
+      ] $
+      map pure
+        [
+          PreIncrement,
+          PreDecrement,
+          UPlus,
+          Negate,
+          NotRelation,
+          Complement
+        ]
+
+postUnaryOpParser :: ParsecT String u IO UnaryOp
+postUnaryOpParser = foldl1 (<|>) $
+  map try $
+    zipWith (>>)
+      [
+        incrementLex,
+        decrementLex
+      ] $
+      map pure
+        [
+          PostIncrement,
+          PostDecrement
+        ]
+
 binaryOpStringParser :: ParsecT String u IO String
 binaryOpStringParser = foldl1 (<|>) $
   map try
@@ -391,11 +437,35 @@ binaryOpStringParser = foldl1 (<|>) $
     greatEqualThanRelationLex
     ]
 
+unaryOpStringParser :: ParsecT String u IO String
+unaryOpStringParser = foldl1 (<|>) $
+  map try
+    [incrementLex,
+    decrementLex,
+    plusLex,
+    minusLex,
+    exclaimLex,
+    complementLex
+    ]
+
 binaryExprParser :: ParsecT String (M.Map String String, Int) IO Expr
 binaryExprParser = flip Binary
   <$> factorParser
   <*> binaryOpParser
   <*> factorParser
+
+unaryExprParser :: ParsecT String (M.Map String String, Int) IO Expr
+unaryExprParser = do
+  uOpStr <- lookAhead unaryOpStringParser
+  uOp <- unaryOpParser
+  p <- snd <$> getState
+  modifyState $ updatePrecedence $ getUnaryOpPrecedence uOpStr
+  expr <- exprParser
+  if uOp `elem` [PreDecrement, PreIncrement]
+    then case expr of
+      Variable _ -> Unary uOp expr <$ modifyState (revokePrecedence p)
+      _ -> unexpected "Need lvalue for prefix operation"
+    else Unary uOp expr <$ modifyState (revokePrecedence p)
 
 exprParser :: ParsecT String (M.Map String String, Int) IO Expr
 exprParser = factorParser >>= exprRightParser
@@ -403,8 +473,11 @@ exprParser = factorParser >>= exprRightParser
 isBinaryOpChar :: String -> Bool
 isBinaryOpChar = flip elem allBinaryOp
 
-getPrecedence :: String -> Int
-getPrecedence = (binaryOpPrecedence M.!)
+getBinOpPrecedence :: String -> Int
+getBinOpPrecedence = (binaryOpPrecedence M.!)
+
+getUnaryOpPrecedence :: String -> Int
+getUnaryOpPrecedence = (unaryOpPrecedence M.!)
 
 updatePrecedence :: Num b => b -> (a, c) -> (a, b)
 updatePrecedence p = (, p - 1) . fst
@@ -429,40 +502,23 @@ exprRightParser lExpr = do
                 _ -> unexpected "Invalid lvalue on the left side"
           else do
             op <- binaryOpParser
-            modifyState $ updatePrecedence $ getPrecedence binOp
+            modifyState $ updatePrecedence $ getBinOpPrecedence binOp
             rExpr <- exprParser
             modifyState $ revokePrecedence p
             exprRightParser $ Binary op lExpr rExpr
     else pure lExpr
 
-unaryOpParser :: ParsecT String (M.Map String String, Int) IO Expr
-unaryOpParser = try negateOpParser
-  <|> try complementOpParser
-  <|> try notRelationOpParser
-
-negateOpParser :: ParsecT String (M.Map String String, Int) IO Expr
-negateOpParser = do
-  p <- snd <$> getState
-  void $ minusLex <* notFollowedBy (char '-')
-  modifyState $ updatePrecedence 2
-  (Unary Negate <$> exprParser) <* modifyState (revokePrecedence p)
-
-complementOpParser :: ParsecT String (M.Map String String, Int) IO Expr
-complementOpParser = do
-  p <- snd <$> getState
-  void complementLex
-  modifyState $ updatePrecedence 2
-  (Unary Complement <$> exprParser) <* modifyState (revokePrecedence p)
-
-notRelationOpParser :: ParsecT String (M.Map String String, Int) IO Expr
-notRelationOpParser = do
-  p <- snd <$> getState
-  void exclaimLex
-  modifyState $ updatePrecedence 2
-  (Unary NotRelation <$> exprParser) <* modifyState (revokePrecedence p)
-
 intOperandParser :: ParsecT String u IO Expr
 intOperandParser = Constant <$> intParser
+
+postfixOp :: Expr -> ParsecT String u IO Expr
+postfixOp expr = case expr of
+    Variable _ -> do
+      maybePostOp <- lookAhead (try $ incrementLex <|> decrementLex) <|> pure ""
+      if maybePostOp `elem` allPostUnaryOp
+                    then ($ expr) . Unary <$> postUnaryOpParser
+                    else pure expr
+    _ -> pure expr
 
 parenExprParser :: ParsecT String (M.Map String String, Int) IO Expr
 parenExprParser = do
@@ -472,7 +528,7 @@ parenExprParser = do
   expr <- exprParser
   void closePParser
   modifyState $ revokePrecedence p
-  pure expr
+  postfixOp expr
 
 variableParser :: ParsecT String (M.Map String String, Int) IO Expr
 variableParser = do
@@ -480,7 +536,7 @@ variableParser = do
   (varMap, _) <- getState
   if not $ M.member vName varMap
     then unexpected $ "Undefined variable: " ++ vName
-    else pure $ Variable $ varMap M.! vName
+    else postfixOp $ Variable (varMap M.! vName)
 
 factorParser :: ParsecT String (M.Map String String, Int) IO Expr
 factorParser = do
@@ -489,7 +545,7 @@ factorParser = do
   next c
     where next c
             | isDigit c = intOperandParser
-            | [c] `elem` unaryOp = unaryOpParser
+            | [c] `elem` allUnaryOp = unaryExprParser
             | c == '(' = parenExprParser
             | otherwise = variableParser
 
