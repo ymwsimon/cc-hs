@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/06/17 11:03:43 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/17 12:53:20 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -312,26 +312,26 @@ binaryAssignmentOpParser = foldl1 (<|>) $
         bitLeftShiftAssignLex, bitRightShiftAssignLex, assignmentLex] $
       map pure
         [Plus, Minus, Multiply, Division,
-          Modulo,BitAnd, BitOr, BitXor,
+          Modulo, BitAnd, BitOr, BitXor,
           BitShiftLeft, BitShiftRight, None]
 
 binaryOpParser :: ParsecT String u IO BinaryOp
 binaryOpParser = foldl1 (<|>) $
   map try $
     zipWith (>>)
-      [logicAndLex, logicOrLex, equalRelationLex, notEqualRelationLex,
+      [bitAndLex <* notFollowedBy (char '&'), bitOrLex <* notFollowedBy (char '|'),
+        bitXorLex, bitShiftLeftLex, bitShiftRightLex, plusLex <* notFollowedBy (char '+'),
+        minusLex <* notFollowedBy (char '-'), mulLex, divLex, percentLex,
+        logicAndLex, logicOrLex, equalRelationLex, notEqualRelationLex,
         lessEqualThanRelationLex, lessThanRelationLex,
-        greatEqualThanRelationLex, greatThanRelationLex,
-        bitAndLex, bitOrLex, bitXorLex, bitShiftLeftLex,
-        bitShiftRightLex, plusLex, minusLex, mulLex,
-        divLex, percentLex] $
+        greatEqualThanRelationLex, greatThanRelationLex] $
       map pure
-        [LogicAnd, LogicOr, EqualRelation, NotEqualRelation,
+        [BitAnd, BitOr,
+          BitXor, BitShiftLeft, BitShiftRight, Plus,
+          Minus, Multiply, Division, Modulo,
+          LogicAnd, LogicOr, EqualRelation, NotEqualRelation,
           LessEqualRelation, LessThanRelation,
-          GreaterEqualRelation, GreaterThanRelation,
-          BitAnd, BitOr, BitXor, BitShiftLeft,
-          BitShiftRight, Plus, Minus, Multiply,
-          Division, Modulo]
+          GreaterEqualRelation, GreaterThanRelation]
 
 unaryOpParser :: ParsecT String u IO UnaryOp
 unaryOpParser = foldl1 (<|>) $
@@ -355,12 +355,13 @@ binaryOpStringParser = foldl1 (<|>) $
     [plusAssignLex, minusAssignLex, multiAssignLex, divAssignLex,
       modAssignLex, bitAndAssignLex, bitOrAssignLex, bitXorAssignLex,
       bitLeftShiftAssignLex, bitRightShiftAssignLex,
-      logicAndLex, logicOrLex, equalRelationLex, notEqualRelationLex,
+      bitAndLex <* notFollowedBy (char '&'), bitOrLex <* notFollowedBy (char '|'),
+      bitXorLex, bitShiftLeftLex, bitShiftRightLex, plusLex <* notFollowedBy (char '+'),
+      minusLex <* notFollowedBy (char '-'), mulLex, divLex, percentLex,
+      logicAndLex, logicOrLex, equalLex <* notFollowedBy (char '='),
+      equalRelationLex, notEqualRelationLex,
       lessThanRelationLex, lessEqualThanRelationLex,
-      greatThanRelationLex, greatEqualThanRelationLex,
-      equalLex, bitAndLex, bitOrLex, bitXorLex,
-      bitShiftLeftLex, bitShiftRightLex, plusLex, minusLex,
-      mulLex, divLex, percentLex]
+      greatThanRelationLex, greatEqualThanRelationLex]
 
 unaryOpStringParser :: ParsecT String u IO String
 unaryOpStringParser = foldl1 (<|>) $
