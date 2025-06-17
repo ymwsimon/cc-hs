@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/06/17 12:53:20 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/17 14:32:22 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -84,7 +84,7 @@ allBinaryOp =
  "<=", ">=", "!", "=",
  "+=", "-=", "*=", "/=",
  "%=", "&=", "|=", "^=",
- "<<=", ">>="]
+ "<<=", ">>=", "?"]
 
 allUnaryOp :: [String]
 allUnaryOp =
@@ -101,7 +101,7 @@ binaryAssignmentOp =
 
 keywordList :: [String]
 keywordList = 
-  ["int", "void", "return"]
+  ["int", "void", "return", "if", "else", "goto", "label"]
 
 binaryOpPrecedence :: M.Map String Int
 binaryOpPrecedence = M.fromList $ zip allBinaryOp
@@ -112,7 +112,7 @@ binaryOpPrecedence = M.fromList $ zip allBinaryOp
   6, 6, 2, 14,
   14, 14, 14, 14,
   14, 14, 14, 14,
-  14, 14]
+  14, 14, 13]
 
 unaryOpPrecedence :: M.Map String Int
 unaryOpPrecedence = M.fromList $ map (, 2) allUnaryOp
@@ -361,7 +361,8 @@ binaryOpStringParser = foldl1 (<|>) $
       logicAndLex, logicOrLex, equalLex <* notFollowedBy (char '='),
       equalRelationLex, notEqualRelationLex,
       lessThanRelationLex, lessEqualThanRelationLex,
-      greatThanRelationLex, greatEqualThanRelationLex]
+      greatThanRelationLex, greatEqualThanRelationLex,
+      questionParser]
 
 unaryOpStringParser :: ParsecT String u IO String
 unaryOpStringParser = foldl1 (<|>) $
@@ -384,9 +385,9 @@ unaryExprParser = do
   expr <- exprParser
   if uOp `elem` [PreDecrement, PreIncrement]
     then case expr of
-      Variable _ -> Unary uOp expr <$ modifyState (revokePrecedence p)
+      Variable _ -> Unary uOp expr <$ modifyState (setPrecedence p)
       _ -> unexpected "Need lvalue for prefix operation"
-    else Unary uOp expr <$ modifyState (revokePrecedence p)
+    else Unary uOp expr <$ modifyState (setPrecedence p)
 
 exprParser :: ParsecT String (M.Map String String, Int) IO Expr
 exprParser = factorParser >>= exprRightParser
@@ -403,11 +404,21 @@ getUnaryOpPrecedence = (unaryOpPrecedence M.!)
 updatePrecedence :: Num b => b -> (a, c) -> (a, b)
 updatePrecedence p = (, p - 1) . fst
 
-revokePrecedence :: b -> (a, c) -> (a, b)
-revokePrecedence p = (, p) . fst
+setPrecedence :: b -> (a, c) -> (a, b)
+setPrecedence p = (, p) . fst
 
 isEqOrHigherPrecedence :: String -> Int -> Bool
 isEqOrHigherPrecedence binOp p = (binaryOpPrecedence M.! binOp) <= p
+
+condtionalTrueParser :: ParsecT String (M.Map String String, Int) IO Expr
+condtionalTrueParser = do
+  void questionParser
+  oldState <- snd <$> getState
+  modifyState $ updatePrecedence lowestPrecedence
+  expr <- exprParser
+  modifyState $ setPrecedence oldState
+  void colonParser
+  pure expr
 
 exprRightParser :: Expr -> ParsecT String (M.Map String String, Int) IO Expr
 exprRightParser lExpr = do
@@ -418,15 +429,22 @@ exprRightParser lExpr = do
           then case lExpr of
                 Variable _ -> do
                     op <- binaryAssignmentOpParser
+                    modifyState $ setPrecedence $ getBinOpPrecedence binOp
                     rExpr <- exprParser
                     exprRightParser $ Assignment op lExpr rExpr
                 _ -> unexpected "Invalid lvalue on the left side"
-          else do
-            op <- binaryOpParser
-            modifyState $ updatePrecedence $ getBinOpPrecedence binOp
-            rExpr <- exprParser
-            modifyState $ revokePrecedence p
-            exprRightParser $ Binary op lExpr rExpr
+          else if binOp == "?"
+            then do
+              tCond <- condtionalTrueParser
+              modifyState $ setPrecedence $ getBinOpPrecedence binOp
+              fCond <- exprParser
+              exprRightParser $ Conditional lExpr tCond fCond
+            else do
+              op <- binaryOpParser
+              modifyState $ updatePrecedence $ getBinOpPrecedence binOp
+              rExpr <- exprParser
+              modifyState $ setPrecedence p
+              exprRightParser $ Binary op lExpr rExpr
     else pure lExpr
 
 intOperandParser :: ParsecT String u IO Expr
@@ -448,13 +466,13 @@ parenExprParser = do
   modifyState $ updatePrecedence lowestPrecedence
   expr <- exprParser
   void closePParser
-  modifyState $ revokePrecedence p
+  modifyState $ setPrecedence p
   postfixOp expr
 
 variableParser :: ParsecT String (M.Map String String, Int) IO Expr
 variableParser = do
   vName <- identifierParser
-  (varMap, _) <- getState
+  varMap <- fst <$> getState
   if not $ M.member vName varMap
     then unexpected $ "Undefined variable: " ++ vName
     else postfixOp $ Variable (varMap M.! vName)
@@ -484,7 +502,7 @@ ifStatParser = do
   tStat <- statementParser
   maybeElse <- lookAhead $ try keyElseParser <|> pure ""
   fStat <- case maybeElse of
-    "else" -> optionMaybe statementParser
+    "else" -> keyElseParser >> optionMaybe statementParser
     _ -> pure Nothing
   pure $ If cond tStat fStat
 

@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/06/16 14:39:56 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/17 17:41:07 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -85,18 +85,18 @@ readNParse path =
           pure $ parse (parserFail "") "" ""
         else do
           content <- hGetContents' hout
-          -- putStrLn $ "filename:\n\t" ++ path
-          -- putStrLn $ "content:\n" ++ content
+          putStrLn $ "filename:\n\t" ++ path
+          putStrLn $ "content:\n" ++ content
           res <- runParserT fileParser defaultParsecState "" content
           either
             (\parseError -> do
-              -- print parseError
+              print parseError
               pure $ Left parseError)
             (\parseOk ->
               let converted = convertCASTToAsmStr parseOk in
                 do
-                  -- print parseOk
-                  -- putStrLn ""
+                  print parseOk
+                  putStrLn ""
                   -- print $ flip evalState (1, 1) $ cASTToIrAST parseOk
                   -- putStrLn ""
                   -- print $ irASTToAsmAST $ flip evalState (1, 1) $ cASTToIrAST parseOk
@@ -111,7 +111,7 @@ readNParse path =
                   if assemblerEC == ExitSuccess
                     then
                       do
-                        -- putStrLn converted
+                        putStrLn converted
                         pure $ Right parseOk
                     else
                       pure $ parse (parserFail "") "" "")
