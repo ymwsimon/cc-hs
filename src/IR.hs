@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/06/17 17:38:44 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/17 22:58:23 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -62,6 +62,8 @@ cStatmentToIRInstructions (S (Return expr)) = exprToReturnIRs expr
 cStatmentToIRInstructions (S Null) = pure []
 cStatmentToIRInstructions (S (Expression expr)) = exprToExpressionIRs expr
 cStatmentToIRInstructions (S (If condition tStat fStat)) = exprToIfIRs condition tStat fStat
+cStatmentToIRInstructions (L label item) = (IRLabel label :) <$> cStatmentToIRInstructions item
+cStatmentToIRInstructions (S (Goto l)) = pure [IRJump l]
 cStatmentToIRInstructions (D (VariableDecl _ var (Just expr))) =
   cStatmentToIRInstructions (S (Expression (Assignment None (Variable var) expr)))
 cStatmentToIRInstructions (D _) = pure []
@@ -92,15 +94,15 @@ exprToReturnIRs expr = do
 exprToExpressionIRs :: Expr -> State (Int, Int) [IRInstruction]
 exprToExpressionIRs expr = fst <$> exprToIRs expr
 
-exprToIfIRs :: Expr -> Statement -> Maybe Statement -> State (Int, Int) [IRInstruction]
+exprToIfIRs :: Expr -> BlockItem -> Maybe BlockItem -> State (Int, Int) [IRInstruction]
 exprToIfIRs condition tStat fStat = do
   (cIRs, cValIR) <- exprToIRs condition
-  tStatIRs <- cStatmentToIRInstructions $ S tStat
+  tStatIRs <- cStatmentToIRInstructions tStat
   (fStatIRs, fLabel) <- do
     labelId <- gets (show . snd) <* modify bumpOneToLabelId
     case fStat of
       Just s -> do 
-        fIRs <- cStatmentToIRInstructions $ S s
+        fIRs <- cStatmentToIRInstructions s
         dLabelId <- gets (show . snd) <* modify bumpOneToLabelId
         pure ([IRJump $ "ifSkip" ++ dLabelId, IRLabel ("ifFalse" ++ labelId)] ++ fIRs ++ [IRLabel $ "ifSkip" ++ dLabelId], "ifFalse" ++ labelId)
       _ -> pure ([IRLabel ("ifSkip" ++ labelId)], "ifSkip" ++ labelId)

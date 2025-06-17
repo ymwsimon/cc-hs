@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/06/17 14:32:22 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/17 22:57:51 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -20,6 +20,7 @@ import Control.Monad.IO.Class
 import Operation
 import qualified Data.Map.Strict as M
 import Data.Char (isLetter, isAlphaNum, isDigit)
+import Data.Either (isLeft, fromRight, fromLeft)
 
 type CProgramAST = [FunctionDefine]
 
@@ -49,7 +50,8 @@ data InputArgPair =
 data Statement =
   Expression Expr
   | Return Expr
-  | If Expr Statement (Maybe Statement)
+  | If Expr BlockItem (Maybe BlockItem)
+  | Goto String
   | Null
   deriving (Show, Eq)
 
@@ -60,6 +62,7 @@ data Declaration =
 data BlockItem =
   S Statement
   | D Declaration
+  | L String BlockItem
   deriving (Show, Eq)
 
 data Expr =
@@ -101,7 +104,7 @@ binaryAssignmentOp =
 
 keywordList :: [String]
 keywordList = 
-  ["int", "void", "return", "if", "else", "goto", "label"]
+  ["int", "void", "return", "if", "else", "goto"]
 
 binaryOpPrecedence :: M.Map String Int
 binaryOpPrecedence = M.fromList $ zip allBinaryOp
@@ -285,10 +288,8 @@ keyIfParser = keywordParserCreate "if"
 keyElseParser :: ParsecT String u IO String
 keyElseParser = keywordParserCreate "else"
 
-keywordParser :: ParsecT String u IO String
-keywordParser = keyIntParser
-  <|> keyVoidParser
-  <|> keyReturnParser
+keyGotoParser :: ParsecT String u IO String
+keyGotoParser = keywordParserCreate "goto"
 
 identifierParser :: ParsecT String u IO String
 identifierParser = do
@@ -495,16 +496,30 @@ returnStatParser = do
   void semiColParser
   pure $ Return expr
 
+isStatement :: BlockItem -> Bool
+isStatement bi = case bi of
+  L _ i -> isStatement i
+  S _ -> True
+  _ -> False
+
 ifStatParser :: ParsecT String (M.Map String String, Int) IO Statement
 ifStatParser = do
   void keyIfParser
   cond <- parenExprParser
-  tStat <- statementParser
-  maybeElse <- lookAhead $ try keyElseParser <|> pure ""
-  fStat <- case maybeElse of
-    "else" -> keyElseParser >> optionMaybe statementParser
-    _ -> pure Nothing
-  pure $ If cond tStat fStat
+  tStat <- blockItemParser
+  if not $ isStatement tStat
+    then unexpected ""
+    else do
+      maybeElse <- lookAhead $ try keyElseParser <|> pure ""
+      fStat <- case maybeElse of
+        "else" -> do
+          void keyElseParser
+          fs <- blockItemParser
+          if not $ isStatement fs
+            then unexpected ""
+            else pure $ Just fs
+        _ -> pure Nothing
+      pure $ If cond tStat fStat
 
 argPairParser :: ParsecT String u IO InputArgPair
 argPairParser = ArgPair <$> identifierParser <*> identifierParser
@@ -543,6 +558,9 @@ expressionParser = Expression <$> exprParser
 nullStatParser :: ParsecT String (ds, Int) IO Statement
 nullStatParser = semiColParser >> pure Null
 
+gotoParser :: ParsecT String (ds, Int) IO Statement
+gotoParser = keyGotoParser >> Goto <$> symbolExtract <* semiColParser
+
 statementParser :: ParsecT String (M.Map String String, Int) IO Statement
 statementParser = (try nullStatParser <?> "Null statement") <|>
   do
@@ -550,14 +568,20 @@ statementParser = (try nullStatParser <?> "Null statement") <|>
     case sym of 
       "return" -> returnStatParser
       "if" -> ifStatParser
+      "goto" -> gotoParser
       _ -> expressionParser <* semiColParser
 
 blockItemParser :: ParsecT String (M.Map String String, Int) IO BlockItem
 blockItemParser = do
-  maybeType <- lookAhead $ optionMaybe $ try keyIntParser
-  case maybeType of
-    Just _ -> D <$> declarationParser
-    _ ->  S <$> statementParser
+  maybeLabel <- lookAhead $ try (identifierParser <* colonParser) <|> pure ""
+  if null maybeLabel
+    then do
+      maybeType <- lookAhead $ optionMaybe $ try keyIntParser
+      case maybeType of
+        Just _ -> D <$> declarationParser
+        _ ->  S <$> statementParser
+    else
+      identifierParser >> colonParser >> L maybeLabel <$> blockItemParser
 
 functionDefineParser :: ParsecT String (M.Map String String, Int) IO FunctionDefine
 functionDefineParser = do
@@ -571,3 +595,32 @@ functionDefineParser = do
   varMap <- fst <$> getState
   putState (ogVarMap, p)
   pure $ FunctionDefine retType fName argList blockitems $ read $ varMap M.! varIdMapKey
+
+getLabelList :: [BlockItem] -> M.Map String String -> Either String (M.Map String String)
+getLabelList [] m = Right m
+getLabelList (bi : bis) m = case bi of
+  L l b -> if M.member l m
+                then Left $ "Label " ++ l ++ " already existed"
+                else getLabelList (b : bis) $ M.insert l l m
+  S (If _ t (Just f)) -> getLabelList (t : f : bis) m
+  S (If _ t _) -> getLabelList (t : bis) m
+  _ -> getLabelList bis m
+
+isValidGotoLabels :: [BlockItem] -> M.Map String String -> Either String (M.Map String String)
+isValidGotoLabels [] m = Right m
+isValidGotoLabels (bi : bis) m = case bi of
+  S (Goto l) -> if not $ M.member l m
+                  then Left $ "Goto label " ++ l ++ " not found"
+                  else isValidGotoLabels bis m
+  _ -> isValidGotoLabels bis m
+
+labelCheck :: [FunctionDefine] -> Either [String] [M.Map String String]
+labelCheck bls = do
+  let labelList = map (flip getLabelList M.empty . body) bls in
+    if any isLeft labelList
+      then Left $ map (fromLeft "") $ filter isLeft labelList
+      else do
+        let checkGoto = zipWith isValidGotoLabels (map body bls) (map (fromRight M.empty) labelList) in
+          if any isLeft checkGoto
+            then Left $ map (fromLeft "") $ filter isLeft checkGoto
+            else Right $ map (fromRight M.empty) checkGoto
