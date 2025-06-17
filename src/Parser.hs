@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/06/16 14:55:01 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/17 11:03:43 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -49,6 +49,7 @@ data InputArgPair =
 data Statement =
   Expression Expr
   | Return Expr
+  | If Expr Statement (Maybe Statement)
   | Null
   deriving (Show, Eq)
 
@@ -68,6 +69,7 @@ data Expr =
   | Unary UnaryOp Expr
   | Binary BinaryOp Expr Expr
   | Assignment BinaryOp Expr Expr
+  | Conditional Expr Expr Expr
   deriving (Show, Eq)
 
 lowestPrecedence :: Int
@@ -254,6 +256,12 @@ semiColParser = createSkipSpacesStringParser ";"
 commaParser :: ParsecT String u IO String
 commaParser = createSkipSpacesStringParser ","
 
+questionParser :: ParsecT String u IO String
+questionParser = createSkipSpacesStringParser "?"
+
+colonParser :: ParsecT String u IO String
+colonParser = createSkipSpacesStringParser ":"
+
 keywordParserCreate :: String -> ParsecT String u IO String
 keywordParserCreate k = do
   spaces
@@ -270,6 +278,12 @@ keyVoidParser = keywordParserCreate "void"
 
 keyReturnParser :: ParsecT String u IO String
 keyReturnParser = keywordParserCreate "return"
+
+keyIfParser :: ParsecT String u IO String
+keyIfParser = keywordParserCreate "if"
+
+keyElseParser :: ParsecT String u IO String
+keyElseParser = keywordParserCreate "else"
 
 keywordParser :: ParsecT String u IO String
 keywordParser = keyIntParser
@@ -293,160 +307,66 @@ binaryAssignmentOpParser :: ParsecT String u IO BinaryOp
 binaryAssignmentOpParser = foldl1 (<|>) $
   map try $
     zipWith (>>)
-      [
-        plusAssignLex,
-        minusAssignLex,
-        multiAssignLex,
-        divAssignLex,
-        modAssignLex,
-        bitAndAssignLex,
-        bitOrAssignLex,
-        bitXorAssignLex,
-        bitLeftShiftAssignLex,
-        bitRightShiftAssignLex,
-        assignmentLex
-      ] $
+      [plusAssignLex, minusAssignLex, multiAssignLex, divAssignLex,
+        modAssignLex, bitAndAssignLex, bitOrAssignLex, bitXorAssignLex,
+        bitLeftShiftAssignLex, bitRightShiftAssignLex, assignmentLex] $
       map pure
-        [
-          Plus,
-          Minus,
-          Multiply,
-          Division,
-          Modulo,
-          BitAnd,
-          BitOr,
-          BitXor,
-          BitShiftLeft,
-          BitShiftRight,
-          None
-        ]
+        [Plus, Minus, Multiply, Division,
+          Modulo,BitAnd, BitOr, BitXor,
+          BitShiftLeft, BitShiftRight, None]
 
 binaryOpParser :: ParsecT String u IO BinaryOp
 binaryOpParser = foldl1 (<|>) $
   map try $
     zipWith (>>)
-      [
-        bitAndLex <* notFollowedBy (char '&'),
-        bitOrLex <* notFollowedBy (char '|'),
-        bitXorLex,
-        bitShiftLeftLex,
-        bitShiftRightLex,
-        plusLex <* notFollowedBy (char '+'),
-        minusLex <* notFollowedBy (char '-'),
-        mulLex,
-        divLex,
-        percentLex,
-        logicAndLex,
-        logicOrLex,
-        equalRelationLex,
-        notEqualRelationLex,
-        lessEqualThanRelationLex,
-        lessThanRelationLex,
-        greatEqualThanRelationLex,
-        greatThanRelationLex
-      ] $
+      [logicAndLex, logicOrLex, equalRelationLex, notEqualRelationLex,
+        lessEqualThanRelationLex, lessThanRelationLex,
+        greatEqualThanRelationLex, greatThanRelationLex,
+        bitAndLex, bitOrLex, bitXorLex, bitShiftLeftLex,
+        bitShiftRightLex, plusLex, minusLex, mulLex,
+        divLex, percentLex] $
       map pure
-        [
-          BitAnd,
-          BitOr,
-          BitXor,
-          BitShiftLeft,
-          BitShiftRight,
-          Plus,
-          Minus,
-          Multiply,
-          Division,
-          Modulo,
-          LogicAnd,
-          LogicOr,
-          EqualRelation,
-          NotEqualRelation,
-          LessEqualRelation,
-          LessThanRelation,
-          GreaterEqualRelation,
-          GreaterThanRelation
-        ]
+        [LogicAnd, LogicOr, EqualRelation, NotEqualRelation,
+          LessEqualRelation, LessThanRelation,
+          GreaterEqualRelation, GreaterThanRelation,
+          BitAnd, BitOr, BitXor, BitShiftLeft,
+          BitShiftRight, Plus, Minus, Multiply,
+          Division, Modulo]
 
 unaryOpParser :: ParsecT String u IO UnaryOp
 unaryOpParser = foldl1 (<|>) $
   map try $
     zipWith (>>)
-      [
-        incrementLex,
-        decrementLex,
-        plusLex,
-        minusLex,
-        exclaimLex,
-        complementLex
-      ] $
+      [incrementLex, decrementLex, plusLex,
+        minusLex, exclaimLex, complementLex] $
       map pure
-        [
-          PreIncrement,
-          PreDecrement,
-          UPlus,
-          Negate,
-          NotRelation,
-          Complement
-        ]
+        [PreIncrement, PreDecrement, UPlus,
+          Negate, NotRelation, Complement]
 
 postUnaryOpParser :: ParsecT String u IO UnaryOp
 postUnaryOpParser = foldl1 (<|>) $
   map try $
-    zipWith (>>)
-      [
-        incrementLex,
-        decrementLex
-      ] $
-      map pure
-        [
-          PostIncrement,
-          PostDecrement
-        ]
+    zipWith (>>) [incrementLex, decrementLex] $
+      map pure [PostIncrement, PostDecrement]
 
 binaryOpStringParser :: ParsecT String u IO String
 binaryOpStringParser = foldl1 (<|>) $
   map try
-    [plusAssignLex,
-    minusAssignLex,
-    multiAssignLex,
-    divAssignLex,
-    modAssignLex,
-    bitAndAssignLex,
-    bitOrAssignLex,
-    bitXorAssignLex,
-    bitLeftShiftAssignLex,
-    bitRightShiftAssignLex,
-    bitAndLex <* notFollowedBy (char '&'),
-    bitOrLex <* notFollowedBy (char '|'),
-    bitXorLex,
-    bitShiftLeftLex,
-    bitShiftRightLex,
-    plusLex <* notFollowedBy (char '+'),
-    minusLex <* notFollowedBy (char '-'),
-    mulLex,
-    divLex,
-    percentLex,
-    logicAndLex,
-    logicOrLex,
-    equalLex <* notFollowedBy (char '='),
-    equalRelationLex,
-    notEqualRelationLex,
-    lessThanRelationLex,
-    lessEqualThanRelationLex,
-    greatThanRelationLex,
-    greatEqualThanRelationLex
-    ]
+    [plusAssignLex, minusAssignLex, multiAssignLex, divAssignLex,
+      modAssignLex, bitAndAssignLex, bitOrAssignLex, bitXorAssignLex,
+      bitLeftShiftAssignLex, bitRightShiftAssignLex,
+      logicAndLex, logicOrLex, equalRelationLex, notEqualRelationLex,
+      lessThanRelationLex, lessEqualThanRelationLex,
+      greatThanRelationLex, greatEqualThanRelationLex,
+      equalLex, bitAndLex, bitOrLex, bitXorLex,
+      bitShiftLeftLex, bitShiftRightLex, plusLex, minusLex,
+      mulLex, divLex, percentLex]
 
 unaryOpStringParser :: ParsecT String u IO String
 unaryOpStringParser = foldl1 (<|>) $
   map try
-    [incrementLex,
-    decrementLex,
-    plusLex,
-    minusLex,
-    exclaimLex,
-    complementLex
-    ]
+    [incrementLex, decrementLex, plusLex, minusLex,
+      exclaimLex, complementLex]
 
 binaryExprParser :: ParsecT String (M.Map String String, Int) IO Expr
 binaryExprParser = flip Binary
@@ -556,6 +476,17 @@ returnStatParser = do
   void semiColParser
   pure $ Return expr
 
+ifStatParser :: ParsecT String (M.Map String String, Int) IO Statement
+ifStatParser = do
+  void keyIfParser
+  cond <- parenExprParser
+  tStat <- statementParser
+  maybeElse <- lookAhead $ try keyElseParser <|> pure ""
+  fStat <- case maybeElse of
+    "else" -> optionMaybe statementParser
+    _ -> pure Nothing
+  pure $ If cond tStat fStat
+
 argPairParser :: ParsecT String u IO InputArgPair
 argPairParser = ArgPair <$> identifierParser <*> identifierParser
 
@@ -597,9 +528,10 @@ statementParser :: ParsecT String (M.Map String String, Int) IO Statement
 statementParser = (try nullStatParser <?> "Null statement") <|>
   do
     sym <- lookAhead (try symbolExtract) <|> pure ""
-    if sym == "return"
-        then returnStatParser
-        else expressionParser <* semiColParser
+    case sym of 
+      "return" -> returnStatParser
+      "if" -> ifStatParser
+      _ -> expressionParser <* semiColParser
 
 blockItemParser :: ParsecT String (M.Map String String, Int) IO BlockItem
 blockItemParser = do
