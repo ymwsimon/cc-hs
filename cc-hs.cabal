@@ -78,7 +78,8 @@ executable cc-hs
                       process >= 1.6,
                       hspec >= 2.10,
                       containers >= 0.6,
-                      mtl >= 2.0
+                      mtl >= 2.0,
+                      transformers >= 0.5
 
     -- Directories containing source files.
     hs-source-dirs:   src
