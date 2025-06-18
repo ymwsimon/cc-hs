@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/06/17 22:57:51 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/18 11:03:20 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -50,8 +50,9 @@ data InputArgPair =
 data Statement =
   Expression Expr
   | Return Expr
-  | If Expr BlockItem (Maybe BlockItem)
+  | If Expr Statement (Maybe Statement)
   | Goto String
+  | Label String Statement
   | Null
   deriving (Show, Eq)
 
@@ -62,7 +63,6 @@ data Declaration =
 data BlockItem =
   S Statement
   | D Declaration
-  | L String BlockItem
   deriving (Show, Eq)
 
 data Expr =
@@ -496,30 +496,18 @@ returnStatParser = do
   void semiColParser
   pure $ Return expr
 
-isStatement :: BlockItem -> Bool
-isStatement bi = case bi of
-  L _ i -> isStatement i
-  S _ -> True
-  _ -> False
-
 ifStatParser :: ParsecT String (M.Map String String, Int) IO Statement
 ifStatParser = do
   void keyIfParser
   cond <- parenExprParser
-  tStat <- blockItemParser
-  if not $ isStatement tStat
-    then unexpected ""
-    else do
-      maybeElse <- lookAhead $ try keyElseParser <|> pure ""
-      fStat <- case maybeElse of
-        "else" -> do
-          void keyElseParser
-          fs <- blockItemParser
-          if not $ isStatement fs
-            then unexpected ""
-            else pure $ Just fs
-        _ -> pure Nothing
-      pure $ If cond tStat fStat
+  tStat <- statementParser
+  maybeElse <- lookAhead $ try keyElseParser <|> pure ""
+  fStat <- case maybeElse of
+    "else" -> do
+        void keyElseParser
+        Just <$> statementParser
+    _ -> pure Nothing
+  pure $ If cond tStat fStat
 
 argPairParser :: ParsecT String u IO InputArgPair
 argPairParser = ArgPair <$> identifierParser <*> identifierParser
@@ -569,19 +557,18 @@ statementParser = (try nullStatParser <?> "Null statement") <|>
       "return" -> returnStatParser
       "if" -> ifStatParser
       "goto" -> gotoParser
-      _ -> expressionParser <* semiColParser
+      _ -> do
+        maybeLabel <- lookAhead (try (identifierParser <* colonParser)) <|> pure ""
+        if null maybeLabel
+          then expressionParser <* semiColParser
+          else identifierParser >> colonParser >> Label maybeLabel <$> statementParser
 
 blockItemParser :: ParsecT String (M.Map String String, Int) IO BlockItem
 blockItemParser = do
-  maybeLabel <- lookAhead $ try (identifierParser <* colonParser) <|> pure ""
-  if null maybeLabel
-    then do
-      maybeType <- lookAhead $ optionMaybe $ try keyIntParser
-      case maybeType of
-        Just _ -> D <$> declarationParser
-        _ ->  S <$> statementParser
-    else
-      identifierParser >> colonParser >> L maybeLabel <$> blockItemParser
+  maybeType <- lookAhead $ optionMaybe $ try keyIntParser
+  case maybeType of
+    Just _ -> D <$> declarationParser
+    _ ->  S <$> statementParser
 
 functionDefineParser :: ParsecT String (M.Map String String, Int) IO FunctionDefine
 functionDefineParser = do
@@ -599,11 +586,11 @@ functionDefineParser = do
 getLabelList :: [BlockItem] -> M.Map String String -> Either String (M.Map String String)
 getLabelList [] m = Right m
 getLabelList (bi : bis) m = case bi of
-  L l b -> if M.member l m
+  S (Label l s) -> if M.member l m
                 then Left $ "Label " ++ l ++ " already existed"
-                else getLabelList (b : bis) $ M.insert l l m
-  S (If _ t (Just f)) -> getLabelList (t : f : bis) m
-  S (If _ t _) -> getLabelList (t : bis) m
+                else getLabelList (S s : bis) $ M.insert l l m
+  S (If _ t (Just f)) -> getLabelList (S t : S f : bis) m
+  S (If _ t _) -> getLabelList (S t : bis) m
   _ -> getLabelList bis m
 
 isValidGotoLabels :: [BlockItem] -> M.Map String String -> Either String (M.Map String String)

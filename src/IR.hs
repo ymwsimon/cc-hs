@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/06/17 22:58:23 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/18 10:44:08 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -62,7 +62,7 @@ cStatmentToIRInstructions (S (Return expr)) = exprToReturnIRs expr
 cStatmentToIRInstructions (S Null) = pure []
 cStatmentToIRInstructions (S (Expression expr)) = exprToExpressionIRs expr
 cStatmentToIRInstructions (S (If condition tStat fStat)) = exprToIfIRs condition tStat fStat
-cStatmentToIRInstructions (L label item) = (IRLabel label :) <$> cStatmentToIRInstructions item
+cStatmentToIRInstructions (S (Label l stat)) = (IRLabel l :) <$> cStatmentToIRInstructions (S stat)
 cStatmentToIRInstructions (S (Goto l)) = pure [IRJump l]
 cStatmentToIRInstructions (D (VariableDecl _ var (Just expr))) =
   cStatmentToIRInstructions (S (Expression (Assignment None (Variable var) expr)))
@@ -94,17 +94,17 @@ exprToReturnIRs expr = do
 exprToExpressionIRs :: Expr -> State (Int, Int) [IRInstruction]
 exprToExpressionIRs expr = fst <$> exprToIRs expr
 
-exprToIfIRs :: Expr -> BlockItem -> Maybe BlockItem -> State (Int, Int) [IRInstruction]
+exprToIfIRs :: Expr -> Statement -> Maybe Statement -> State (Int, Int) [IRInstruction]
 exprToIfIRs condition tStat fStat = do
   (cIRs, cValIR) <- exprToIRs condition
-  tStatIRs <- cStatmentToIRInstructions tStat
+  tStatIRs <- cStatmentToIRInstructions $ S tStat
   (fStatIRs, fLabel) <- do
     labelId <- gets (show . snd) <* modify bumpOneToLabelId
     case fStat of
-      Just s -> do 
-        fIRs <- cStatmentToIRInstructions s
+      Just fs -> do 
+        fsIRs <- cStatmentToIRInstructions $ S fs
         dLabelId <- gets (show . snd) <* modify bumpOneToLabelId
-        pure ([IRJump $ "ifSkip" ++ dLabelId, IRLabel ("ifFalse" ++ labelId)] ++ fIRs ++ [IRLabel $ "ifSkip" ++ dLabelId], "ifFalse" ++ labelId)
+        pure ([IRJump $ "ifSkip" ++ dLabelId, IRLabel ("ifFalse" ++ labelId)] ++ fsIRs ++ [IRLabel $ "ifSkip" ++ dLabelId], "ifFalse" ++ labelId)
       _ -> pure ([IRLabel ("ifSkip" ++ labelId)], "ifSkip" ++ labelId)
   pure $ cIRs ++ [IRJumpIfZero cValIR fLabel] ++ tStatIRs ++ fStatIRs
 
