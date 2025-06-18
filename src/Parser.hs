@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/06/18 11:03:20 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/18 18:18:20 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -28,13 +28,21 @@ type VarType = String
 
 type IdentifierName = String
 
+data ParseInfo = 
+  ParseInfo
+  {
+    currentScopeVar :: M.Map String String,
+    outerScopeVar :: M.Map String String,
+    precedence :: Int
+  }
+
 data FunctionDefine =
   FunctionDefine
   {
     returnType :: String,
     funName :: String,
     inputArgs :: [InputArgPair],
-    body :: [BlockItem],
+    body :: Block,
     nextVarId :: Int
   }
   deriving (Show, Eq)
@@ -53,6 +61,7 @@ data Statement =
   | If Expr Statement (Maybe Statement)
   | Goto String
   | Label String Statement
+  | Compound Block
   | Null
   deriving (Show, Eq)
 
@@ -63,6 +72,9 @@ data Declaration =
 data BlockItem =
   S Statement
   | D Declaration
+  deriving (Show, Eq)
+
+newtype Block = Block {unBlock :: [BlockItem]}
   deriving (Show, Eq)
 
 data Expr =
@@ -301,7 +313,7 @@ identifierParser = do
 intParser :: ParsecT String u IO String
 intParser = spaces >> many1 digit
 
-fileParser :: ParsecT String (M.Map String String, Int) IO [FunctionDefine]
+fileParser :: ParsecT String ParseInfo IO [FunctionDefine]
 fileParser = manyTill functionDefineParser $ try $ spaces >> eof
 
 binaryAssignmentOpParser :: ParsecT String u IO BinaryOp
@@ -371,17 +383,17 @@ unaryOpStringParser = foldl1 (<|>) $
     [incrementLex, decrementLex, plusLex, minusLex,
       exclaimLex, complementLex]
 
-binaryExprParser :: ParsecT String (M.Map String String, Int) IO Expr
+binaryExprParser :: ParsecT String ParseInfo IO Expr
 binaryExprParser = flip Binary
   <$> factorParser
   <*> binaryOpParser
   <*> factorParser
 
-unaryExprParser :: ParsecT String (M.Map String String, Int) IO Expr
+unaryExprParser :: ParsecT String ParseInfo IO Expr
 unaryExprParser = do
   uOpStr <- lookAhead unaryOpStringParser
   uOp <- unaryOpParser
-  p <- snd <$> getState
+  p <- precedence <$> getState
   modifyState $ updatePrecedence $ getUnaryOpPrecedence uOpStr
   expr <- exprParser
   if uOp `elem` [PreDecrement, PreIncrement]
@@ -390,7 +402,7 @@ unaryExprParser = do
       _ -> unexpected "Need lvalue for prefix operation"
     else Unary uOp expr <$ modifyState (setPrecedence p)
 
-exprParser :: ParsecT String (M.Map String String, Int) IO Expr
+exprParser :: ParsecT String ParseInfo IO Expr
 exprParser = factorParser >>= exprRightParser
 
 isBinaryOpChar :: String -> Bool
@@ -402,29 +414,29 @@ getBinOpPrecedence = (binaryOpPrecedence M.!)
 getUnaryOpPrecedence :: String -> Int
 getUnaryOpPrecedence = (unaryOpPrecedence M.!)
 
-updatePrecedence :: Num b => b -> (a, c) -> (a, b)
-updatePrecedence p = (, p - 1) . fst
+updatePrecedence :: Int -> ParseInfo -> ParseInfo
+updatePrecedence p parseInfo = parseInfo {precedence = p - 1}
 
-setPrecedence :: b -> (a, c) -> (a, b)
-setPrecedence p = (, p) . fst
+setPrecedence :: Int -> ParseInfo -> ParseInfo
+setPrecedence p parseInfo = parseInfo {precedence = p}
 
 isEqOrHigherPrecedence :: String -> Int -> Bool
 isEqOrHigherPrecedence binOp p = (binaryOpPrecedence M.! binOp) <= p
 
-condtionalTrueParser :: ParsecT String (M.Map String String, Int) IO Expr
+condtionalTrueParser :: ParsecT String ParseInfo IO Expr
 condtionalTrueParser = do
   void questionParser
-  oldState <- snd <$> getState
+  oldState <- precedence <$> getState
   modifyState $ updatePrecedence lowestPrecedence
   expr <- exprParser
   modifyState $ setPrecedence oldState
   void colonParser
   pure expr
 
-exprRightParser :: Expr -> ParsecT String (M.Map String String, Int) IO Expr
+exprRightParser :: Expr -> ParsecT String ParseInfo IO Expr
 exprRightParser lExpr = do
   binOp <- lookAhead (try binaryOpStringParser) <|> pure ""
-  p <- snd <$> getState
+  p <- precedence <$> getState
   if isBinaryOpChar binOp && isEqOrHigherPrecedence binOp p
     then if binOp `elem` binaryAssignmentOp
           then case lExpr of
@@ -460,25 +472,28 @@ postfixOp expr = case expr of
                     else pure expr
     _ -> pure expr
 
-parenExprParser :: ParsecT String (M.Map String String, Int) IO Expr
+parenExprParser :: ParsecT String ParseInfo IO Expr
 parenExprParser = do
   void openPParser
-  p <- snd <$> getState
+  p <- precedence <$> getState
   modifyState $ updatePrecedence lowestPrecedence
   expr <- exprParser
   void closePParser
   modifyState $ setPrecedence p
   postfixOp expr
 
-variableParser :: ParsecT String (M.Map String String, Int) IO Expr
+variableParser :: ParsecT String ParseInfo IO Expr
 variableParser = do
   vName <- identifierParser
-  varMap <- fst <$> getState
-  if not $ M.member vName varMap
+  current <- currentScopeVar <$> getState
+  outer <- outerScopeVar <$> getState
+  if not (M.member vName current) && not (M.member vName outer)
     then unexpected $ "Undefined variable: " ++ vName
-    else postfixOp $ Variable (varMap M.! vName)
+    else if M.member vName current
+      then postfixOp $ Variable (current M.! vName)
+      else postfixOp $ Variable (outer M.! vName)
 
-factorParser :: ParsecT String (M.Map String String, Int) IO Expr
+factorParser :: ParsecT String ParseInfo IO Expr
 factorParser = do
   spaces
   c <- lookAhead anyChar
@@ -489,14 +504,14 @@ factorParser = do
             | c == '(' = parenExprParser
             | otherwise = variableParser
 
-returnStatParser :: ParsecT String (M.Map String String, Int) IO Statement
+returnStatParser :: ParsecT String ParseInfo IO Statement
 returnStatParser = do
   void keyReturnParser
   expr <- exprParser
   void semiColParser
   pure $ Return expr
 
-ifStatParser :: ParsecT String (M.Map String String, Int) IO Statement
+ifStatParser :: ParsecT String ParseInfo IO Statement
 ifStatParser = do
   void keyIfParser
   cond <- parenExprParser
@@ -519,19 +534,19 @@ argListParser = do
     "void" -> pure []
     _ -> try (sepBy argPairParser $ try commaParser) <|> pure []
 
-declarationParser :: ParsecT String (M.Map String String, Int) IO Declaration
+declarationParser :: ParsecT String ParseInfo IO Declaration
 declarationParser = do
   varType <- keyIntParser
-  vName <- try identifierParser <?> "Valid identifier"
-  (varMap, p) <- getState
-  if M.member vName varMap
+  vName <- identifierParser <?> "Valid identifier"
+  ParseInfo current outer p <- getState
+  if M.member vName current
     then unexpected $ "Variable redeclare: " ++ vName
     else do
-      let varId = read $ varMap M.! varIdMapKey
+      let varId = read $ current M.! varIdMapKey
           newVarId = (+ (1 :: Int)) varId
           newVarName = vName ++ "#" ++ show varId
-          newVarMap = M.adjust (const (show newVarId)) varIdMapKey varMap
-      putState (M.insert vName newVarName newVarMap, p)
+          newVarMap = M.adjust (const (show newVarId)) varIdMapKey current
+      putState $ ParseInfo (M.insert vName newVarName newVarMap) outer p
       maybeEqual <- optionMaybe $ try equalLex
       initialiser <-
         case maybeEqual of
@@ -540,48 +555,74 @@ declarationParser = do
       void semiColParser
       pure $ VariableDecl varType newVarName initialiser
 
-expressionParser :: ParsecT String (M.Map String String, Int) IO Statement
+expressionParser :: ParsecT String ParseInfo IO Statement
 expressionParser = Expression <$> exprParser
 
-nullStatParser :: ParsecT String (ds, Int) IO Statement
+nullStatParser :: ParsecT String ParseInfo IO Statement
 nullStatParser = semiColParser >> pure Null
 
-gotoParser :: ParsecT String (ds, Int) IO Statement
+gotoParser :: ParsecT String ParseInfo IO Statement
 gotoParser = keyGotoParser >> Goto <$> symbolExtract <* semiColParser
 
-statementParser :: ParsecT String (M.Map String String, Int) IO Statement
-statementParser = (try nullStatParser <?> "Null statement") <|>
-  do
-    sym <- lookAhead (try symbolExtract) <|> pure ""
+labelParser :: ParsecT String ParseInfo IO Statement
+labelParser = do
+  lName <- identifierParser
+  void colonParser
+  stat <- statementParser <?> "Statement only"
+  pure $ Label lName stat
+
+labelNameParser :: ParsecT String u IO String
+labelNameParser = do
+  lName <- identifierParser
+  void colonParser
+  pure lName
+
+blockParser :: ParsecT String ParseInfo IO Block
+blockParser = do
+  void openCurParser
+  ParseInfo current outer p <- getState
+  putState $ ParseInfo (M.singleton varIdMapKey (current M.! varIdMapKey)) (M.union current outer) lowestPrecedence
+  block <- manyTill blockItemParser $ try closeCurParser
+  newVarId <- (M.! varIdMapKey) . currentScopeVar <$> getState
+  putState $ ParseInfo (M.adjust (const newVarId) varIdMapKey current) outer p
+  pure $ Block block
+
+statementParser :: ParsecT String ParseInfo IO Statement
+statementParser = do
+    sym <- lookAhead (try symbolExtract <|> try openCurParser <|> try semiColParser) <|> pure ""
     case sym of 
       "return" -> returnStatParser
       "if" -> ifStatParser
+      ";" -> nullStatParser
       "goto" -> gotoParser
+      "{" -> Compound <$> blockParser
       _ -> do
-        maybeLabel <- lookAhead (try (identifierParser <* colonParser)) <|> pure ""
-        if null maybeLabel
-          then expressionParser <* semiColParser
-          else identifierParser >> colonParser >> Label maybeLabel <$> statementParser
+        if sym `elem` keywordList
+          then unexpected "Declaration"
+          else do
+              maybeLabel <- lookAhead (try labelNameParser) <|> pure ""
+              if null maybeLabel
+                then expressionParser <* semiColParser
+                else labelParser
 
-blockItemParser :: ParsecT String (M.Map String String, Int) IO BlockItem
+blockItemParser :: ParsecT String ParseInfo IO BlockItem
 blockItemParser = do
   maybeType <- lookAhead $ optionMaybe $ try keyIntParser
   case maybeType of
     Just _ -> D <$> declarationParser
     _ ->  S <$> statementParser
 
-functionDefineParser :: ParsecT String (M.Map String String, Int) IO FunctionDefine
+functionDefineParser :: ParsecT String ParseInfo IO FunctionDefine
 functionDefineParser = do
   retType <- try keyIntParser <|> keyVoidParser
   fName <- identifierParser
   argList <- between openPParser closePParser $ try argListParser
-  (ogVarMap, p) <- getState
-  putState (M.adjust (const "1") varIdMapKey ogVarMap, p)
-  void openCurParser
-  blockitems <- manyTill blockItemParser $ try $ spaces >> closeCurParser
-  varMap <- fst <$> getState
-  putState (ogVarMap, p)
-  pure $ FunctionDefine retType fName argList blockitems $ read $ varMap M.! varIdMapKey
+  ParseInfo current outer p <- getState
+  putState $ ParseInfo (M.singleton varIdMapKey "1") outer lowestPrecedence
+  block <- blockParser
+  nVarId <- read . (M.! varIdMapKey) . currentScopeVar <$> getState
+  putState $ ParseInfo current outer p
+  pure $ FunctionDefine retType fName argList block nVarId
 
 getLabelList :: [BlockItem] -> M.Map String String -> Either String (M.Map String String)
 getLabelList [] m = Right m
@@ -591,6 +632,7 @@ getLabelList (bi : bis) m = case bi of
                 else getLabelList (S s : bis) $ M.insert l l m
   S (If _ t (Just f)) -> getLabelList (S t : S f : bis) m
   S (If _ t _) -> getLabelList (S t : bis) m
+  S (Compound (Block bl)) -> getLabelList (bl ++ bis) m
   _ -> getLabelList bis m
 
 isValidGotoLabels :: [BlockItem] -> M.Map String String -> Either String (M.Map String String)
@@ -603,11 +645,13 @@ isValidGotoLabels (bi : bis) m = case bi of
 
 labelCheck :: [FunctionDefine] -> Either [String] [M.Map String String]
 labelCheck bls = do
-  let labelList = map (flip getLabelList M.empty . body) bls in
+  let labelList = map (flip getLabelList M.empty . unBlock . body) bls in
     if any isLeft labelList
       then Left $ map (fromLeft "") $ filter isLeft labelList
       else do
-        let checkGoto = zipWith isValidGotoLabels (map body bls) (map (fromRight M.empty) labelList) in
+        let checkGoto = zipWith isValidGotoLabels
+                          (map (unBlock . body) bls)
+                          (map (fromRight M.empty) labelList) in
           if any isLeft checkGoto
             then Left $ map (fromLeft "") $ filter isLeft checkGoto
             else Right $ map (fromRight M.empty) checkGoto

@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/06/17 22:56:36 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/18 13:07:03 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -42,8 +42,11 @@ argsParser = Args
   <*> O.switch (O.long "parse")
   <*> O.switch (O.long "codegen")
 
-defaultParsecState :: (M.Map String String, Int)
-defaultParsecState = (M.singleton varIdMapKey "1", lowestPrecedence)
+defaultParsecState :: ParseInfo
+defaultParsecState = ParseInfo
+  { currentScopeVar = M.singleton varIdMapKey "1",
+    outerScopeVar = M.singleton varIdMapKey "1",
+    precedence = lowestPrecedence }
 
 outFileName :: String -> String
 outFileName fileName

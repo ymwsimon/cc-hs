@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/06/18 10:44:08 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/18 18:09:02 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -64,6 +64,7 @@ cStatmentToIRInstructions (S (Expression expr)) = exprToExpressionIRs expr
 cStatmentToIRInstructions (S (If condition tStat fStat)) = exprToIfIRs condition tStat fStat
 cStatmentToIRInstructions (S (Label l stat)) = (IRLabel l :) <$> cStatmentToIRInstructions (S stat)
 cStatmentToIRInstructions (S (Goto l)) = pure [IRJump l]
+cStatmentToIRInstructions (S (Compound (Block bl))) = concat <$> traverse cStatmentToIRInstructions bl
 cStatmentToIRInstructions (D (VariableDecl _ var (Just expr))) =
   cStatmentToIRInstructions (S (Expression (Assignment None (Variable var) expr)))
 cStatmentToIRInstructions (D _) = pure []
@@ -75,7 +76,7 @@ cFuncDefineToIRFuncDefine :: FunctionDefine -> State (Int, Int) IRFunctionDefine
 cFuncDefineToIRFuncDefine fd =
   IRFunctionDefine (funName fd) . (++ [IRReturn (IRConstant "0")]) . concat
     <$> (modify (initIRVarId (nextVarId fd)) >>
-      mapM cStatmentToIRInstructions (body fd))
+      mapM cStatmentToIRInstructions (unBlock $ body fd))
 
 cASTToIrAST :: CProgramAST -> State (Int, Int) IRProgramAST
 cASTToIrAST = mapM cFuncDefineToIRFuncDefine
