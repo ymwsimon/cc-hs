@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/06/18 18:18:20 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/18 20:38:46 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -28,12 +28,19 @@ type VarType = String
 
 type IdentifierName = String
 
+data JumpLabel =
+  LoopLabel (String, String, String)
+  | SwitchLabel [String]
+  | NoLabel
+  deriving (Show, Eq)
+
 data ParseInfo = 
   ParseInfo
   {
     currentScopeVar :: M.Map String String,
     outerScopeVar :: M.Map String String,
-    precedence :: Int
+    precedence :: Int,
+    jumpLabel :: JumpLabel
   }
 
 data FunctionDefine =
@@ -55,6 +62,11 @@ data InputArgPair =
   }
   deriving (Show, Eq)
 
+data ForInit =
+  InitDecl Declaration
+  | InitExpr (Maybe Expr)
+  deriving (Show, Eq)
+
 data Statement =
   Expression Expr
   | Return Expr
@@ -62,6 +74,11 @@ data Statement =
   | Goto String
   | Label String Statement
   | Compound Block
+  | Break String
+  | Continue String
+  | While Expr Statement String
+  | DoWhile Statement Expr String
+  | For ForInit (Maybe Expr) (Maybe Expr) Statement String
   | Null
   deriving (Show, Eq)
 
@@ -116,7 +133,7 @@ binaryAssignmentOp =
 
 keywordList :: [String]
 keywordList = 
-  ["int", "void", "return", "if", "else", "goto"]
+  ["int", "void", "return", "if", "else", "goto", "do", "while", "for", "break", "continue"]
 
 binaryOpPrecedence :: M.Map String Int
 binaryOpPrecedence = M.fromList $ zip allBinaryOp
@@ -420,6 +437,27 @@ updatePrecedence p parseInfo = parseInfo {precedence = p - 1}
 setPrecedence :: Int -> ParseInfo -> ParseInfo
 setPrecedence p parseInfo = parseInfo {precedence = p}
 
+updateCurrentScopeVar :: M.Map String String -> ParseInfo -> ParseInfo
+updateCurrentScopeVar m parseInfo = parseInfo {currentScopeVar = m}
+
+updateOuterScopeVar :: M.Map String String -> ParseInfo -> ParseInfo
+updateOuterScopeVar m parseInfo = parseInfo {outerScopeVar = m}
+
+updateJumpLabel :: JumpLabel -> ParseInfo -> ParseInfo
+updateJumpLabel jl parseInfo = parseInfo {jumpLabel = jl}
+
+getCurrentScopeVar :: ParsecT s ParseInfo IO (M.Map String String)
+getCurrentScopeVar = currentScopeVar <$> getState
+
+getOuterScopeVar :: ParsecT s ParseInfo IO (M.Map String String)
+getOuterScopeVar = outerScopeVar <$> getState
+
+getPrecedence :: ParsecT s ParseInfo IO Int
+getPrecedence = precedence <$> getState
+
+getJumpLabel :: ParsecT s ParseInfo IO JumpLabel
+getJumpLabel = jumpLabel <$> getState
+
 isEqOrHigherPrecedence :: String -> Int -> Bool
 isEqOrHigherPrecedence binOp p = (binaryOpPrecedence M.! binOp) <= p
 
@@ -538,15 +576,15 @@ declarationParser :: ParsecT String ParseInfo IO Declaration
 declarationParser = do
   varType <- keyIntParser
   vName <- identifierParser <?> "Valid identifier"
-  ParseInfo current outer p <- getState
-  if M.member vName current
+  parseInfo <- getState
+  if M.member vName $ currentScopeVar parseInfo
     then unexpected $ "Variable redeclare: " ++ vName
     else do
-      let varId = read $ current M.! varIdMapKey
+      let varId = read $ currentScopeVar parseInfo M.! varIdMapKey
           newVarId = (+ (1 :: Int)) varId
           newVarName = vName ++ "#" ++ show varId
-          newVarMap = M.adjust (const (show newVarId)) varIdMapKey current
-      putState $ ParseInfo (M.insert vName newVarName newVarMap) outer p
+          newVarMap = M.adjust (const (show newVarId)) varIdMapKey $ currentScopeVar parseInfo
+      putState $ parseInfo {currentScopeVar = M.insert vName newVarName newVarMap}
       maybeEqual <- optionMaybe $ try equalLex
       initialiser <-
         case maybeEqual of
@@ -580,11 +618,13 @@ labelNameParser = do
 blockParser :: ParsecT String ParseInfo IO Block
 blockParser = do
   void openCurParser
-  ParseInfo current outer p <- getState
-  putState $ ParseInfo (M.singleton varIdMapKey (current M.! varIdMapKey)) (M.union current outer) lowestPrecedence
+  parseInfo <- getState
+  putState $ parseInfo {currentScopeVar = M.singleton varIdMapKey $ currentScopeVar parseInfo M.! varIdMapKey,
+    outerScopeVar = M.union (currentScopeVar parseInfo) (outerScopeVar parseInfo),
+    precedence = lowestPrecedence}
   block <- manyTill blockItemParser $ try closeCurParser
-  newVarId <- (M.! varIdMapKey) . currentScopeVar <$> getState
-  putState $ ParseInfo (M.adjust (const newVarId) varIdMapKey current) outer p
+  newVarId <- (M.! varIdMapKey) <$> getCurrentScopeVar
+  putState $ parseInfo {currentScopeVar = M.adjust (const newVarId) varIdMapKey (currentScopeVar parseInfo)}
   pure $ Block block
 
 statementParser :: ParsecT String ParseInfo IO Statement
@@ -617,11 +657,11 @@ functionDefineParser = do
   retType <- try keyIntParser <|> keyVoidParser
   fName <- identifierParser
   argList <- between openPParser closePParser $ try argListParser
-  ParseInfo current outer p <- getState
-  putState $ ParseInfo (M.singleton varIdMapKey "1") outer lowestPrecedence
+  parseInfo <- getState
+  putState $ parseInfo {currentScopeVar = M.singleton varIdMapKey "1", precedence = lowestPrecedence}
   block <- blockParser
-  nVarId <- read . (M.! varIdMapKey) . currentScopeVar <$> getState
-  putState $ ParseInfo current outer p
+  nVarId <- read . (M.! varIdMapKey) <$> getCurrentScopeVar
+  putState parseInfo
   pure $ FunctionDefine retType fName argList block nVarId
 
 getLabelList :: [BlockItem] -> M.Map String String -> Either String (M.Map String String)
