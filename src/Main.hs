@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/06/18 13:07:03 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/19 17:54:23 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -46,7 +46,9 @@ defaultParsecState :: ParseInfo
 defaultParsecState = ParseInfo
   { currentScopeVar = M.singleton varIdMapKey "1",
     outerScopeVar = M.singleton varIdMapKey "1",
-    precedence = lowestPrecedence }
+    precedence = lowestPrecedence,
+    labelId = 1,
+    jumpLabel = NoLabel }
 
 outFileName :: String -> String
 outFileName fileName
@@ -99,6 +101,7 @@ readNParse path =
               let converted = convertCASTToAsmStr parseOk in
                 do
                   print parseOk
+                  -- print $ flip evalState (1, 1) $ cASTToIrAST parseOk
                   putStrLn ""
                   let labelCheckRes = labelCheck parseOk in
                     case labelCheckRes of

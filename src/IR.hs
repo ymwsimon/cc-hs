@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/06/18 18:09:02 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/19 17:52:43 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -65,9 +65,15 @@ cStatmentToIRInstructions (S (If condition tStat fStat)) = exprToIfIRs condition
 cStatmentToIRInstructions (S (Label l stat)) = (IRLabel l :) <$> cStatmentToIRInstructions (S stat)
 cStatmentToIRInstructions (S (Goto l)) = pure [IRJump l]
 cStatmentToIRInstructions (S (Compound (Block bl))) = concat <$> traverse cStatmentToIRInstructions bl
+cStatmentToIRInstructions (S (Break l)) = pure [IRJump l]
+cStatmentToIRInstructions (S (Continue l)) = pure [IRJump l]
+cStatmentToIRInstructions (S (DoWhile bl condition (LoopLabel jLabel))) = doWhileToIRs bl condition jLabel
+cStatmentToIRInstructions (S (While condition bl (LoopLabel jLabel))) = whileToIRs condition bl jLabel
+cStatmentToIRInstructions (S (For forInit condition post bl (LoopLabel jLabel))) = forToIRs forInit condition post bl jLabel
 cStatmentToIRInstructions (D (VariableDecl _ var (Just expr))) =
   cStatmentToIRInstructions (S (Expression (Assignment None (Variable var) expr)))
 cStatmentToIRInstructions (D _) = pure []
+cStatmentToIRInstructions _ = undefined
 
 initIRVarId :: a1 -> (a2, b) -> (a1, b)
 initIRVarId s (_, b) = (s, b)
@@ -100,13 +106,13 @@ exprToIfIRs condition tStat fStat = do
   (cIRs, cValIR) <- exprToIRs condition
   tStatIRs <- cStatmentToIRInstructions $ S tStat
   (fStatIRs, fLabel) <- do
-    labelId <- gets (show . snd) <* modify bumpOneToLabelId
+    lId <- gets (show . snd) <* modify bumpOneToLabelId
     case fStat of
       Just fs -> do 
         fsIRs <- cStatmentToIRInstructions $ S fs
         dLabelId <- gets (show . snd) <* modify bumpOneToLabelId
-        pure ([IRJump $ "ifSkip" ++ dLabelId, IRLabel ("ifFalse" ++ labelId)] ++ fsIRs ++ [IRLabel $ "ifSkip" ++ dLabelId], "ifFalse" ++ labelId)
-      _ -> pure ([IRLabel ("ifSkip" ++ labelId)], "ifSkip" ++ labelId)
+        pure ([IRJump $ "ifSkip" ++ dLabelId, IRLabel ("ifFalse" ++ lId)] ++ fsIRs ++ [IRLabel $ "ifSkip" ++ dLabelId], "ifFalse" ++ lId)
+      _ -> pure ([IRLabel ("ifSkip" ++ lId)], "ifSkip" ++ lId)
   pure $ cIRs ++ [IRJumpIfZero cValIR fLabel] ++ tStatIRs ++ fStatIRs
 
 postPrefixToBin :: UnaryOp -> BinaryOp
@@ -133,12 +139,12 @@ unaryOperationToIRs op uExpr
       pure (oldIRs ++ [IRUnary op irVal $ IRVar $ show varId], IRVar $ show varId)
 
 genJumpIRsIfNeeded :: BinaryOp -> (Int, Int) -> IRVal -> State (Int, Int) [IRInstruction]
-genJumpIRsIfNeeded op labelId irVal =
+genJumpIRsIfNeeded op lId irVal =
   case op of
     LogicAnd ->
-      pure [IRJumpIfZero irVal $ "false_label" ++ show (fst labelId)]
+      pure [IRJumpIfZero irVal $ "false_label" ++ show (fst lId)]
     LogicOr ->
-      pure [IRJumpIfNotZero irVal $ "false_label" ++ show (fst labelId)]
+      pure [IRJumpIfNotZero irVal $ "false_label" ++ show (fst lId)]
     _ -> pure []
 
 genJumpIRsAndLabel :: Int -> (Int, Int) -> IRVal -> IRVal -> State (Int, Int) [IRInstruction]
@@ -153,11 +159,11 @@ genLabelIfNeeded :: BinaryOp -> State (Int, Int) (Int, Int)
 genLabelIfNeeded op =
   let getLabels =
         do
-          labelId <- gets snd
+          lId <- gets snd
           modify bumpOneToLabelId
           endLabelId <- gets snd
           modify bumpOneToLabelId
-          pure (labelId, endLabelId) in
+          pure (lId, endLabelId) in
   case op of
     LogicAnd -> getLabels
     LogicOr -> getLabels
@@ -205,6 +211,43 @@ conditionToIRs condition tExpr fExpr = do
   pure (cIRs ++ [IRJumpIfZero cValIR ("condF" ++ fLabel)]
     ++ tIRs ++ [IRCopy tValIR resValIR, IRJump $ "condD" ++ dLabel , IRLabel $ "condF" ++ fLabel]
     ++ fIRs ++ [IRCopy fValIR resValIR, IRLabel $ "condD" ++ dLabel], resValIR)
+
+doWhileToIRs :: Statement -> Expr -> (String, String, String) -> State (Int, Int) [IRInstruction]
+doWhileToIRs bl condition (sLabel, cLabel, dLabel) = do
+  blIRs <- cStatmentToIRInstructions $ S bl
+  (exprIRs, exprIRVal) <- exprToIRs condition
+  pure $ IRLabel sLabel : blIRs ++ [IRLabel cLabel] ++
+    exprIRs ++ [IRJumpIfNotZero exprIRVal sLabel, IRLabel dLabel]
+
+whileToIRs :: Expr -> Statement -> (String, String, String) -> State (Int, Int) [IRInstruction]
+whileToIRs condition bl (_, cLabel, dLabel) = do
+  (exprIRs, exprIRVal) <- exprToIRs condition
+  blIRs <- cStatmentToIRInstructions $ S bl
+  pure $ IRLabel cLabel : exprIRs ++
+    [IRJumpIfZero exprIRVal dLabel] ++
+    blIRs ++ [IRJump cLabel, IRLabel dLabel]
+
+forInitToIRs :: ForInit -> State (Int, Int) [IRInstruction]
+forInitToIRs fi = case fi of
+  InitDecl d -> cStatmentToIRInstructions $ D d
+  InitExpr (Just expr) -> cStatmentToIRInstructions $ S $ Expression expr
+  _ -> pure []
+
+forToIRs :: ForInit -> Maybe Expr -> Maybe Expr -> Statement -> (String, String, String) -> State (Int, Int) [IRInstruction]
+forToIRs forInit condition post bl (sLabel, cLabel, dLabel) = do
+  forInitIRs <- forInitToIRs forInit
+  conditionIRs <- case condition of
+    Just c -> do
+      (exprIRs, exprIRVal) <- exprToIRs c
+      pure $ IRLabel sLabel : exprIRs ++ [IRJumpIfZero exprIRVal dLabel]
+    _ -> pure [IRLabel sLabel]
+  postIRs <- case post of
+    Just p -> do
+      pIRs <- cStatmentToIRInstructions $ S $ Expression p
+      pure $ IRLabel cLabel : pIRs ++ [IRJump sLabel]
+    _ -> pure [IRLabel cLabel, IRJump sLabel]
+  blIRs <- cStatmentToIRInstructions $ S bl
+  pure $ forInitIRs ++ conditionIRs ++ blIRs ++ postIRs ++ [IRLabel dLabel]
 
 exprToIRs :: Expr -> State (Int, Int) ([IRInstruction], IRVal)
 exprToIRs expr =
