@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/06/19 17:11:42 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/19 18:03:59 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -727,8 +727,8 @@ forLoopParser = do
   makeLoopLabel
   jumpL <- getJumpLabel
   forInit <- forInitParser
-  condition <- (try (optionMaybe exprParser) <|> pure Nothing) <* semiColParser
-  postBody <- (try (optionMaybe exprParser) <|> pure Nothing) <* closePParser
+  condition <- optionMaybe (try exprParser) <* semiColParser
+  postBody <- optionMaybe (try exprParser) <* closePParser
   forBody <- statementParser
   newVarId <- (M.! varIdMapKey) <$> getCurrentScopeVar
   lId <- labelId <$> getState
