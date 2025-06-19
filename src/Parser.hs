@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/06/19 18:03:59 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/19 18:22:15 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -652,7 +652,10 @@ blockParser = do
       precedence = lowestPrecedence}
   block <- manyTill blockItemParser $ try closeCurParser
   newVarId <- (M.! varIdMapKey) <$> getCurrentScopeVar
-  putState $ parseInfo {currentScopeVar = M.adjust (const newVarId) varIdMapKey (currentScopeVar parseInfo)}
+  lId <- labelId <$> getState
+  putState $ parseInfo
+    {currentScopeVar = M.adjust (const newVarId) varIdMapKey (currentScopeVar parseInfo),
+      labelId = lId}
   pure $ Block block
 
 breakParser :: ParsecT String ParseInfo IO Statement
@@ -776,7 +779,8 @@ functionDefineParser = do
   putState $ parseInfo {currentScopeVar = M.singleton varIdMapKey "1", precedence = lowestPrecedence}
   block <- blockParser
   nVarId <- read . (M.! varIdMapKey) <$> getCurrentScopeVar
-  putState parseInfo
+  lId <- labelId <$> getState
+  putState parseInfo {labelId = lId}
   pure $ FunctionDefine retType fName argList block nVarId
 
 getLabelList :: [BlockItem] -> M.Map String String -> Either String (M.Map String String)
