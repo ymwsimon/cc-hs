@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/06/19 18:22:15 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/20 11:59:29 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -30,8 +30,7 @@ type IdentifierName = String
 
 data JumpLabel =
   LoopLabel (String, String, String)
-  | SwitchLabel (String, [(Int, String)])
-  | NoLabel
+  | SwitchLabel (Maybe String, String) (M.Map Int String)
   deriving (Show, Eq)
 
 data ParseInfo = 
@@ -41,7 +40,7 @@ data ParseInfo =
     outerScopeVar :: M.Map String String,
     precedence :: Int,
     labelId :: Int,
-    jumpLabel :: JumpLabel
+    jumpLabel :: [JumpLabel]
   }
 
 data FunctionDefine =
@@ -80,6 +79,9 @@ data Statement =
   | While Expr Statement JumpLabel
   | DoWhile Statement Expr JumpLabel
   | For ForInit (Maybe Expr) (Maybe Expr) Statement JumpLabel
+  | Switch Expr Statement JumpLabel
+  | Case Statement String
+  | Default Statement String
   | Null
   deriving (Show, Eq)
 
@@ -336,6 +338,15 @@ keyDoParser = keywordParserCreate "do"
 keyForParser :: ParsecT String u IO String
 keyForParser = keywordParserCreate "for"
 
+keySwitchParser :: ParsecT String u IO String
+keySwitchParser = keywordParserCreate "switch"
+
+keyCaseParser :: ParsecT String u IO String
+keyCaseParser = keywordParserCreate "case"
+
+keyDefaultParser :: ParsecT String u IO String
+keyDefaultParser = keywordParserCreate "default"
+
 identifierParser :: ParsecT String u IO String
 identifierParser = do
   symbol <- symbolExtract
@@ -463,7 +474,7 @@ bumpLabelId :: ParsecT s ParseInfo IO ()
 bumpLabelId = modifyState (\parseInfo -> parseInfo {labelId = labelId parseInfo + 1})
 
 updateJumpLabel :: JumpLabel -> ParseInfo -> ParseInfo
-updateJumpLabel jl parseInfo = parseInfo {jumpLabel = jl}
+updateJumpLabel jl parseInfo = parseInfo {jumpLabel = jl : jumpLabel parseInfo }
 
 getCurrentScopeVar :: ParsecT s ParseInfo IO (M.Map String String)
 getCurrentScopeVar = currentScopeVar <$> getState
@@ -477,7 +488,7 @@ getPrecedence = precedence <$> getState
 getNextLabelId :: ParsecT s ParseInfo IO Int
 getNextLabelId = labelId <$> getState
 
-getJumpLabel :: ParsecT s ParseInfo IO JumpLabel
+getJumpLabel :: ParsecT s ParseInfo IO [JumpLabel]
 getJumpLabel = jumpLabel <$> getState
 
 useNewLabelId :: ParseInfo -> ParsecT s ParseInfo IO ()
@@ -653,26 +664,34 @@ blockParser = do
   block <- manyTill blockItemParser $ try closeCurParser
   newVarId <- (M.! varIdMapKey) <$> getCurrentScopeVar
   lId <- labelId <$> getState
+  jLable <- getJumpLabel
   putState $ parseInfo
     {currentScopeVar = M.adjust (const newVarId) varIdMapKey (currentScopeVar parseInfo),
-      labelId = lId}
+      labelId = lId, jumpLabel = jLable}
   pure $ Block block
+
+isSwitchLabel :: JumpLabel -> Bool
+isSwitchLabel (SwitchLabel _ _) = True
+isSwitchLabel _ = False
+
+isLoopLabel :: JumpLabel -> Bool
+isLoopLabel (LoopLabel _) = True
+isLoopLabel _ = False
 
 breakParser :: ParsecT String ParseInfo IO Statement
 breakParser = do
   l <- getJumpLabel
   case l of
-    NoLabel -> unexpected "Break"
-    LoopLabel (_, _, doneLabel) -> keyBreakParser >> Break doneLabel <$ semiColParser
-    SwitchLabel _ -> keyBreakParser >> undefined
+    [] -> unexpected "Break"
+    LoopLabel (_, _, doneLabel) : _ -> keyBreakParser >> Break doneLabel <$ semiColParser
+    SwitchLabel (_, doneLabel) _  : _ -> keyBreakParser >> Break doneLabel <$ semiColParser
 
 continueParser :: ParsecT String ParseInfo IO Statement
 continueParser = do
-  l <- getJumpLabel
+  l <- dropWhile isSwitchLabel <$> getJumpLabel
   case l of
-    NoLabel -> unexpected "Continue"
-    LoopLabel (_, continueLabel, _) -> keyContinueParser >> Continue continueLabel <$ semiColParser
-    SwitchLabel _ -> keyContinueParser >> undefined
+    LoopLabel (_, continueLabel, _) : _ -> keyContinueParser >> Continue continueLabel <$ semiColParser
+    _ -> unexpected "Continue"
 
 makeLoopLabel :: ParsecT String ParseInfo IO ()
 makeLoopLabel = do
@@ -681,36 +700,49 @@ makeLoopLabel = do
   doneLabel <- ("done" ++) . show <$> getNextLabelId <* bumpLabelId
   modifyState $ updateJumpLabel $ LoopLabel (startLabel, continueLabel, doneLabel)
 
+makeSwitchLabel :: ParsecT String ParseInfo IO ()
+makeSwitchLabel = do
+  doneLabel <- ("done" ++) . show <$> getNextLabelId <* bumpLabelId
+  modifyState $ updateJumpLabel $ SwitchLabel (Nothing, doneLabel) M.empty
+
 whileParser :: ParsecT String ParseInfo IO Statement
 whileParser = do
   void keyWhileParser
   parseInfo <- getState
+  putState $ parseInfo
+    {currentScopeVar = M.singleton varIdMapKey $ currentScopeVar parseInfo M.! varIdMapKey,
+      outerScopeVar = M.union (currentScopeVar parseInfo) (outerScopeVar parseInfo),
+      precedence = lowestPrecedence}
   makeLoopLabel
-  jumpL <- getJumpLabel
   condition <- parenExprParser
   whileBody <- statementParser
   newVarId <- (M.! varIdMapKey) <$> getCurrentScopeVar
+  jumpL <- getJumpLabel
   lId <- labelId <$> getState
   putState $ parseInfo
     {currentScopeVar = M.adjust (const newVarId) varIdMapKey (currentScopeVar parseInfo),
-      labelId = lId}
-  pure $ While condition whileBody jumpL
+      labelId = lId, jumpLabel = drop 1 jumpL}
+  pure $ While condition whileBody $ (!! 0) jumpL
 
 doWhileParser :: ParsecT String ParseInfo IO Statement
 doWhileParser = do
   void keyDoParser
   parseInfo <- getState
+  putState $ parseInfo
+    {currentScopeVar = M.singleton varIdMapKey $ currentScopeVar parseInfo M.! varIdMapKey,
+      outerScopeVar = M.union (currentScopeVar parseInfo) (outerScopeVar parseInfo),
+      precedence = lowestPrecedence}
   makeLoopLabel
-  jumpL <- getJumpLabel
   doWhileBody <- statementParser
   void keyWhileParser
   condition <- parenExprParser <* semiColParser
+  jumpL <- getJumpLabel
   newVarId <- (M.! varIdMapKey) <$> getCurrentScopeVar
   lId <- labelId <$> getState
   putState $ parseInfo
     {currentScopeVar = M.adjust (const newVarId) varIdMapKey (currentScopeVar parseInfo),
-      labelId = lId}
-  pure $ DoWhile doWhileBody condition jumpL
+      labelId = lId, jumpLabel = drop 1 jumpL}
+  pure $ DoWhile doWhileBody condition $ (!! 0) jumpL
 
 forInitParser :: ParsecT String ParseInfo IO ForInit
 forInitParser = do
@@ -728,17 +760,69 @@ forLoopParser = do
       outerScopeVar = M.union (currentScopeVar parseInfo) (outerScopeVar parseInfo),
       precedence = lowestPrecedence}
   makeLoopLabel
-  jumpL <- getJumpLabel
   forInit <- forInitParser
   condition <- optionMaybe (try exprParser) <* semiColParser
   postBody <- optionMaybe (try exprParser) <* closePParser
   forBody <- statementParser
   newVarId <- (M.! varIdMapKey) <$> getCurrentScopeVar
   lId <- labelId <$> getState
+  jLabel <- getJumpLabel
+  putState $ parseInfo
+    {currentScopeVar = M.adjust (const newVarId) varIdMapKey (currentScopeVar parseInfo),
+      labelId = lId, jumpLabel = drop 1 jLabel}
+  pure $ For forInit condition postBody forBody $ (!! 0) jLabel
+
+caseParser :: ParsecT String ParseInfo IO Statement
+caseParser = do
+  jL <- dropWhile isLoopLabel <$> getJumpLabel
+  preJLabel <- takeWhile isLoopLabel <$> getJumpLabel
+  case jL of
+    SwitchLabel jLabel caseMap : lbs -> do
+      void keyCaseParser
+      val <- read <$> intParser
+      if M.member val caseMap
+        then unexpected $ show val ++ ": Already defined."
+        else do
+          void colonParser
+          lId <- getNextLabelId <* bumpLabelId
+          modifyState (\p -> p {
+            jumpLabel = preJLabel ++ SwitchLabel jLabel (M.insert val ("case." ++ show val ++ "." ++ show lId) caseMap) : lbs})
+          state <- statementParser
+          pure $ Case state $ "case." ++ show val ++ "." ++ show lId
+    _ -> unexpected "Case"
+
+defaultParser :: ParsecT String ParseInfo IO Statement
+defaultParser = do
+  jL <- dropWhile isLoopLabel <$> getJumpLabel
+  preJLabel <- takeWhile isLoopLabel <$> getJumpLabel
+  case jL of
+    SwitchLabel (Nothing, endLabel) caseMap : lbs -> do
+      void $ keyDefaultParser >> colonParser
+      lId <- getNextLabelId <* bumpLabelId
+      modifyState (\p -> p {
+        jumpLabel = preJLabel ++ SwitchLabel (Just $ "default" ++ show lId, endLabel) caseMap : lbs})
+      state <- statementParser
+      pure $ Default state $ "default" ++ show lId
+    _ -> unexpected "Default"
+
+switchParser :: ParsecT String ParseInfo IO Statement
+switchParser = do
+  parseInfo <- getState
+  putState $ parseInfo
+    {currentScopeVar = M.singleton varIdMapKey $ currentScopeVar parseInfo M.! varIdMapKey,
+      outerScopeVar = M.union (currentScopeVar parseInfo) (outerScopeVar parseInfo),
+      precedence = lowestPrecedence}
+  void keySwitchParser
+  makeSwitchLabel
+  expr <- parenExprParser
+  bl <- statementParser
+  jLabel <- (!! 0) <$> getJumpLabel
+  newVarId <- (M.! varIdMapKey) <$> getCurrentScopeVar
+  lId <- labelId <$> getState
   putState $ parseInfo
     {currentScopeVar = M.adjust (const newVarId) varIdMapKey (currentScopeVar parseInfo),
       labelId = lId}
-  pure $ For forInit condition postBody forBody jumpL
+  pure $ Switch expr bl jLabel
 
 statementParser :: ParsecT String ParseInfo IO Statement
 statementParser = do
@@ -754,6 +838,9 @@ statementParser = do
       "while" -> whileParser
       "do" -> doWhileParser
       "for" -> forLoopParser
+      "case" -> caseParser
+      "default" -> defaultParser
+      "switch" -> switchParser
       _ -> do
         if sym `elem` keywordList
           then unexpected "Declaration"
@@ -768,7 +855,7 @@ blockItemParser = do
   maybeType <- lookAhead $ optionMaybe $ try keyIntParser
   case maybeType of
     Just _ -> D <$> declarationParser
-    _ ->  S <$> statementParser
+    _ -> S <$> statementParser
 
 functionDefineParser :: ParsecT String ParseInfo IO FunctionDefine
 functionDefineParser = do
@@ -792,6 +879,12 @@ getLabelList (bi : bis) m = case bi of
   S (If _ t (Just f)) -> getLabelList (S t : S f : bis) m
   S (If _ t _) -> getLabelList (S t : bis) m
   S (Compound (Block bl)) -> getLabelList (bl ++ bis) m
+  S (For _ _ _ s _) -> getLabelList (S s : bis) m
+  S (Switch _ s _) -> getLabelList (S s : bis) m
+  S (While _ s _) -> getLabelList (S s : bis) m
+  S (DoWhile s _ _) -> getLabelList (S s : bis) m
+  S (Case s _) -> getLabelList (S s : bis) m
+  S (Default s _) -> getLabelList (S s : bis) m
   _ -> getLabelList bis m
 
 isValidGotoLabels :: [BlockItem] -> M.Map String String -> Either String (M.Map String String)
@@ -800,6 +893,13 @@ isValidGotoLabels (bi : bis) m = case bi of
   S (Goto l) -> if not $ M.member l m
                   then Left $ "Goto label " ++ l ++ " not found"
                   else isValidGotoLabels bis m
+  S (Compound (Block bl)) -> isValidGotoLabels (bl ++ bis) m
+  S (For _ _ _ s _) -> isValidGotoLabels (S s : bis) m
+  S (Switch _ s _) -> isValidGotoLabels (S s : bis) m
+  S (While _ s _) -> isValidGotoLabels (S s : bis) m
+  S (DoWhile s _ _) -> isValidGotoLabels (S s : bis) m
+  S (Case s _) -> isValidGotoLabels (S s : bis) m
+  S (Default s _) -> isValidGotoLabels (S s : bis) m
   _ -> isValidGotoLabels bis m
 
 labelCheck :: [FunctionDefine] -> Either [String] [M.Map String String]

@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/06/19 17:52:43 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/20 01:52:47 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -15,6 +15,7 @@ module IR where
 import Parser
 import Operation
 import Control.Monad.State
+import qualified Data.Map.Strict as M
 
 type IRProgramAST = [IRFunctionDefine]
 
@@ -62,14 +63,23 @@ cStatmentToIRInstructions (S (Return expr)) = exprToReturnIRs expr
 cStatmentToIRInstructions (S Null) = pure []
 cStatmentToIRInstructions (S (Expression expr)) = exprToExpressionIRs expr
 cStatmentToIRInstructions (S (If condition tStat fStat)) = exprToIfIRs condition tStat fStat
-cStatmentToIRInstructions (S (Label l stat)) = (IRLabel l :) <$> cStatmentToIRInstructions (S stat)
+cStatmentToIRInstructions (S (Label l stat)) =
+  (IRLabel l :) <$> cStatmentToIRInstructions (S stat)
 cStatmentToIRInstructions (S (Goto l)) = pure [IRJump l]
-cStatmentToIRInstructions (S (Compound (Block bl))) = concat <$> traverse cStatmentToIRInstructions bl
+cStatmentToIRInstructions (S (Compound (Block bl))) =
+  concat <$> traverse cStatmentToIRInstructions bl
 cStatmentToIRInstructions (S (Break l)) = pure [IRJump l]
 cStatmentToIRInstructions (S (Continue l)) = pure [IRJump l]
-cStatmentToIRInstructions (S (DoWhile bl condition (LoopLabel jLabel))) = doWhileToIRs bl condition jLabel
-cStatmentToIRInstructions (S (While condition bl (LoopLabel jLabel))) = whileToIRs condition bl jLabel
-cStatmentToIRInstructions (S (For forInit condition post bl (LoopLabel jLabel))) = forToIRs forInit condition post bl jLabel
+cStatmentToIRInstructions (S (DoWhile bl condition (LoopLabel jLabel))) =
+  doWhileToIRs bl condition jLabel
+cStatmentToIRInstructions (S (While condition bl (LoopLabel jLabel))) =
+  whileToIRs condition bl jLabel
+cStatmentToIRInstructions (S (For forInit condition post bl (LoopLabel jLabel))) =
+  forToIRs forInit condition post bl jLabel
+cStatmentToIRInstructions (S (Switch condition bl (SwitchLabel jLabel caseMap))) =
+  switchToIRs condition bl jLabel caseMap
+cStatmentToIRInstructions (S (Case statement l)) = caseToIRs statement l
+cStatmentToIRInstructions (S (Default statement l)) = defaultToIRs statement l
 cStatmentToIRInstructions (D (VariableDecl _ var (Just expr))) =
   cStatmentToIRInstructions (S (Expression (Assignment None (Variable var) expr)))
 cStatmentToIRInstructions (D _) = pure []
@@ -248,6 +258,33 @@ forToIRs forInit condition post bl (sLabel, cLabel, dLabel) = do
     _ -> pure [IRLabel cLabel, IRJump sLabel]
   blIRs <- cStatmentToIRInstructions $ S bl
   pure $ forInitIRs ++ conditionIRs ++ blIRs ++ postIRs ++ [IRLabel dLabel]
+
+caseMapToIRJump :: IRVal -> IRVal -> M.Map Int String -> [IRInstruction]
+caseMapToIRJump irVal resIRVal m = concatMap caseToIRJump $ M.toList m
+  where caseToIRJump (val, l) =
+          [IRBinary EqualRelation irVal (IRConstant (show val)) resIRVal,
+          IRJumpIfNotZero resIRVal l]
+
+switchToIRs :: Expr -> Statement -> (Maybe String, String) -> M.Map Int String -> State (Int, Int) [IRInstruction]
+switchToIRs condition bl (defaultLabel, doneLabel) caseMap = do
+  (exprIRs, exprIRVal) <- exprToIRs condition
+  varId <- gets fst <* modify bumpOneToVarId
+  blIRs <- cStatmentToIRInstructions $ S bl
+  defaultIRs <- case defaultLabel of
+    Just l -> pure [IRJump l]
+    _ -> pure []
+  let caseIRs = caseMapToIRJump exprIRVal (IRVar (show varId)) caseMap
+  pure $ exprIRs ++ caseIRs ++ defaultIRs ++ [IRJump doneLabel] ++ blIRs ++ [IRLabel doneLabel]
+
+caseToIRs :: Statement -> String -> State (Int, Int) [IRInstruction]
+caseToIRs statement l = do
+  stateIRs <- cStatmentToIRInstructions $ S statement
+  pure $ IRLabel l : stateIRs
+
+defaultToIRs :: Statement -> String -> State (Int, Int) [IRInstruction]
+defaultToIRs statement l = do
+  stateIRs <- cStatmentToIRInstructions $ S statement
+  pure $ IRLabel l : stateIRs
 
 exprToIRs :: Expr -> State (Int, Int) ([IRInstruction], IRVal)
 exprToIRs expr =
