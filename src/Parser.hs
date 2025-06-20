@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/06/20 11:59:29 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/20 17:28:10 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -136,7 +136,9 @@ binaryAssignmentOp =
 
 keywordList :: [String]
 keywordList = 
-  ["int", "void", "return", "if", "else", "goto", "do", "while", "for", "break", "continue"]
+  ["int", "void", "return", "if",
+  "else", "goto", "do", "while",
+  "for", "break", "continue", "switch"]
 
 binaryOpPrecedence :: M.Map String Int
 binaryOpPrecedence = M.fromList $ zip allBinaryOp
