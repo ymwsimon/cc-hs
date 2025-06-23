@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/06/23 00:07:38 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/23 13:11:05 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -80,7 +80,7 @@ cStatmentToIRInstructions (S (Switch condition bl (SwitchLabel jLabel caseMap)))
   switchToIRs condition bl jLabel caseMap
 cStatmentToIRInstructions (S (Case statement l)) = caseToIRs statement l
 cStatmentToIRInstructions (S (Default statement l)) = defaultToIRs statement l
-cStatmentToIRInstructions (D (VariableDeclaration _ var (Just expr))) =
+cStatmentToIRInstructions (D (VD ((VariableDeclaration _ var (Just expr))))) =
   cStatmentToIRInstructions (S (Expression (Assignment None (Variable var) expr)))
 cStatmentToIRInstructions (D _) = pure []
 cStatmentToIRInstructions _ = undefined
@@ -89,7 +89,7 @@ initIRVarId :: a1 -> (a2, b) -> (a1, b)
 initIRVarId s (_, b) = (s, b)
 
 cFuncDefineToIRFuncDefine :: Declaration -> State (Int, Int) IRFunctionDefine
-cFuncDefineToIRFuncDefine fd@(FunctionDeclaration _ _ _ (FunTypeInfo _ _ _ (Just bl)) _) =
+cFuncDefineToIRFuncDefine fd@(FunctionDeclaration _ _ _ (Just bl) _) =
   IRFunctionDefine (funName fd) . (++ [IRReturn (IRConstant "0")]) . concat
     <$> (modify (initIRVarId (nextVarId fd)) >>
       mapM cStatmentToIRInstructions (unBlock bl))

@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/06/23 01:13:55 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/23 13:09:30 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -96,15 +96,19 @@ data Statement =
   deriving (Show, Eq)
 
 data Declaration =
-  VariableDeclaration DT IdentifierName (Maybe Expr)
-  | FunctionDeclaration 
+  VD VariableDeclaration
+  | FunctionDeclaration
     {
       funName :: String,
       inputArgs :: [InputArgPair],
       funRetType :: DT,
-      ftInfo :: FunTypeInfo,
+      funDefine :: Maybe Block,
       nextVarId :: Int
     }
+  deriving (Show, Eq)
+
+data VariableDeclaration =
+  VariableDeclaration DT IdentifierName (Maybe Expr)
   deriving (Show, Eq)
 
 data FunTypeInfo =
@@ -677,7 +681,7 @@ vDeclarationParser = do
           Just _ -> Just <$> exprParser
           _ -> pure Nothing
       void semiColParser
-      pure $ VariableDeclaration varType newVarName initialiser
+      pure $ VD $ VariableDeclaration varType newVarName initialiser
 
 expressionParser :: ParsecT String ParseInfo IO Statement
 expressionParser = Expression <$> exprParser
@@ -897,7 +901,7 @@ functionDeclareParser = do
   nVarId <- currentVarId <$> getState
   jLabel <- getJumpLabel
   keepIdsJumpLabel parseInfo jLabel
-  pure $ FunctionDeclaration name  argList rType (FunTypeInfo rType name (map dataType argList) block) nVarId
+  pure $ FunctionDeclaration name  argList rType block nVarId
 
 getLabelList :: [BlockItem] -> M.Map String String -> Either String (M.Map String String)
 getLabelList [] m = Right m
