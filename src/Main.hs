@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/06/23 13:09:59 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/23 14:02:33 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -42,19 +42,6 @@ argsParser = Args
   <*> O.switch (O.long "lex")
   <*> O.switch (O.long "parse")
   <*> O.switch (O.long "codegen")
-
-defaultParsecState :: ParseInfo
-defaultParsecState = ParseInfo
-  {
-    currentScopeVar = M.empty,
-    outerScopeVar = M.empty,
-    precedence = lowestPrecedence,
-    labelId = 1,
-    currentVarId = 1,
-    outerVarId = 1,
-    jumpLabel = [],
-    topLevel = True
-  }
 
 outFileName :: String -> String
 outFileName fileName

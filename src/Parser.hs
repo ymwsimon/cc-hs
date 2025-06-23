@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/06/23 13:14:10 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/23 23:41:47 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -42,7 +42,7 @@ data PrimType =
 
 data DT =
   DTInternal PrimType
-  | DTUserDefined [DT]
+  | DTUserDefined String [DT]
   | DTVoid
   deriving (Show, Eq)
 
@@ -56,6 +56,7 @@ data ParseInfo =
   {
     currentScopeVar :: M.Map String IdentifierType,
     outerScopeVar :: M.Map String IdentifierType,
+    dataTypeMap :: M.Map String DT,
     precedence :: Int,
     labelId :: Int,
     currentVarId :: Int,
@@ -63,6 +64,7 @@ data ParseInfo =
     jumpLabel :: [JumpLabel],
     topLevel :: Bool
   }
+  deriving (Show, Eq)
 
 data InputArgPair =
   ArgPair 
@@ -181,6 +183,23 @@ primTypeList = [ITChar, ITInt, ITFloat, ITDouble]
 
 primTypeStringToPrimType :: String -> PrimType
 primTypeStringToPrimType dt = M.fromList (zip primDataTypeStrList primTypeList) M.! dt 
+
+primDataTypeMap :: M.Map String DT
+primDataTypeMap = M.fromList $ ("void", DTVoid) : zip primDataTypeStrList (map DTInternal primTypeList)
+
+defaultParsecState :: ParseInfo
+defaultParsecState = ParseInfo
+  {
+    currentScopeVar = M.empty,
+    outerScopeVar = M.empty,
+    dataTypeMap = primDataTypeMap,
+    precedence = lowestPrecedence,
+    labelId = 1,
+    currentVarId = 1,
+    outerVarId = 1,
+    jumpLabel = [],
+    topLevel = True
+  }
 
 binaryOpPrecedence :: M.Map String Int
 binaryOpPrecedence = M.fromList $ zip allBinaryOp
@@ -398,20 +417,19 @@ identifierParser = do
     then unexpected $ "Cannot use keyword as identifier: " ++ symbol
     else pure symbol
 
-dataTypeParser :: ParsecT String u IO DT
+dataTypeParser :: ParsecT String ParseInfo IO DT
 dataTypeParser = do
   dtName <- symbolExtract
-  if dtName `elem` primDataTypeStrList
-    then pure $ DTInternal $ primTypeStringToPrimType dtName
-    else if dtName == "void"
-      then pure DTVoid
-      else undefined
+  dtMap <- dataTypeMap <$> getState
+  if M.member dtName dtMap && dtName /= "void"
+    then pure $ dtMap M.! dtName
+    else unexpected dtName
 
 intParser :: ParsecT String u IO String
 intParser = spaces >> many1 digit
 
 fileParser :: ParsecT String ParseInfo IO [Declaration]
-fileParser = manyTill functionDeclareParser $ try $ spaces >> eof
+fileParser = manyTill declareParser $ try $ spaces >> eof
 
 binaryAssignmentOpParser :: ParsecT String u IO BinaryOp
 binaryAssignmentOpParser = foldl1 (<|>) $
@@ -622,6 +640,38 @@ variableParser = do
       then postfixOp $ Variable (vn $ current M.! vName)
       else postfixOp $ Variable (vn $ outer M.! vName)
 
+isFuncIdentiferInVarMap :: String -> M.Map String IdentifierType -> M.Map String IdentifierType -> Bool
+isFuncIdentiferInVarMap fIdentifier current outer =
+  (M.member fIdentifier current && isFuncIdentifer (current M.! fIdentifier))
+    || (M.member fIdentifier outer && isFuncIdentifer (outer M.! fIdentifier))
+
+getFunTypeInfoFromVarMap :: String -> M.Map String IdentifierType -> M.Map String IdentifierType -> FunTypeInfo
+getFunTypeInfoFromVarMap fIdentifier current outer =
+  if M.member fIdentifier current && isFuncIdentifer (current M.! fIdentifier)
+    then case current M.! fIdentifier of
+          FuncIdentifier fi -> fi
+          _ -> undefined
+    else case outer M.! fIdentifier of
+          FuncIdentifier fi -> fi
+          _ -> undefined
+
+functionCallParser :: ParsecT String ParseInfo IO Expr
+functionCallParser = do
+  functionName <- identifierParser <* openPParser
+  current <- currentScopeVar <$> getState
+  outer <- outerScopeVar <$> getState
+  if not $ isFuncIdentiferInVarMap functionName current outer
+    then unexpected $ functionName ++ ". Not declared before"
+    else do
+      maybeCloseParen <- lookAhead (try closePParser) <|> pure ""
+      paraList <- case maybeCloseParen of
+        ")" -> closePParser >> pure []
+        _ -> sepBy exprParser commaParser <* closePParser
+      let funcInfo = getFunTypeInfoFromVarMap functionName current outer
+      if length paraList == length (argumentList funcInfo)
+        then pure $ FunctionCall functionName paraList
+        else unexpected "Function call. Incorrect number of parameters"
+
 factorParser :: ParsecT String ParseInfo IO Expr
 factorParser = do
   spaces
@@ -631,7 +681,11 @@ factorParser = do
             | isDigit c = intOperandParser
             | [c] `elem` allUnaryOp = unaryExprParser
             | c == '(' = parenExprParser
-            | otherwise = variableParser
+            | otherwise = do
+                maybeParen <- lookAhead (try (identifierParser >> openPParser)) <|> pure ""
+                case maybeParen of
+                    "(" -> functionCallParser
+                    _ -> variableParser
 
 returnStatParser :: ParsecT String ParseInfo IO Statement
 returnStatParser = do
@@ -653,18 +707,31 @@ ifStatParser = do
     _ -> pure Nothing
   pure $ If cond tStat fStat
 
-argPairParser :: ParsecT String u IO InputArgPair
-argPairParser = ArgPair <$> dataTypeParser <*> identifierParser
+argPairParser :: ParsecT String ParseInfo IO InputArgPair
+argPairParser = do
+  dt <- dataTypeParser
+  maybeNoName <- lookAhead (try closePParser <|> try commaParser) <|> pure ""
+  case maybeNoName of
+    "" -> do
+      vName <- identifierParser
+      current <- currentScopeVar <$> getState
+      if M.member vName current
+        then unexpected $ vName ++ ". Already defined"
+        else do
+          modifyState (\p -> p {currentScopeVar = M.insert vName (VarIdentifier dt vName) (currentScopeVar p)})
+          pure $ ArgPair dt vName
+    _ -> pure $ ArgPair dt ""
 
-argListParser :: ParsecT String u IO [InputArgPair]
+argListParser :: ParsecT String ParseInfo IO [InputArgPair]
 argListParser = do
-  res <- try keyVoidParser <|> pure []
+  res <- lookAhead (try closePParser <|> try symbolExtract) <|> pure ""
   case res of
-    "void" -> pure []
-    _ -> try (sepBy argPairParser $ try commaParser) <|> pure []
+    "void" -> keyVoidParser >> pure []
+    ")" -> pure []
+    _ -> sepBy argPairParser $ try commaParser
 
-vDeclarationParser :: ParsecT String ParseInfo IO VariableDeclaration
-vDeclarationParser = do
+varDeclarationParser :: ParsecT String ParseInfo IO VariableDeclaration
+varDeclarationParser = do
   varType <- dataTypeParser
   vName <- identifierParser <?> "Valid identifier"
   parseInfo <- getState
@@ -705,10 +772,10 @@ labelNameParser = do
   void colonParser
   pure lName
 
-updateVarMapForNewScope :: ParseInfo -> ParsecT String ParseInfo IO ()
-updateVarMapForNewScope parseInfo = do
+updateVarMapForNewScope :: ParseInfo -> M.Map String IdentifierType -> ParsecT String ParseInfo IO ()
+updateVarMapForNewScope parseInfo m = do
   putState $ parseInfo
-    {currentScopeVar = M.empty,
+    {currentScopeVar = m,
       outerScopeVar = M.union (currentScopeVar parseInfo) (outerScopeVar parseInfo),
       precedence = lowestPrecedence}
 
@@ -718,14 +785,17 @@ keepIdsJumpLabel parseInfo jLabel = do
   lId <- labelId <$> getState
   putState $ parseInfo {currentVarId = newVarId, labelId = lId, jumpLabel = jLabel}
 
-blockParser :: ParsecT String ParseInfo IO Block
-blockParser = do
+blockParser :: M.Map String IdentifierType -> ParsecT String ParseInfo IO Block
+blockParser m = do
   void openCurParser
   parseInfo <- getState
-  updateVarMapForNewScope parseInfo
+  updateVarMapForNewScope parseInfo m
+  modifyState $ \p -> p {topLevel = False}
   block <- manyTill blockItemParser $ try closeCurParser
   jLabel <- getJumpLabel
-  keepIdsJumpLabel parseInfo jLabel
+  current <- currentScopeVar <$> getState
+  outer <- outerScopeVar <$> getState
+  keepIdsJumpLabel (parseInfo {outerScopeVar = M.union (M.filter isFuncIdentifer current) outer}) jLabel
   pure $ Block block
 
 isSwitchLabel :: JumpLabel -> Bool
@@ -767,7 +837,7 @@ whileParser :: ParsecT String ParseInfo IO Statement
 whileParser = do
   void keyWhileParser
   parseInfo <- getState
-  updateVarMapForNewScope parseInfo
+  updateVarMapForNewScope parseInfo M.empty
   makeLoopLabel
   condition <- parenExprParser
   whileBody <- statementParser
@@ -779,7 +849,7 @@ doWhileParser :: ParsecT String ParseInfo IO Statement
 doWhileParser = do
   void keyDoParser
   parseInfo <- getState
-  updateVarMapForNewScope parseInfo
+  updateVarMapForNewScope parseInfo M.empty
   makeLoopLabel
   doWhileBody <- statementParser
   void keyWhileParser
@@ -792,14 +862,14 @@ forInitParser :: ParsecT String ParseInfo IO ForInit
 forInitParser = do
   maybeType <- lookAhead (try keyIntParser) <|> pure ""
   case maybeType of
-    "int" -> InitDecl <$> vDeclarationParser
+    "int" -> InitDecl <$> varDeclarationParser
     _ -> InitExpr <$> optionMaybe exprParser <* semiColParser
 
 forLoopParser :: ParsecT String ParseInfo IO Statement
 forLoopParser = do
   void $ keyForParser >> openPParser
   parseInfo <- getState
-  updateVarMapForNewScope parseInfo
+  updateVarMapForNewScope parseInfo M.empty
   makeLoopLabel
   forInit <- forInitParser
   condition <- optionMaybe (try exprParser) <* semiColParser
@@ -845,7 +915,7 @@ defaultParser = do
 switchParser :: ParsecT String ParseInfo IO Statement
 switchParser = do
   parseInfo <- getState
-  updateVarMapForNewScope parseInfo
+  updateVarMapForNewScope parseInfo M.empty
   void keySwitchParser
   makeSwitchLabel
   expr <- parenExprParser
@@ -862,7 +932,7 @@ statementParser = do
       "if" -> ifStatParser
       ";" -> nullStatParser
       "goto" -> gotoParser
-      "{" -> Compound <$> blockParser
+      "{" -> Compound <$> blockParser M.empty
       "break" -> breakParser
       "continue" -> continueParser
       "while" -> whileParser
@@ -884,24 +954,96 @@ blockItemParser :: ParsecT String ParseInfo IO BlockItem
 blockItemParser = do
   maybeType <- lookAhead $ optionMaybe $ try keyIntParser
   case maybeType of
-    Just _ -> D . VD <$> vDeclarationParser
+    Just _ -> D <$> declareParser
     _ -> S <$> statementParser
+
+isValidDataType :: String -> ParsecT String ParseInfo IO Bool
+isValidDataType typeName = do
+  dtMap <- dataTypeMap <$> getState
+  if M.member typeName dtMap
+    then pure True
+    else pure False
+
+checkForFuncNameConflict :: String -> ParsecT String ParseInfo IO String
+checkForFuncNameConflict iName = do
+  current <- currentScopeVar <$> getState
+  if M.member iName current
+    then case current M.! iName of
+      VarIdentifier _ _ -> unexpected "Identifier redeclared"
+      _ -> pure iName
+    else pure iName
+
+compareFunTypeDeclare :: FunTypeInfo -> FunTypeInfo -> Bool
+compareFunTypeDeclare (FunTypeInfo lRt lFName lArgList _) (FunTypeInfo rRt rFName rArgList _) =
+  lRt == rRt && lFName == rFName && lArgList == rArgList
+
+checkForFuncTypeConflict :: Declaration -> ParsecT String ParseInfo IO [InputArgPair]
+checkForFuncTypeConflict n@(FunctionDeclaration fn aList rType _ _) = do
+  current <- currentScopeVar <$> getState
+  outer <- outerScopeVar <$> getState
+  if M.member fn current
+    then case current M.! fn of
+      FuncIdentifier oldFuncTypeInfo ->
+        if compareFunTypeDeclare
+          (FunTypeInfo rType fn (map dataType aList) Nothing)
+          oldFuncTypeInfo
+          then pure $ inputArgs n
+          else unexpected "Incompatible function type redeclare"
+      _ -> unexpected "Identifier redeclared"
+    else if M.member fn outer
+      then case outer M.! fn of
+        FuncIdentifier oldFuncTypeInfo ->
+          if compareFunTypeDeclare
+            (FunTypeInfo rType fn (map dataType aList) Nothing)
+            oldFuncTypeInfo
+            then pure $ inputArgs n
+            else unexpected "Incompatible function type redeclare"
+        _ -> pure $ inputArgs n
+      else pure $ inputArgs n
+checkForFuncTypeConflict _ = undefined
+
+isFuncIdentifer :: IdentifierType -> Bool
+isFuncIdentifer (FuncIdentifier _) = True
+isFuncIdentifer _ = False
 
 functionDeclareParser :: ParsecT String ParseInfo IO Declaration
 functionDeclareParser = do
-  rType <- try (keyIntParser >> pure (DTInternal ITInt)) <|> (keyVoidParser >> pure DTVoid)
-  name <- identifierParser
-  argList <- between openPParser closePParser $ try argListParser
+  rType <- dataTypeParser
+  name <- identifierParser >>= checkForFuncNameConflict
   parseInfo <- getState
-  putState $ parseInfo {currentScopeVar = M.empty, currentVarId = 1, precedence = lowestPrecedence}
-  maybeSemiColon <- lookAhead (try semiColParser) <|> pure ""
+  argList <- between openPParser closePParser (try argListParser)
+    >>= checkForFuncTypeConflict . (\aList -> FunctionDeclaration name aList rType Nothing 1)
+  modifyState (\p -> p {outerScopeVar = M.insert name (FuncIdentifier (FunTypeInfo rType name (map dataType argList) Nothing)) (outerScopeVar p), currentVarId = 1, precedence = lowestPrecedence})
+  maybeSemiColon <- lookAhead (try semiColParser <|> try openCurParser)
   block <- case maybeSemiColon of
     ";" -> semiColParser >> pure Nothing
-    _ -> Just <$> blockParser
+    "{" -> if topLevel parseInfo
+      then do
+        current <- currentScopeVar <$> getState
+        if M.member name current
+          then case current M.! name of
+            FuncIdentifier (FunTypeInfo _ _ _ (Just _)) -> unexpected "Function redefinition"
+            _ -> Just <$> blockParser (M.fromList (map (\(ArgPair dt vName) -> (vName, VarIdentifier dt vName)) argList))
+          else
+            Just <$> blockParser (M.fromList (map (\(ArgPair dt vName) -> (vName, VarIdentifier dt vName)) argList))
+      else unexpected "Function definition"
+    _ -> unexpected maybeSemiColon
   nVarId <- currentVarId <$> getState
   jLabel <- getJumpLabel
-  keepIdsJumpLabel parseInfo jLabel
+  current <- currentScopeVar <$> getState
+  outer <- outerScopeVar <$> getState
+  keepIdsJumpLabel
+    (parseInfo {outerScopeVar = M.union (M.filter isFuncIdentifer current) outer})
+    jLabel
+  modifyState (\p -> p {currentScopeVar = M.insert name (FuncIdentifier (FunTypeInfo rType name (map dataType argList) block)) (currentScopeVar p)})
   pure $ FunctionDeclaration name  argList rType block nVarId
+
+declareParser :: ParsecT String ParseInfo IO Declaration
+declareParser = do
+  maybeParen <- lookAhead (try $ dataTypeParser >> identifierParser >> openPParser) <|> pure ""
+  if maybeParen == "("
+    then functionDeclareParser
+    else VD <$> varDeclarationParser
 
 getLabelList :: [BlockItem] -> M.Map String String -> Either String (M.Map String String)
 getLabelList [] m = Right m
