@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/06/23 13:09:30 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/23 13:14:10 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -73,7 +73,7 @@ data InputArgPair =
   deriving (Show, Eq)
 
 data ForInit =
-  InitDecl Declaration
+  InitDecl VariableDeclaration
   | InitExpr (Maybe Expr)
   deriving (Show, Eq)
 
@@ -663,7 +663,7 @@ argListParser = do
     "void" -> pure []
     _ -> try (sepBy argPairParser $ try commaParser) <|> pure []
 
-vDeclarationParser :: ParsecT String ParseInfo IO Declaration
+vDeclarationParser :: ParsecT String ParseInfo IO VariableDeclaration
 vDeclarationParser = do
   varType <- dataTypeParser
   vName <- identifierParser <?> "Valid identifier"
@@ -681,7 +681,7 @@ vDeclarationParser = do
           Just _ -> Just <$> exprParser
           _ -> pure Nothing
       void semiColParser
-      pure $ VD $ VariableDeclaration varType newVarName initialiser
+      pure $ VariableDeclaration varType newVarName initialiser
 
 expressionParser :: ParsecT String ParseInfo IO Statement
 expressionParser = Expression <$> exprParser
@@ -884,7 +884,7 @@ blockItemParser :: ParsecT String ParseInfo IO BlockItem
 blockItemParser = do
   maybeType <- lookAhead $ optionMaybe $ try keyIntParser
   case maybeType of
-    Just _ -> D <$> vDeclarationParser
+    Just _ -> D . VD <$> vDeclarationParser
     _ -> S <$> statementParser
 
 functionDeclareParser :: ParsecT String ParseInfo IO Declaration

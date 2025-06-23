@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/06/23 13:11:05 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/23 13:14:24 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -240,7 +240,7 @@ whileToIRs condition bl (_, cLabel, dLabel) = do
 
 forInitToIRs :: ForInit -> State (Int, Int) [IRInstruction]
 forInitToIRs fi = case fi of
-  InitDecl d -> cStatmentToIRInstructions $ D d
+  InitDecl d -> cStatmentToIRInstructions $ D $ VD d
   InitExpr (Just expr) -> cStatmentToIRInstructions $ S $ Expression expr
   _ -> pure []
 
