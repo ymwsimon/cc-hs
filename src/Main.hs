@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/06/23 00:13:48 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/23 01:24:07 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -78,6 +78,32 @@ convertCASTToAsmStr =
     . irASTToAsmAST
     . flip evalState (1, 1) . cASTToIrAST
 
+parseOkAct :: String -> [Declaration] -> IO (Either ParseError [Declaration])
+parseOkAct path parseOk =
+  do
+    print parseOk
+    putStrLn ""
+    print $ flip evalState (1, 1) $ cASTToIrAST parseOk
+    putStrLn ""
+    let fdsBlock = map (\case
+            FunctionDeclaration _ _ _ (FunTypeInfo _ _ _ (Just bl)) _ -> unBlock bl
+            _ -> []) parseOk
+        labelCheckRes = labelCheck fdsBlock in
+      case labelCheckRes of
+        Left errs -> putStr (unlines errs) >> pure (parse (parserFail "") "" "")
+        _ -> do
+          let converted = convertCASTToAsmStr parseOk
+          writeFile (outFileName path) converted
+          (_, _, _, assemblerPid) <- createProcess $ proc "cc" [outFileName path, "-o", outExeFileName path]
+          assemblerEC <- waitForProcess assemblerPid
+          if assemblerEC == ExitSuccess
+            then
+              do
+                putStrLn converted
+                pure $ Right parseOk
+            else
+              pure $ parse (parserFail "") "" ""
+
 readNParse :: FilePath -> IO (Either ParseError [Declaration])
 readNParse path =
   if null $ outFileName path
@@ -103,30 +129,7 @@ readNParse path =
             (\parseError -> do
               print parseError
               pure $ Left parseError)
-            (\parseOk ->
-              do
-                print parseOk
-                putStrLn ""
-                print $ flip evalState (1, 1) $ cASTToIrAST parseOk
-                putStrLn ""
-                let fdsBlock = map (\case
-                        FunctionDeclaration _ _ _ (FunTypeInfo _ _ _ (Just bl)) _ -> unBlock bl
-                        _ -> []) parseOk
-                    labelCheckRes = labelCheck fdsBlock in
-                  case labelCheckRes of
-                    Left errs -> putStr (unlines errs) >> pure (parse (parserFail "") "" "")
-                    _ -> do
-                      let converted = convertCASTToAsmStr parseOk
-                      writeFile (outFileName path) converted
-                      (_, _, _, assemblerPid) <- createProcess $ proc "cc" [outFileName path, "-o", outExeFileName path]
-                      assemblerEC <- waitForProcess assemblerPid
-                      if assemblerEC == ExitSuccess
-                        then
-                          do
-                            putStrLn converted
-                            pure $ Right parseOk
-                        else
-                          pure $ parse (parserFail "") "" "")
+            (parseOkAct path)
             res
 
 main :: IO ()
