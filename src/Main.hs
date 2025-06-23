@@ -6,9 +6,11 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/06/20 12:04:14 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/23 00:13:48 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
+
+{-# LANGUAGE LambdaCase #-}
 
 module Main where
 
@@ -21,7 +23,6 @@ import qualified Data.Map as M
 import Parser
 import IR
 import Assembly
-import Operation
 import System.Exit
 import System.Process
 import Control.Monad.State
@@ -44,11 +45,16 @@ argsParser = Args
 
 defaultParsecState :: ParseInfo
 defaultParsecState = ParseInfo
-  { currentScopeVar = M.singleton varIdMapKey "1",
-    outerScopeVar = M.singleton varIdMapKey "1",
+  {
+    currentScopeVar = M.empty,
+    outerScopeVar = M.empty,
     precedence = lowestPrecedence,
     labelId = 1,
-    jumpLabel = [] }
+    currentVarId = 1,
+    outerVarId = 1,
+    jumpLabel = [],
+    topLevel = True
+  }
 
 outFileName :: String -> String
 outFileName fileName
@@ -72,7 +78,7 @@ convertCASTToAsmStr =
     . irASTToAsmAST
     . flip evalState (1, 1) . cASTToIrAST
 
-readNParse :: FilePath -> IO (Either ParseError [FunctionDefine])
+readNParse :: FilePath -> IO (Either ParseError [Declaration])
 readNParse path =
   if null $ outFileName path
     then do
@@ -98,26 +104,29 @@ readNParse path =
               print parseError
               pure $ Left parseError)
             (\parseOk ->
-              let converted = convertCASTToAsmStr parseOk in
-                do
-                  print parseOk
-                  putStrLn ""
-                  print $ flip evalState (1, 1) $ cASTToIrAST parseOk
-                  putStrLn ""
-                  let labelCheckRes = labelCheck parseOk in
-                    case labelCheckRes of
-                      Left errs -> putStr (unlines errs) >> pure (parse (parserFail "") "" "")
-                      _ -> do
-                        writeFile (outFileName path) converted
-                        (_, _, _, assemblerPid) <- createProcess $ proc "cc" [outFileName path, "-o", outExeFileName path]
-                        assemblerEC <- waitForProcess assemblerPid
-                        if assemblerEC == ExitSuccess
-                          then
-                            do
-                              putStrLn converted
-                              pure $ Right parseOk
-                          else
-                            pure $ parse (parserFail "") "" "")
+              do
+                print parseOk
+                putStrLn ""
+                print $ flip evalState (1, 1) $ cASTToIrAST parseOk
+                putStrLn ""
+                let fdsBlock = map (\case
+                        FunctionDeclaration _ _ _ (FunTypeInfo _ _ _ (Just bl)) _ -> unBlock bl
+                        _ -> []) parseOk
+                    labelCheckRes = labelCheck fdsBlock in
+                  case labelCheckRes of
+                    Left errs -> putStr (unlines errs) >> pure (parse (parserFail "") "" "")
+                    _ -> do
+                      let converted = convertCASTToAsmStr parseOk
+                      writeFile (outFileName path) converted
+                      (_, _, _, assemblerPid) <- createProcess $ proc "cc" [outFileName path, "-o", outExeFileName path]
+                      assemblerEC <- waitForProcess assemblerPid
+                      if assemblerEC == ExitSuccess
+                        then
+                          do
+                            putStrLn converted
+                            pure $ Right parseOk
+                        else
+                          pure $ parse (parserFail "") "" "")
             res
 
 main :: IO ()
