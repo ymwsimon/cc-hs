@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/06/23 14:02:33 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/24 17:46:41 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -78,8 +78,9 @@ parseOkAct path parseOk =
         labelCheckRes = labelCheck fdsBlock in
       case labelCheckRes of
         Left errs -> putStr (unlines errs) >> pure (parse (parserFail "") "" "")
-        _ -> do
-          let converted = convertCASTToAsmStr parseOk
+        Right labelMap -> do
+          let updatedLabel = updateGotoLabel parseOk labelMap
+              converted = convertCASTToAsmStr updatedLabel
           writeFile (outFileName path) converted
           (_, _, _, assemblerPid) <- createProcess $ proc "cc" [outFileName path, "-o", outExeFileName path]
           assemblerEC <- waitForProcess assemblerPid
@@ -87,7 +88,7 @@ parseOkAct path parseOk =
             then
               do
                 putStrLn converted
-                pure $ Right parseOk
+                pure $ Right updatedLabel
             else
               pure $ parse (parserFail "") "" ""
 
