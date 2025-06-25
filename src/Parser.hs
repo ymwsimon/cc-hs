@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/06/24 18:53:19 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/25 14:32:35 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -666,8 +666,6 @@ functionCallParser = do
   functionName <- identifierParser <* openPParser
   current <- currentScopeVar <$> getState
   outer <- outerScopeVar <$> getState
-  -- liftIO $ print current
-  -- liftIO $ print outer
   if M.member functionName current && isVarIdentifier (current M.! functionName)
     then unexpected "using variable as function."
     else if not (isFuncIdentiferInVarMap functionName current outer)
@@ -811,7 +809,6 @@ blockParser m = do
   block <- manyTill blockItemParser $ try closeCurParser
   jLabel <- getJumpLabel
   current <- currentScopeVar <$> getState
-  -- outer <- outerScopeVar <$> getState
   keepIdsJumpLabel (parseInfo {outerScopeVar = M.union (outerScopeVar parseInfo) (M.filter isFuncIdentifier current)}) jLabel
   pure $ Block block
 
@@ -996,8 +993,6 @@ compareFunTypeDeclare (FunTypeInfo lRt lFName lArgList _) (FunTypeInfo rRt rFNam
 
 checkForFuncTypeConflict :: ParseInfo -> Declaration -> ParsecT String ParseInfo IO [InputArgPair]
 checkForFuncTypeConflict parseInfo n@(FunctionDeclaration fn aList rType _ _) = do
-  -- current <- currentScopeVar <$> getState
-  -- outer <- outerScopeVar <$> getState
   let current = currentScopeVar parseInfo
   let outer = outerScopeVar parseInfo
   if M.member fn current
@@ -1048,20 +1043,15 @@ functionDeclareParser = do
   argList <- between openPParser closePParser (try argListParser)
     >>= checkForFuncTypeConflict parseInfo .
       (\aList -> FunctionDeclaration name aList rType Nothing 1)
-  -- liftIO $ print $ outerScopeVar parseInfo
   unless
     (M.member name (outerScopeVar parseInfo)) $
     modifyState (\p -> p {outerScopeVar = M.insert name (FuncIdentifier (FunTypeInfo rType name (map dataType argList) Nothing)) (outerScopeVar p)})
-  -- o <- outerScopeVar <$> getState
-  -- liftIO $ print "first"
-  -- liftIO $ print o
   maybeSemiColon <- lookAhead (try semiColParser <|> try openCurParser)
   block <- case maybeSemiColon of
     ";" -> semiColParser >> pure Nothing
     "{" -> if topLevel parseInfo
       then do
         let current = currentScopeVar parseInfo
-        -- current <- currentScopeVar <$> getState
         if M.member name current
           then case current M.! name of
             FuncIdentifier (FunTypeInfo _ _ _ (Just _)) -> unexpected "Function redefinition"
@@ -1074,24 +1064,14 @@ functionDeclareParser = do
   jLabel <- getJumpLabel
   current <- currentScopeVar <$> getState
   outer <- outerScopeVar <$> getState
-  -- liftIO $ print "second"
-  -- liftIO $ print outer
   keepIdsJumpLabel
     (parseInfo {outerScopeVar = M.union outer (M.filter isFuncIdentifier current)})
     jLabel
-  -- o <- outerScopeVar <$> getState
   s <- getState
   unless (funcNotYetDefined name s) $
     modifyState (\p -> p {currentScopeVar = M.insert name (FuncIdentifier (FunTypeInfo rType name (map dataType argList) block)) (currentScopeVar p)})
   unless (funcNotYetDefined name s) $
     modifyState (\p -> p {outerScopeVar = M.insert name (FuncIdentifier (FunTypeInfo rType name (map dataType argList) block)) (outerScopeVar p)})
-  -- oooo <- outerScopeVar <$> getState
-  -- liftIO $ print "third"
-  -- liftIO $ print oooo
-  -- unless undefined $
-  --   modifyState (\p -> p {outerScopeVar = M.insert name (FuncIdentifier (FunTypeInfo rType name (map dataType argList) block)) (outerScopeVar p)})
-  -- c <- currentScopeVar <$> getState
-  -- liftIO $ print c
   pure $ FunctionDeclaration name  argList rType block nVarId
 
 declareParser :: ParsecT String ParseInfo IO Declaration

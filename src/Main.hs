@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/06/24 17:46:41 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/25 16:50:52 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -55,6 +55,11 @@ outExeFileName fileName
       take (length fileName - 2) fileName
   | otherwise = ""
 
+convertCASTToAsm :: CProgramAST -> [AsmFunctionDefine]
+convertCASTToAsm = 
+    irASTToAsmAST
+    . flip evalState (1, 1) . cASTToIrAST
+
 convertCASTToAsmStr :: CProgramAST -> String
 convertCASTToAsmStr =       
   concat
@@ -79,6 +84,7 @@ parseOkAct path parseOk =
       case labelCheckRes of
         Left errs -> putStr (unlines errs) >> pure (parse (parserFail "") "" "")
         Right labelMap -> do
+          print $ convertCASTToAsm $ updateGotoLabel parseOk labelMap
           let updatedLabel = updateGotoLabel parseOk labelMap
               converted = convertCASTToAsmStr updatedLabel
           writeFile (outFileName path) converted

@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/06/24 22:51:01 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/25 15:54:54 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -17,6 +17,7 @@ import Operation
 import Control.Monad.State
 import qualified Data.Map.Strict as M
 import Control.Monad (mapAndUnzipM)
+import Data.Char
 
 type IRProgramAST = [IRFunctionDefine]
 
@@ -186,7 +187,7 @@ binaryOperationToIRs op lExpr rExpr = do
     IRVar $ show varId)
 
 dropVarName :: String -> String
-dropVarName v = drop 1 $ dropWhile (/= '#') v
+dropVarName v = if '#' `elem` v then drop 1 $ dropWhile (/= '#') v else v
 
 assignmentToIRs :: BinaryOp -> Expr -> Expr -> State (Int, Int) ([IRInstruction], IRVal)
 assignmentToIRs op var rExpr = do
@@ -289,3 +290,21 @@ exprToIRs expr = case expr of
     Conditional condition tCond fCond -> conditionToIRs condition tCond fCond
     FunctionCall name exprs -> funcCallToIRs name exprs
     _ -> undefined
+
+extractVarId :: IRInstruction -> [Int]
+extractVarId instr = case instr of
+  IRReturn v -> [getVarId v]
+  IRUnary _ s d -> [getVarId s, getVarId d]
+  IRBinary _ l r d -> [getVarId l, getVarId r, getVarId d]
+  IRCopy s d -> [getVarId s, getVarId d]
+  IRJump _ -> []
+  IRJumpIfZero v _ -> [getVarId v]
+  IRJumpIfNotZero v _ -> [getVarId v]
+  IRLabel _ -> []
+  IRFuncCall _ args d -> map getVarId (d : args)
+  where getVarId i = case i of
+          IRConstant _ -> 0
+          IRVar iv -> if all isDigit iv then read iv else 0
+
+getMaxStackVarId :: [IRInstruction] -> Int
+getMaxStackVarId = maximum . concatMap extractVarId 
