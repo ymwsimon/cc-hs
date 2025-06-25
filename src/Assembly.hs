@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/04/14 15:59:10 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/25 10:31:50 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -40,6 +40,9 @@ data AsmInstruction =
   | JmpCC {cond :: CondCode, jumpCCIdentifier :: String}
   | SetCC {cond :: CondCode, setCCDst :: Operand}
   | AsmLabel {labelIdentifier :: String}
+  | DeallocateStack Int
+  | Push Operand
+  | Call String
   deriving (Show, Eq)
 
 data AsmUnaryOp =
@@ -71,8 +74,13 @@ data CondCode =
 
 data Reg =
   AX
+  | CX
   | CL
   | DX
+  | DI
+  | SI
+  | R8
+  | R9
   | R10
   | R10D
   | R11

@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/06/24 17:40:12 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/24 22:51:01 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -16,41 +16,25 @@ import Parser
 import Operation
 import Control.Monad.State
 import qualified Data.Map.Strict as M
+import Control.Monad (mapAndUnzipM)
 
 type IRProgramAST = [IRFunctionDefine]
 
 data IRFunctionDefine =
-  IRFunctionDefine
-  {
-    irFuncName :: String,
-    irInstruction :: [IRInstruction]
-  }
+  IRFunctionDefine { irFuncName :: String, irParameter :: [String], irInstruction :: [IRInstruction] }
   deriving (Show, Eq)
 
 data IRInstruction =
   IRReturn IRVal
-  | IRUnary
-    {
-      irUnaryOp :: UnaryOp,
-      irUnarySrc :: IRVal,
-      irUnaryDst :: IRVal
-    }
-  | IRBinary
-    {
-      irBinaryOp :: BinaryOp,
-      irLOperand :: IRVal,
-      irROperand :: IRVal,
-      irBinaryDst :: IRVal
-    }
-  | IRCopy
-    {
-      irCopySrc :: IRVal,
-      irCopyDst :: IRVal
-    }
+  | IRUnary { irUnaryOp :: UnaryOp, irUnarySrc :: IRVal, irUnaryDst :: IRVal }
+  | IRBinary { irBinaryOp :: BinaryOp, irLOperand :: IRVal,
+      irROperand :: IRVal, irBinaryDst :: IRVal }
+  | IRCopy { irCopySrc :: IRVal, irCopyDst :: IRVal }
   | IRJump {irJumpTarget :: String}
   | IRJumpIfZero {irJumpZVal :: IRVal, irJumpZeroTarget :: String}
   | IRJumpIfNotZero {irJumpNZVal :: IRVal, irJumpNotZeroTarget :: String}
   | IRLabel {labelName :: String}
+  | IRFuncCall {irFName :: String, arg :: [IRVal], irFCallDst :: IRVal}
   deriving (Show, Eq)
 
 data IRVal =
@@ -90,7 +74,8 @@ initIRVarId s (_, b) = (s, b)
 
 cFuncDefineToIRFuncDefine :: Declaration -> State (Int, Int) IRFunctionDefine
 cFuncDefineToIRFuncDefine fd@(FunctionDeclaration _ _ _ (Just bl) _) =
-  IRFunctionDefine (funName fd) . (++ [IRReturn (IRConstant "0")]) . concat
+  IRFunctionDefine (funName fd) (map varName (inputArgs fd))
+    . (++ [IRReturn (IRConstant "0")]) . concat
     <$> (modify (initIRVarId (nextVarId fd)) >>
       mapM cStatmentToIRInstructions (unBlock bl))
 cFuncDefineToIRFuncDefine _ = undefined
@@ -287,13 +272,20 @@ defaultToIRs statement l = do
   stateIRs <- cStatmentToIRInstructions $ S statement
   pure $ IRLabel l : stateIRs
 
+funcCallToIRs :: String -> [Expr] -> State (Int, Int) ([IRInstruction], IRVal)
+funcCallToIRs name exprs = do
+  varId <- gets $ IRVar . show . fst
+  modify bumpOneToVarId
+  (irs, irVal) <- mapAndUnzipM exprToIRs exprs
+  pure (concat irs ++ [IRFuncCall name irVal varId], varId)
+
 exprToIRs :: Expr -> State (Int, Int) ([IRInstruction], IRVal)
-exprToIRs expr =
-  case expr of
+exprToIRs expr = case expr of
     Constant s -> pure ([], IRConstant s)
     Unary op uExpr -> unaryOperationToIRs op uExpr
     Binary op lExpr rExpr -> binaryOperationToIRs op lExpr rExpr
     Variable var -> pure ([], IRVar (dropVarName var))
     Assignment op (Variable var) rExpr -> assignmentToIRs op (Variable var) rExpr
     Conditional condition tCond fCond -> conditionToIRs condition tCond fCond
+    FunctionCall name exprs -> funcCallToIRs name exprs
     _ -> undefined
