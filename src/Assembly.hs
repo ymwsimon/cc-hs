@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/06/26 16:42:09 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/26 22:43:03 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -186,8 +186,8 @@ irASTToAsmAST irAst = map (irFuncDefineToAsmFuncDefine (getFuncList irAst)) irAs
 parametersRegister :: [Operand]
 parametersRegister = map Register [EDI, ESI, EDX, ECX, R8D, R9D] ++ map Stack [16, 24..]
 
-getPaddingSize :: [a] -> [Int]
-getPaddingSize args = [8 | odd $ length args]
+getPaddingSize :: [a] -> Int
+getPaddingSize args = if odd $ length args then 8 else 0
 
 getFuncList :: IRProgramAST -> M.Map String String
 getFuncList = foldl' (\m fd -> M.insert (irFuncName fd) (irFuncName fd) m) M.empty
@@ -199,7 +199,7 @@ irFuncDefineToAsmFuncDefine funcList fd =
           (M.empty, []) (zip parametersRegister (irParameter fd)) in
         AsmFunctionDefine (irFuncName fd) $
           instrs ++
-          map AllocateStack (getPaddingSize (irParameter fd)) ++
+          [AllocateStack (getPaddingSize (irParameter fd))] ++
           concatMap (\irs -> irInstructionToAsmInstruction irs m funcList) (irInstruction fd)
 
 irOperandToAsmOperand :: IRVal -> M.Map String Int -> Operand
@@ -228,14 +228,14 @@ irFuncCallToAsm :: String -> [IRVal] -> IRVal -> M.Map String String -> M.Map St
 irFuncCallToAsm name args dst funcList m =
   let (regArg, stackArg) = splitAt 6 args
       paddingSize = getPaddingSize stackArg
-      paddingInstr = map AllocateStack paddingSize
+      paddingInstr = [AllocateStack paddingSize]
       copyRegArgsInstr = zipWith (\pr a -> Mov (irOperandToAsmOperand a m) pr) parametersRegister regArg
       copyStackArgsInstr = concatMap (\sa -> case sa of
         IRConstant c -> [Push (Imm $ read c)]
         IRVar _ -> [Mov (irOperandToAsmOperand sa m) (Register RAX), Push (Register RAX)]) (reverse stackArg)
       callInstrs = if M.member name funcList then [Call name] else [Call $ name ++ "@PLT"] in
   paddingInstr ++ copyRegArgsInstr ++ copyStackArgsInstr ++ callInstrs ++
-    map (DeallocateStack . (+ 8 * length stackArg)) paddingSize ++ [Mov (Register EAX) (irOperandToAsmOperand dst m)]
+    [DeallocateStack (8 * length stackArg + paddingSize)] ++ [Mov (Register EAX) (irOperandToAsmOperand dst m)]
 
 irInstructionToAsmInstruction :: IRInstruction -> M.Map String Int -> M.Map String String -> [AsmInstruction]
 irInstructionToAsmInstruction (IRReturn val) m _ =
@@ -495,7 +495,7 @@ asmInstructionToStr Cdq = pure $ tabulate ["cdq"]
 asmInstructionToStr (AsmIdiv operand) = pure $ tabulate ["idiv", show (convertToNSizeOperand DWORD operand)]
 asmInstructionToStr (AllocateStack i) = case i of
   0 -> []
-  _ -> pure $ tabulate ["subq", "$" ++ show i ++ ", %rsp"]
+  _ -> pure $ tabulate ["subq", "$" ++ show ((16 :: Int) * ceiling (fromIntegral i / (16 :: Double))) ++ ", %rsp"]
 asmInstructionToStr (Cmp r l) = pure $ tabulate ["cmpl", show (convertToNSizeOperand DWORD r) ++ ", " ++ show (convertToNSizeOperand DWORD l)]
 asmInstructionToStr (AsmJmp target) = pure $ tabulate ["jmp", ".L" ++ target]
 asmInstructionToStr (JmpCC code target) = pure $ tabulate ["j" ++ show code, ".L" ++ target]
