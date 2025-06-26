@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/06/26 11:19:09 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/26 16:21:12 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -61,32 +61,33 @@ data AsmBinaryOp =
   deriving Eq
 
 data CondCode =
-  E
-  | NE
-  | G
-  | GE
-  | L
-  | LE
+  E | NE
+  | G | GE
+  | L | LE
   deriving Eq
 
 data Reg =
-  AX
-  | CX
-  | CL
-  | DX
-  | DI
-  | SI
-  | R8
-  | R8D
-  | R9
-  | R9D
-  | R10
-  | R10D
-  | R11
-  | R11D
-  | R12
-  | R12D
-  deriving Eq
+  AL | AX | EAX | RAX
+  | BL | BX | EBX | RBX
+  | CL | CX | ECX | RCX
+  | DL | DX | EDX | RDX
+  | SIL | SI | ESI | RSI
+  | DIL | DI | EDI | RDI
+  | BPL | BP | EBP | RBP
+  | SPL | SP | ESP | RSP
+  | R8B | R8W | R8D | R8
+  | R9B | R9W | R9D | R9
+  | R10B | R10W | R10D | R10
+  | R11B | R11W | R11D | R11
+  | R12B | R12W | R12D | R12
+  deriving (Eq, Enum, Ord)
+
+data MemorySize =
+  Byte
+  | WORD
+  | DWORD
+  | QWORD
+  deriving (Show, Eq)
 
 data Operand =
   Imm Int
@@ -126,28 +127,64 @@ instance Show CondCode where
   show LE = "le"
 
 instance Show Reg where
-  show AX = "eax"
-  show DI = "edi"
-  show SI = "esi"
-  show CX = "ecx"
+  show AL = "al"
+  show AX = "ax"
+  show EAX = "eax"
+  show RAX = "rax"
+  show BL = "bl"
+  show BX = "bx"
+  show EBX = "ebx"
+  show RBX = "rbx"
   show CL = "cl"
-  show DX = "edx"
-  show R8 = "r8"
+  show CX = "cx"
+  show ECX = "ecx"
+  show RCX = "rcx"
+  show DL = "dl"
+  show DX = "dx"
+  show EDX = "edx"
+  show RDX = "rdx"
+  show SIL = "sil"
+  show SI = "si"
+  show ESI = "esi"
+  show RSI = "rsi"
+  show DIL = "dil"
+  show DI = "di"
+  show EDI = "edi"
+  show RDI = "rdi"
+  show BPL = "bpl"
+  show BP = "bp"
+  show EBP = "ebp"
+  show RBP = "rbp"
+  show SPL = "spl"
+  show SP = "sp"
+  show ESP = "esp"
+  show RSP = "rsp"
+  show R8B = "r8b"
+  show R8W = "r8w"
   show R8D = "r8d"
-  show R9 = "r9"
+  show R8 = "r8"
+  show R9B = "r9b"
+  show R9W = "r9w"
   show R9D = "r9d"
-  show R10 = "r10"
+  show R9 = "r9"
+  show R10B = "r10b"
+  show R10W = "r10w"
   show R10D = "r10d"
-  show R11 = "r11"
+  show R10 = "r10"
+  show R11B = "r11b"
+  show R11W = "r11w"
   show R11D = "r11d"
-  show R12 = "r12"
+  show R11 = "r11"
+  show R12B = "r12b"
+  show R12W = "r12w"
   show R12D = "r12d"
+  show R12 = "r12"
 
 irASTToAsmAST :: IRProgramAST -> AsmProgramAST
 irASTToAsmAST = map irFuncDefineToAsmFuncDefine
 
 parametersRegister :: [Operand]
-parametersRegister = map Register [DI, SI, DX, CX, R8D, R9D] ++ map Stack [-4, -6..]
+parametersRegister = map Register [EDI, ESI, EDX, ECX, R8D, R9D] ++ map Stack [16, 24..]
 
 getPaddingSize :: [a] -> [Int]
 getPaddingSize args = [8 | odd $ length args]
@@ -190,13 +227,15 @@ irFuncCallToAsm name args dst m =
       paddingSize = getPaddingSize stackArg
       paddingInstr = map AllocateStack paddingSize
       copyRegArgsInstr = zipWith (\pr a -> Mov (irOperandToAsmOperand a m) pr) parametersRegister regArg
-      copyStackArgsInstr = concatMap (\sa -> [Mov (irOperandToAsmOperand sa m) (Register AX), Push (Register AX)]) stackArg in
+      copyStackArgsInstr = concatMap (\sa -> case sa of
+        IRConstant c -> [Push (Imm $ read c)]
+        IRVar _ -> [Mov (irOperandToAsmOperand sa m) (Register RAX), Push (Register RAX)]) (reverse stackArg) in
   paddingInstr ++ copyRegArgsInstr ++ copyStackArgsInstr ++ [Call name] ++
-    map (DeallocateStack . (+ 8 * length stackArg)) paddingSize ++ [Mov (Register AX) (irOperandToAsmOperand dst m)]
+    map (DeallocateStack . (+ 8 * length stackArg)) paddingSize ++ [Mov (Register EAX) (irOperandToAsmOperand dst m)]
 
 irInstructionToAsmInstruction :: IRInstruction -> M.Map String Int -> [AsmInstruction]
 irInstructionToAsmInstruction (IRReturn val) m =
-  [Mov (irOperandToAsmOperand val m) (Register AX),
+  [Mov (irOperandToAsmOperand val m) (Register EAX),
     Ret]
 irInstructionToAsmInstruction (IRUnary NotRelation s d) m =
   [Cmp (Imm 0) (irOperandToAsmOperand s m),
@@ -358,8 +397,78 @@ fixCmpConstant :: AsmInstruction -> [AsmInstruction]
 fixCmpConstant (Cmp r (Imm l)) = [Mov (Imm l) (Register R11D), Cmp r $ Register R11D]
 fixCmpConstant instr = [instr]
 
-asmProgramASTToAsm :: [AsmFunctionDefine] -> String
-asmProgramASTToAsm = unlines . map asmFunctionDefineToStr
+regQWordMap :: M.Map Reg Reg
+regQWordMap = M.fromList $ zip (enumFrom AL)
+  [RAX, RAX, RAX, RAX,
+    RBX, RBX, RBX, RBX,
+    RCX, RCX, RCX, RCX,
+    RDX, RDX, RDX, RDX,
+    RSI, RSI, RSI, RSI,
+    RDI, RDI, RDI, RDI,
+    RBP, RBP, RBP, RBP,
+    RSP, RSP, RSP, RSP,
+    R8, R8, R8, R8,
+    R9, R9, R9, R9,
+    R10, R10, R10, R10,
+    R11, R11, R11, R11,
+    R12, R12, R12, R12]
+
+regDWordMap :: M.Map Reg Reg
+regDWordMap = M.fromList $ zip (enumFrom AL)
+  [EAX, EAX, EAX, EAX,
+    EBX, EBX, EBX, EBX,
+    ECX, ECX, ECX, ECX,
+    EDX, EDX, EDX, EDX,
+    ESI, ESI, ESI, ESI,
+    EDI, EDI, EDI, EDI,
+    EBP, EBP, EBP, EBP,
+    ESP, ESP, ESP, ESP,
+    R8D, R8D, R8D, R8D,
+    R9D, R9D, R9D, R9D,
+    R10D, R10D, R10D, R10D,
+    R11D, R11D, R11D, R11D,
+    R12D, R12D, R12D, R12D]
+
+regWordMap :: M.Map Reg Reg
+regWordMap = M.fromList $ zip (enumFrom AL)
+  [AX, AX, AX, AX,
+    BX, BX, BX, BX,
+    CX, CX, CX, CX,
+    DX, DX, DX, DX,
+    SI, SI, SI, SI,
+    DI, DI, DI, DI,
+    BP, BP, BP, BP,
+    SP, SP, SP, SP,
+    R8W, R8W, R8W, R8W,
+    R9W, R9W, R9W, R9W,
+    R10W, R10W, R10W, R10W,
+    R11W, R11W, R11W, R11W,
+    R12W, R12W, R12W, R12W]
+
+regByteMap :: M.Map Reg Reg
+regByteMap = M.fromList $ zip (enumFrom AL)
+  [AL, AL, AL, AL,
+    BL, BL, BL, BL,
+    CL, CL, CL, CL,
+    DL, DL, DL, DL,
+    SIL, SIL, SIL, SIL,
+    DIL, DIL, DIL, DIL,
+    BPL, BPL, BPL, BPL,
+    SPL, SPL, SPL, SPL,
+    R8B, R8B, R8B, R8B,
+    R9B, R9B, R9B, R9B,
+    R10B, R10B, R10B, R10B,
+    R11B, R11B, R11B, R11B,
+    R12B, R12B, R12B, R12B]
+
+convertToNSizeOperand :: MemorySize -> Operand -> Operand
+convertToNSizeOperand s op = case op of
+  Register r -> case s of
+    Byte -> Register $ regByteMap M.! r
+    WORD -> Register $ regWordMap M.! r
+    DWORD -> Register $ regDWordMap M.! r
+    QWORD -> Register $ regQWordMap M.! r
+  _ -> op
 
 tabulate :: [String] -> String
 tabulate = intercalate "\t" . ("" :)
@@ -372,22 +481,24 @@ asmFuncReturnStr =
 
 asmInstructionToStr :: AsmInstruction -> [String]
 asmInstructionToStr Ret = asmFuncReturnStr
-asmInstructionToStr (Mov s d) = pure $ tabulate ["movl", show s ++ ", " ++ show d]
-asmInstructionToStr (Movb s d) = pure $ tabulate ["movb", show s ++ ", " ++ show d]
-asmInstructionToStr (AsmUnary op d) = pure $ tabulate [show op, show d]
-asmInstructionToStr (AsmBinary op r l) = pure $ tabulate [show op, show r ++ ", " ++ show l]
+asmInstructionToStr (Mov s d) = pure $ tabulate ["movl", show (convertToNSizeOperand DWORD s) ++ ", " ++ show (convertToNSizeOperand DWORD d)]
+asmInstructionToStr (Movb s d) = pure $ tabulate ["movb", show (convertToNSizeOperand Byte s) ++ ", " ++ show (convertToNSizeOperand Byte d)]
+asmInstructionToStr (AsmUnary op d) = pure $ tabulate [show op, show (convertToNSizeOperand DWORD d)]
+asmInstructionToStr (AsmBinary AsmShiftL r l) = pure $ tabulate [show AsmShiftL, show (convertToNSizeOperand Byte r) ++ ", " ++ show l]
+asmInstructionToStr (AsmBinary AsmShiftR r l) = pure $ tabulate [show AsmShiftR, show (convertToNSizeOperand Byte r) ++ ", " ++ show l]
+asmInstructionToStr (AsmBinary op r l) = pure $ tabulate [show op, show (convertToNSizeOperand DWORD r) ++ ", " ++ show (convertToNSizeOperand DWORD l)]
 asmInstructionToStr Cdq = pure $ tabulate ["cdq"]
-asmInstructionToStr (AsmIdiv operand) = pure $ tabulate ["idiv", show operand]
+asmInstructionToStr (AsmIdiv operand) = pure $ tabulate ["idiv", show (convertToNSizeOperand DWORD operand)]
 asmInstructionToStr (AllocateStack i) = case i of
   0 -> []
   _ -> pure $ tabulate ["subq", "$" ++ show i ++ ", %rsp"]
-asmInstructionToStr (Cmp r l) = pure $ tabulate ["cmpl", show r ++ ", " ++ show l]
+asmInstructionToStr (Cmp r l) = pure $ tabulate ["cmpl", show (convertToNSizeOperand DWORD r) ++ ", " ++ show (convertToNSizeOperand DWORD l)]
 asmInstructionToStr (AsmJmp target) = pure $ tabulate ["jmp", ".L" ++ target]
 asmInstructionToStr (JmpCC code target) = pure $ tabulate ["j" ++ show code, ".L" ++ target]
 asmInstructionToStr (SetCC code dst) = pure $ tabulate ["set" ++ show code, show dst]
 asmInstructionToStr (AsmLabel target) =  [".L" ++  target ++ ":"]
 asmInstructionToStr (Call name) = pure $ tabulate ["call", name]
-asmInstructionToStr (Push s) = pure $ tabulate ["push", show s]
+asmInstructionToStr (Push s) = pure $ tabulate ["pushq", show $ convertToNSizeOperand QWORD s]
 asmInstructionToStr (DeallocateStack i) = case i of
   0 -> []
   _ -> pure $ tabulate ["addq", "$" ++ show i ++ ", %rsp"]

@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/06/25 16:50:52 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/26 15:15:00 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -19,7 +19,6 @@ import Text.Parsec as P
 import Data.List
 import Control.Monad
 import System.IO
-import qualified Data.Map as M
 import Parser
 import IR
 import Assembly
@@ -32,7 +31,8 @@ data Args = Args
     ifiles :: [String],
     doLex :: Bool,
     doParse :: Bool,
-    codegen :: Bool
+    codegen :: Bool,
+    objOnly :: Bool
   }
   deriving (Show, Eq)
 
@@ -42,9 +42,10 @@ argsParser = Args
   <*> O.switch (O.long "lex")
   <*> O.switch (O.long "parse")
   <*> O.switch (O.long "codegen")
+  <*> O.switch (O.short 'c')
 
-outFileName :: String -> String
-outFileName fileName
+outAsmFileName :: String -> String
+outAsmFileName fileName
   | ".c" `isSuffixOf` fileName && length fileName > 2 =
       take (length fileName - 2) fileName ++ ".s"
   | otherwise = ""
@@ -53,6 +54,12 @@ outExeFileName :: String -> String
 outExeFileName fileName
   | ".c" `isSuffixOf` fileName && length fileName > 2 =
       take (length fileName - 2) fileName
+  | otherwise = ""
+
+outObjFileName :: String -> String
+outObjFileName fileName
+  | ".c" `isSuffixOf` fileName && length fileName > 2 =
+      take (length fileName - 2) fileName ++ ".o"
   | otherwise = ""
 
 convertCASTToAsm :: CProgramAST -> [AsmFunctionDefine]
@@ -70,8 +77,8 @@ convertCASTToAsmStr =
     . irASTToAsmAST
     . flip evalState (1, 1) . cASTToIrAST
 
-parseOkAct :: String -> [Declaration] -> IO (Either ParseError [Declaration])
-parseOkAct path parseOk =
+parseOkAct :: Args -> String -> [Declaration] -> IO (Either ParseError [Declaration])
+parseOkAct args path parseOk =
   do
     print parseOk
     putStrLn ""
@@ -87,8 +94,10 @@ parseOkAct path parseOk =
           print $ convertCASTToAsm $ updateGotoLabel parseOk labelMap
           let updatedLabel = updateGotoLabel parseOk labelMap
               converted = convertCASTToAsmStr updatedLabel
-          writeFile (outFileName path) converted
-          (_, _, _, assemblerPid) <- createProcess $ proc "cc" [outFileName path, "-o", outExeFileName path]
+          writeFile (outAsmFileName path) converted
+          (_, _, _, assemblerPid) <- if objOnly args
+            then createProcess $ proc "cc" [outAsmFileName path, "-c", "-o", outObjFileName path]
+            else createProcess $ proc "cc" [outAsmFileName path, "-o", outExeFileName path]
           assemblerEC <- waitForProcess assemblerPid
           if assemblerEC == ExitSuccess
             then
@@ -98,9 +107,9 @@ parseOkAct path parseOk =
             else
               pure $ parse (parserFail "") "" ""
 
-readNParse :: FilePath -> IO (Either ParseError [Declaration])
-readNParse path =
-  if null $ outFileName path
+readNParse :: Args -> FilePath -> IO (Either ParseError [Declaration])
+readNParse args path =
+  if null $ outAsmFileName path
     then do
         putStrLn "Incorrect file name"
         pure $ parse (parserFail "") "" ""
@@ -123,7 +132,7 @@ readNParse path =
             (\parseError -> do
               print parseError
               pure $ Left parseError)
-            (parseOkAct path)
+            (parseOkAct args path)
             res
 
 main :: IO ()
@@ -131,7 +140,7 @@ main = do
   args <- O.execParser
     (O.info (argsParser O.<**> O.helper)
     (O.fullDesc <> O.progDesc "desc" <> O.header "header"))
-  res <- mapM readNParse $ ifiles args
+  res <- mapM (readNParse args) $ ifiles args
   -- unless (all (either (const False) (const True)) res) exitFailure
   (`unless` exitFailure) $ (`all` res) $ either (const False) (const True)
 
