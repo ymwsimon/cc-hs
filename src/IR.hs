@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/06/25 15:54:54 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/26 11:41:09 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -73,6 +73,10 @@ cStatmentToIRInstructions _ = undefined
 initIRVarId :: a1 -> (a2, b) -> (a1, b)
 initIRVarId s (_, b) = (s, b)
 
+hasFuncBody :: Declaration -> Bool
+hasFuncBody (FunctionDeclaration _ _ _ (Just _) _) = True
+hasFuncBody _ = False
+
 cFuncDefineToIRFuncDefine :: Declaration -> State (Int, Int) IRFunctionDefine
 cFuncDefineToIRFuncDefine fd@(FunctionDeclaration _ _ _ (Just bl) _) =
   IRFunctionDefine (funName fd) (map varName (inputArgs fd))
@@ -82,7 +86,7 @@ cFuncDefineToIRFuncDefine fd@(FunctionDeclaration _ _ _ (Just bl) _) =
 cFuncDefineToIRFuncDefine _ = undefined
 
 cASTToIrAST :: CProgramAST -> State (Int, Int) IRProgramAST
-cASTToIrAST = mapM cFuncDefineToIRFuncDefine
+cASTToIrAST = mapM cFuncDefineToIRFuncDefine . filter hasFuncBody
 
 bumpOneToVarId :: Num a => (a, b) -> (a, b)
 bumpOneToVarId (a, b) = (a + 1, b)

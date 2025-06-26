@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/06/25 23:29:04 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/26 11:19:09 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -149,13 +149,18 @@ irASTToAsmAST = map irFuncDefineToAsmFuncDefine
 parametersRegister :: [Operand]
 parametersRegister = map Register [DI, SI, DX, CX, R8D, R9D] ++ map Stack [-4, -6..]
 
+getPaddingSize :: [a] -> [Int]
+getPaddingSize args = [8 | odd $ length args]
+
 irFuncDefineToAsmFuncDefine :: IRFunctionDefine -> AsmFunctionDefine
 irFuncDefineToAsmFuncDefine fd =
   let (m, instrs) = copyParametersToStack
           ((+ 1) . getMaxStackVarId $ irInstruction fd)
           (M.empty, []) (zip parametersRegister (irParameter fd)) in
         AsmFunctionDefine (irFuncName fd) $
-          instrs ++ concatMap (`irInstructionToAsmInstruction` m) (irInstruction fd)
+          instrs ++
+          map AllocateStack (getPaddingSize (irParameter fd)) ++
+          concatMap (`irInstructionToAsmInstruction` m) (irInstruction fd)
 
 irOperandToAsmOperand :: IRVal -> M.Map String Int -> Operand
 irOperandToAsmOperand (IRConstant i) _ = Imm $ read i
@@ -178,6 +183,16 @@ irBinaryOpToAsmOp BitXor = AsmBitXor
 irBinaryOpToAsmOp BitShiftLeft = AsmShiftL
 irBinaryOpToAsmOp BitShiftRight = AsmShiftR
 irBinaryOpToAsmOp _ = undefined
+
+irFuncCallToAsm :: String -> [IRVal] -> IRVal -> M.Map String Int -> [AsmInstruction]
+irFuncCallToAsm name args dst m =
+  let (regArg, stackArg) = splitAt 6 args
+      paddingSize = getPaddingSize stackArg
+      paddingInstr = map AllocateStack paddingSize
+      copyRegArgsInstr = zipWith (\pr a -> Mov (irOperandToAsmOperand a m) pr) parametersRegister regArg
+      copyStackArgsInstr = concatMap (\sa -> [Mov (irOperandToAsmOperand sa m) (Register AX), Push (Register AX)]) stackArg in
+  paddingInstr ++ copyRegArgsInstr ++ copyStackArgsInstr ++ [Call name] ++
+    map (DeallocateStack . (+ 8 * length stackArg)) paddingSize ++ [Mov (Register AX) (irOperandToAsmOperand dst m)]
 
 irInstructionToAsmInstruction :: IRInstruction -> M.Map String Int -> [AsmInstruction]
 irInstructionToAsmInstruction (IRReturn val) m =
@@ -246,7 +261,7 @@ irInstructionToAsmInstruction (IRJump target) _ = [AsmJmp target]
 irInstructionToAsmInstruction (IRLabel target) _ = [AsmLabel target]
 irInstructionToAsmInstruction (IRCopy s d) m = 
   [Mov (irOperandToAsmOperand s m) (irOperandToAsmOperand d m)]
-irInstructionToAsmInstruction _  _ = []
+irInstructionToAsmInstruction (IRFuncCall name args dst) m = irFuncCallToAsm name args dst m
 
 copyParametersToStack :: Int -> (M.Map String Int, [AsmInstruction])
   -> [(Operand, String)] -> (M.Map String Int, [AsmInstruction])
@@ -371,7 +386,11 @@ asmInstructionToStr (AsmJmp target) = pure $ tabulate ["jmp", ".L" ++ target]
 asmInstructionToStr (JmpCC code target) = pure $ tabulate ["j" ++ show code, ".L" ++ target]
 asmInstructionToStr (SetCC code dst) = pure $ tabulate ["set" ++ show code, show dst]
 asmInstructionToStr (AsmLabel target) =  [".L" ++  target ++ ":"]
-asmInstructionToStr _ = []
+asmInstructionToStr (Call name) = pure $ tabulate ["call", name]
+asmInstructionToStr (Push s) = pure $ tabulate ["push", show s]
+asmInstructionToStr (DeallocateStack i) = case i of
+  0 -> []
+  _ -> pure $ tabulate ["addq", "$" ++ show i ++ ", %rsp"]
 
 asmFunctionDefineToStr :: AsmFunctionDefine -> String
 asmFunctionDefineToStr (AsmFunctionDefine fname instrs) =
