@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/06/26 16:21:12 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/26 16:42:09 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -181,7 +181,7 @@ instance Show Reg where
   show R12 = "r12"
 
 irASTToAsmAST :: IRProgramAST -> AsmProgramAST
-irASTToAsmAST = map irFuncDefineToAsmFuncDefine
+irASTToAsmAST irAst = map (irFuncDefineToAsmFuncDefine (getFuncList irAst)) irAst
 
 parametersRegister :: [Operand]
 parametersRegister = map Register [EDI, ESI, EDX, ECX, R8D, R9D] ++ map Stack [16, 24..]
@@ -189,15 +189,18 @@ parametersRegister = map Register [EDI, ESI, EDX, ECX, R8D, R9D] ++ map Stack [1
 getPaddingSize :: [a] -> [Int]
 getPaddingSize args = [8 | odd $ length args]
 
-irFuncDefineToAsmFuncDefine :: IRFunctionDefine -> AsmFunctionDefine
-irFuncDefineToAsmFuncDefine fd =
+getFuncList :: IRProgramAST -> M.Map String String
+getFuncList = foldl' (\m fd -> M.insert (irFuncName fd) (irFuncName fd) m) M.empty
+
+irFuncDefineToAsmFuncDefine :: M.Map String String -> IRFunctionDefine -> AsmFunctionDefine
+irFuncDefineToAsmFuncDefine funcList fd =
   let (m, instrs) = copyParametersToStack
           ((+ 1) . getMaxStackVarId $ irInstruction fd)
           (M.empty, []) (zip parametersRegister (irParameter fd)) in
         AsmFunctionDefine (irFuncName fd) $
           instrs ++
           map AllocateStack (getPaddingSize (irParameter fd)) ++
-          concatMap (`irInstructionToAsmInstruction` m) (irInstruction fd)
+          concatMap (\irs -> irInstructionToAsmInstruction irs m funcList) (irInstruction fd)
 
 irOperandToAsmOperand :: IRVal -> M.Map String Int -> Operand
 irOperandToAsmOperand (IRConstant i) _ = Imm $ read i
@@ -221,86 +224,87 @@ irBinaryOpToAsmOp BitShiftLeft = AsmShiftL
 irBinaryOpToAsmOp BitShiftRight = AsmShiftR
 irBinaryOpToAsmOp _ = undefined
 
-irFuncCallToAsm :: String -> [IRVal] -> IRVal -> M.Map String Int -> [AsmInstruction]
-irFuncCallToAsm name args dst m =
+irFuncCallToAsm :: String -> [IRVal] -> IRVal -> M.Map String String -> M.Map String Int -> [AsmInstruction]
+irFuncCallToAsm name args dst funcList m =
   let (regArg, stackArg) = splitAt 6 args
       paddingSize = getPaddingSize stackArg
       paddingInstr = map AllocateStack paddingSize
       copyRegArgsInstr = zipWith (\pr a -> Mov (irOperandToAsmOperand a m) pr) parametersRegister regArg
       copyStackArgsInstr = concatMap (\sa -> case sa of
         IRConstant c -> [Push (Imm $ read c)]
-        IRVar _ -> [Mov (irOperandToAsmOperand sa m) (Register RAX), Push (Register RAX)]) (reverse stackArg) in
-  paddingInstr ++ copyRegArgsInstr ++ copyStackArgsInstr ++ [Call name] ++
+        IRVar _ -> [Mov (irOperandToAsmOperand sa m) (Register RAX), Push (Register RAX)]) (reverse stackArg)
+      callInstrs = if M.member name funcList then [Call name] else [Call $ name ++ "@PLT"] in
+  paddingInstr ++ copyRegArgsInstr ++ copyStackArgsInstr ++ callInstrs ++
     map (DeallocateStack . (+ 8 * length stackArg)) paddingSize ++ [Mov (Register EAX) (irOperandToAsmOperand dst m)]
 
-irInstructionToAsmInstruction :: IRInstruction -> M.Map String Int -> [AsmInstruction]
-irInstructionToAsmInstruction (IRReturn val) m =
+irInstructionToAsmInstruction :: IRInstruction -> M.Map String Int -> M.Map String String -> [AsmInstruction]
+irInstructionToAsmInstruction (IRReturn val) m _ =
   [Mov (irOperandToAsmOperand val m) (Register EAX),
     Ret]
-irInstructionToAsmInstruction (IRUnary NotRelation s d) m =
+irInstructionToAsmInstruction (IRUnary NotRelation s d) m _ =
   [Cmp (Imm 0) (irOperandToAsmOperand s m),
     Mov (Imm 0) (irOperandToAsmOperand d m),
     SetCC E $ irOperandToAsmOperand d m]
-irInstructionToAsmInstruction (IRUnary op s d) m =
+irInstructionToAsmInstruction (IRUnary op s d) m _ =
   [Mov (irOperandToAsmOperand s m) (irOperandToAsmOperand d m),
     AsmUnary (irUnaryOpToAsmOp op) (irOperandToAsmOperand d m)]
-irInstructionToAsmInstruction (IRBinary Division lVal rVal d) m =
+irInstructionToAsmInstruction (IRBinary Division lVal rVal d) m _ =
   [Mov (irOperandToAsmOperand lVal m) (Register AX),
     Cdq,
     AsmIdiv $ irOperandToAsmOperand rVal m,
     Mov (Register AX) (irOperandToAsmOperand d m)]
-irInstructionToAsmInstruction (IRBinary Modulo lVal rVal d) m =
+irInstructionToAsmInstruction (IRBinary Modulo lVal rVal d) m _ =
   [Mov (irOperandToAsmOperand lVal m) (Register AX),
     Cdq,
     AsmIdiv $ irOperandToAsmOperand rVal m,
     Mov (Register DX) (irOperandToAsmOperand d m)]
-irInstructionToAsmInstruction (IRBinary BitShiftLeft lVal rVal d) m =
+irInstructionToAsmInstruction (IRBinary BitShiftLeft lVal rVal d) m _ =
   [Mov (irOperandToAsmOperand lVal m) (Register R12D),
     AsmBinary
       (irBinaryOpToAsmOp BitShiftLeft)
       (irOperandToAsmOperand rVal m)
       (Register R12D),
     Mov (Register R12D) (irOperandToAsmOperand d m)]
-irInstructionToAsmInstruction (IRBinary BitShiftRight lVal rVal d) m =
+irInstructionToAsmInstruction (IRBinary BitShiftRight lVal rVal d) m _ =
   [Mov (irOperandToAsmOperand lVal m) (Register R12D),
     AsmBinary
       (irBinaryOpToAsmOp BitShiftRight)
       (irOperandToAsmOperand rVal m)
       (Register R12D),
     Mov (Register R12D) (irOperandToAsmOperand d m)]
-irInstructionToAsmInstruction (IRJumpIfZero valToCheck jmpTarget) m =
+irInstructionToAsmInstruction (IRJumpIfZero valToCheck jmpTarget) m _ =
   [Cmp (Imm 0) (irOperandToAsmOperand valToCheck m),
     JmpCC E jmpTarget]
-irInstructionToAsmInstruction (IRJumpIfNotZero valToCheck jmpTarget) m =
+irInstructionToAsmInstruction (IRJumpIfNotZero valToCheck jmpTarget) m _ =
   [Cmp (Imm 0) (irOperandToAsmOperand valToCheck m),
     JmpCC NE jmpTarget]
-irInstructionToAsmInstruction (IRBinary EqualRelation valL valR d) m =
+irInstructionToAsmInstruction (IRBinary EqualRelation valL valR d) m _ =
   buildAsmIntrsForIRRelationOp E (irOperandToAsmOperand valL m)
     (irOperandToAsmOperand valR m) (irOperandToAsmOperand d m)
-irInstructionToAsmInstruction (IRBinary NotEqualRelation valL valR d) m =
+irInstructionToAsmInstruction (IRBinary NotEqualRelation valL valR d) m _ =
   buildAsmIntrsForIRRelationOp NE (irOperandToAsmOperand valL m)
     (irOperandToAsmOperand valR m) (irOperandToAsmOperand d m)
-irInstructionToAsmInstruction (IRBinary GreaterThanRelation valL valR d) m =
+irInstructionToAsmInstruction (IRBinary GreaterThanRelation valL valR d) m _ =
   buildAsmIntrsForIRRelationOp G (irOperandToAsmOperand valL m)
     (irOperandToAsmOperand valR m) (irOperandToAsmOperand d m)
-irInstructionToAsmInstruction (IRBinary GreaterEqualRelation valL valR d) m =
+irInstructionToAsmInstruction (IRBinary GreaterEqualRelation valL valR d) m _ =
   buildAsmIntrsForIRRelationOp GE (irOperandToAsmOperand valL m)
     (irOperandToAsmOperand valR m) (irOperandToAsmOperand d m)
-irInstructionToAsmInstruction (IRBinary LessThanRelation valL valR d) m =
+irInstructionToAsmInstruction (IRBinary LessThanRelation valL valR d) m _ =
   buildAsmIntrsForIRRelationOp L (irOperandToAsmOperand valL m)
     (irOperandToAsmOperand valR m) (irOperandToAsmOperand d m)
-irInstructionToAsmInstruction (IRBinary LessEqualRelation valL valR d) m =
+irInstructionToAsmInstruction (IRBinary LessEqualRelation valL valR d) m _ =
   buildAsmIntrsForIRRelationOp LE (irOperandToAsmOperand valL m)
     (irOperandToAsmOperand valR m) (irOperandToAsmOperand d m)
-irInstructionToAsmInstruction (IRBinary op lVal rVal d) m =
+irInstructionToAsmInstruction (IRBinary op lVal rVal d) m _ =
   [Mov (irOperandToAsmOperand lVal m) (irOperandToAsmOperand d m),
     AsmBinary (irBinaryOpToAsmOp op) (irOperandToAsmOperand rVal m)
       (irOperandToAsmOperand d m)]
-irInstructionToAsmInstruction (IRJump target) _ = [AsmJmp target]
-irInstructionToAsmInstruction (IRLabel target) _ = [AsmLabel target]
-irInstructionToAsmInstruction (IRCopy s d) m = 
+irInstructionToAsmInstruction (IRJump target) _ _ = [AsmJmp target]
+irInstructionToAsmInstruction (IRLabel target) _ _ = [AsmLabel target]
+irInstructionToAsmInstruction (IRCopy s d) m _ = 
   [Mov (irOperandToAsmOperand s m) (irOperandToAsmOperand d m)]
-irInstructionToAsmInstruction (IRFuncCall name args dst) m = irFuncCallToAsm name args dst m
+irInstructionToAsmInstruction (IRFuncCall name args dst) m funcList = irFuncCallToAsm name args dst funcList m
 
 copyParametersToStack :: Int -> (M.Map String Int, [AsmInstruction])
   -> [(Operand, String)] -> (M.Map String Int, [AsmInstruction])
