@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/06/25 14:32:35 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/27 02:14:41 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -1038,8 +1038,14 @@ functionDeclareParser = do
   rType <- dataTypeParser
   name <- identifierParser >>= checkForFuncNameConflict
   parseInfo <- getState
-  modifyState (\p -> p {outerScopeVar = M.union (outerScopeVar p) (currentScopeVar p),
-    currentScopeVar = M.empty, currentVarId = 1, precedence = lowestPrecedence})
+  toplvl <- topLevel <$> getState
+  if toplvl
+    then
+      modifyState (\p -> p {outerScopeVar = M.union (outerScopeVar p) (currentScopeVar p),
+        currentScopeVar = M.empty, currentVarId = 1, precedence = lowestPrecedence})
+    else
+      modifyState (\p -> p {outerScopeVar = M.union (outerScopeVar p) (currentScopeVar p),
+        currentScopeVar = M.empty, precedence = lowestPrecedence})
   argList <- between openPParser closePParser (try argListParser)
     >>= checkForFuncTypeConflict parseInfo .
       (\aList -> FunctionDeclaration name aList rType Nothing 1)
