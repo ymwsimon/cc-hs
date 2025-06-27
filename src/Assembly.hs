@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/06/27 11:45:42 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/27 17:02:37 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -199,7 +199,7 @@ irFuncDefineToAsmFuncDefine funcList fd =
           (M.empty, []) (zip parametersRegister (irParameter fd)) in
         AsmFunctionDefine (irFuncName fd) $
           instrs ++
-          [AllocateStack (getPaddingSize (irParameter fd))] ++
+          [AllocateStack (getPaddingSize (drop 6 $ irParameter fd))] ++
           concatMap (\irs -> irInstructionToAsmInstruction irs m funcList) (irInstruction fd)
 
 irOperandToAsmOperand :: IRVal -> M.Map String Int -> Operand
