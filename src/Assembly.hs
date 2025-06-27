@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/06/27 10:59:24 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/27 11:45:42 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -238,73 +238,58 @@ irFuncCallToAsm name args dst funcList m =
     [DeallocateStack (8 * length stackArg + paddingSize)] ++ [Mov (Register EAX) (irOperandToAsmOperand dst m)]
 
 irInstructionToAsmInstruction :: IRInstruction -> M.Map String Int -> M.Map String String -> [AsmInstruction]
-irInstructionToAsmInstruction (IRReturn val) m _ =
-  [Mov (irOperandToAsmOperand val m) (Register EAX),
-    Ret]
-irInstructionToAsmInstruction (IRUnary NotRelation s d) m _ =
-  [Cmp (Imm 0) (irOperandToAsmOperand s m),
-    Mov (Imm 0) (irOperandToAsmOperand d m),
-    SetCC E $ irOperandToAsmOperand d m]
-irInstructionToAsmInstruction (IRUnary op s d) m _ =
-  [Mov (irOperandToAsmOperand s m) (irOperandToAsmOperand d m),
-    AsmUnary (irUnaryOpToAsmOp op) (irOperandToAsmOperand d m)]
-irInstructionToAsmInstruction (IRBinary Division lVal rVal d) m _ =
-  [Mov (irOperandToAsmOperand lVal m) (Register AX),
-    Cdq,
-    AsmIdiv $ irOperandToAsmOperand rVal m,
-    Mov (Register AX) (irOperandToAsmOperand d m)]
-irInstructionToAsmInstruction (IRBinary Modulo lVal rVal d) m _ =
-  [Mov (irOperandToAsmOperand lVal m) (Register AX),
-    Cdq,
-    AsmIdiv $ irOperandToAsmOperand rVal m,
-    Mov (Register DX) (irOperandToAsmOperand d m)]
-irInstructionToAsmInstruction (IRBinary BitShiftLeft lVal rVal d) m _ =
-  [Mov (irOperandToAsmOperand lVal m) (Register R12D),
-    AsmBinary
-      (irBinaryOpToAsmOp BitShiftLeft)
-      (irOperandToAsmOperand rVal m)
-      (Register R12D),
-    Mov (Register R12D) (irOperandToAsmOperand d m)]
-irInstructionToAsmInstruction (IRBinary BitShiftRight lVal rVal d) m _ =
-  [Mov (irOperandToAsmOperand lVal m) (Register R12D),
-    AsmBinary
-      (irBinaryOpToAsmOp BitShiftRight)
-      (irOperandToAsmOperand rVal m)
-      (Register R12D),
-    Mov (Register R12D) (irOperandToAsmOperand d m)]
-irInstructionToAsmInstruction (IRJumpIfZero valToCheck jmpTarget) m _ =
-  [Cmp (Imm 0) (irOperandToAsmOperand valToCheck m),
-    JmpCC E jmpTarget]
-irInstructionToAsmInstruction (IRJumpIfNotZero valToCheck jmpTarget) m _ =
-  [Cmp (Imm 0) (irOperandToAsmOperand valToCheck m),
-    JmpCC NE jmpTarget]
-irInstructionToAsmInstruction (IRBinary EqualRelation valL valR d) m _ =
-  buildAsmIntrsForIRRelationOp E (irOperandToAsmOperand valL m)
-    (irOperandToAsmOperand valR m) (irOperandToAsmOperand d m)
-irInstructionToAsmInstruction (IRBinary NotEqualRelation valL valR d) m _ =
-  buildAsmIntrsForIRRelationOp NE (irOperandToAsmOperand valL m)
-    (irOperandToAsmOperand valR m) (irOperandToAsmOperand d m)
-irInstructionToAsmInstruction (IRBinary GreaterThanRelation valL valR d) m _ =
-  buildAsmIntrsForIRRelationOp G (irOperandToAsmOperand valL m)
-    (irOperandToAsmOperand valR m) (irOperandToAsmOperand d m)
-irInstructionToAsmInstruction (IRBinary GreaterEqualRelation valL valR d) m _ =
-  buildAsmIntrsForIRRelationOp GE (irOperandToAsmOperand valL m)
-    (irOperandToAsmOperand valR m) (irOperandToAsmOperand d m)
-irInstructionToAsmInstruction (IRBinary LessThanRelation valL valR d) m _ =
-  buildAsmIntrsForIRRelationOp L (irOperandToAsmOperand valL m)
-    (irOperandToAsmOperand valR m) (irOperandToAsmOperand d m)
-irInstructionToAsmInstruction (IRBinary LessEqualRelation valL valR d) m _ =
-  buildAsmIntrsForIRRelationOp LE (irOperandToAsmOperand valL m)
-    (irOperandToAsmOperand valR m) (irOperandToAsmOperand d m)
-irInstructionToAsmInstruction (IRBinary op lVal rVal d) m _ =
-  [Mov (irOperandToAsmOperand lVal m) (irOperandToAsmOperand d m),
-    AsmBinary (irBinaryOpToAsmOp op) (irOperandToAsmOperand rVal m)
-      (irOperandToAsmOperand d m)]
-irInstructionToAsmInstruction (IRJump target) _ _ = [AsmJmp target]
-irInstructionToAsmInstruction (IRLabel target) _ _ = [AsmLabel target]
-irInstructionToAsmInstruction (IRCopy s d) m _ = 
-  [Mov (irOperandToAsmOperand s m) (irOperandToAsmOperand d m)]
-irInstructionToAsmInstruction (IRFuncCall name args dst) m funcList = irFuncCallToAsm name args dst funcList m
+irInstructionToAsmInstruction instr m funcList = case instr of
+  IRReturn val ->
+    [Mov (irOperandToAsmOperand val m) (Register EAX), Ret]
+  IRUnary NotRelation s d ->
+    [Cmp (Imm 0) (irOperandToAsmOperand s m), Mov (Imm 0) (irOperandToAsmOperand d m),
+      SetCC E $ irOperandToAsmOperand d m]
+  IRUnary op s d ->
+    [Mov (irOperandToAsmOperand s m) (irOperandToAsmOperand d m),
+      AsmUnary (irUnaryOpToAsmOp op) (irOperandToAsmOperand d m)]
+  IRBinary Division lVal rVal d ->
+    [Mov (irOperandToAsmOperand lVal m) (Register AX), Cdq,
+      AsmIdiv $ irOperandToAsmOperand rVal m, Mov (Register AX) (irOperandToAsmOperand d m)]
+  IRBinary Modulo lVal rVal d ->
+    [Mov (irOperandToAsmOperand lVal m) (Register AX), Cdq,
+      AsmIdiv $ irOperandToAsmOperand rVal m, Mov (Register DX) (irOperandToAsmOperand d m)]
+  IRBinary BitShiftLeft lVal rVal d ->
+    [Mov (irOperandToAsmOperand lVal m) (Register R12D),
+      AsmBinary (irBinaryOpToAsmOp BitShiftLeft) (irOperandToAsmOperand rVal m) (Register R12D),
+      Mov (Register R12D) (irOperandToAsmOperand d m)]
+  IRBinary BitShiftRight lVal rVal d ->
+    [Mov (irOperandToAsmOperand lVal m) (Register R12D),
+      AsmBinary (irBinaryOpToAsmOp BitShiftRight) (irOperandToAsmOperand rVal m) (Register R12D),
+      Mov (Register R12D) (irOperandToAsmOperand d m)]
+  IRJumpIfZero valToCheck jmpTarget ->
+    [Cmp (Imm 0) (irOperandToAsmOperand valToCheck m), JmpCC E jmpTarget]
+  IRJumpIfNotZero valToCheck jmpTarget ->
+    [Cmp (Imm 0) (irOperandToAsmOperand valToCheck m), JmpCC NE jmpTarget]
+  IRBinary EqualRelation valL valR d ->
+    buildAsmIntrsForIRRelationOp E (irOperandToAsmOperand valL m)
+      (irOperandToAsmOperand valR m) (irOperandToAsmOperand d m)
+  IRBinary NotEqualRelation valL valR d ->
+    buildAsmIntrsForIRRelationOp NE (irOperandToAsmOperand valL m)
+      (irOperandToAsmOperand valR m) (irOperandToAsmOperand d m)
+  IRBinary GreaterThanRelation valL valR d ->
+    buildAsmIntrsForIRRelationOp G (irOperandToAsmOperand valL m)
+      (irOperandToAsmOperand valR m) (irOperandToAsmOperand d m)
+  IRBinary GreaterEqualRelation valL valR d ->
+    buildAsmIntrsForIRRelationOp GE (irOperandToAsmOperand valL m)
+      (irOperandToAsmOperand valR m) (irOperandToAsmOperand d m)
+  IRBinary LessThanRelation valL valR d ->
+    buildAsmIntrsForIRRelationOp L (irOperandToAsmOperand valL m)
+      (irOperandToAsmOperand valR m) (irOperandToAsmOperand d m)
+  IRBinary LessEqualRelation valL valR d ->
+    buildAsmIntrsForIRRelationOp LE (irOperandToAsmOperand valL m)
+      (irOperandToAsmOperand valR m) (irOperandToAsmOperand d m)
+  IRBinary op lVal rVal d ->
+    [Mov (irOperandToAsmOperand lVal m) (irOperandToAsmOperand d m),
+      AsmBinary (irBinaryOpToAsmOp op) (irOperandToAsmOperand rVal m) (irOperandToAsmOperand d m)]
+  IRJump target -> [AsmJmp target]
+  IRLabel target -> [AsmLabel target]
+  IRCopy s d -> [Mov (irOperandToAsmOperand s m) (irOperandToAsmOperand d m)]
+  IRFuncCall name args dst -> irFuncCallToAsm name args dst funcList m
 
 copyParametersToStack :: Int -> (M.Map String Int, [AsmInstruction])
   -> [(Operand, String)] -> (M.Map String Int, [AsmInstruction])
