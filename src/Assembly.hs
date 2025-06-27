@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/06/26 22:43:03 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/27 10:59:24 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -338,7 +338,11 @@ convertAsmTempVarToStackAddr = map convertInstr
           _ -> operand
 
 addAllocateStackToFunc :: [AsmInstruction] -> [AsmInstruction]
-addAllocateStackToFunc instrs = AllocateStack ((-1) * getStackSize instrs) : instrs
+addAllocateStackToFunc instrs =
+  let stackSize = (-1) * getStackSize instrs in
+    if stackSize == 0
+      then instrs
+      else AllocateStack (16 + div stackSize 16 * 16) : instrs
 
 getStackSize :: [AsmInstruction] -> Int
 getStackSize = foldl' getMinSize 0
@@ -495,7 +499,7 @@ asmInstructionToStr Cdq = pure $ tabulate ["cdq"]
 asmInstructionToStr (AsmIdiv operand) = pure $ tabulate ["idiv", show (convertToNSizeOperand DWORD operand)]
 asmInstructionToStr (AllocateStack i) = case i of
   0 -> []
-  _ -> pure $ tabulate ["subq", "$" ++ show ((16 :: Int) * ceiling (fromIntegral i / (16 :: Double))) ++ ", %rsp"]
+  _ -> pure $ tabulate ["subq", "$" ++ show i ++ ", %rsp"]
 asmInstructionToStr (Cmp r l) = pure $ tabulate ["cmpl", show (convertToNSizeOperand DWORD r) ++ ", " ++ show (convertToNSizeOperand DWORD l)]
 asmInstructionToStr (AsmJmp target) = pure $ tabulate ["jmp", ".L" ++ target]
 asmInstructionToStr (JmpCC code target) = pure $ tabulate ["j" ++ show code, ".L" ++ target]
