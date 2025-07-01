@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/06/26 11:41:09 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/01 14:02:12 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -65,7 +65,7 @@ cStatmentToIRInstructions (S (Switch condition bl (SwitchLabel jLabel caseMap)))
   switchToIRs condition bl jLabel caseMap
 cStatmentToIRInstructions (S (Case statement l)) = caseToIRs statement l
 cStatmentToIRInstructions (S (Default statement l)) = defaultToIRs statement l
-cStatmentToIRInstructions (D (VD ((VariableDeclaration _ var (Just expr))))) =
+cStatmentToIRInstructions (D (VD ((VariableDeclaration _ var _ (Just expr) _)))) =
   cStatmentToIRInstructions (S (Expression (Assignment None (Variable var) expr)))
 cStatmentToIRInstructions (D _) = pure []
 cStatmentToIRInstructions _ = undefined
@@ -74,11 +74,11 @@ initIRVarId :: a1 -> (a2, b) -> (a1, b)
 initIRVarId s (_, b) = (s, b)
 
 hasFuncBody :: Declaration -> Bool
-hasFuncBody (FunctionDeclaration _ _ _ (Just _) _) = True
+hasFuncBody (FunctionDeclaration _ _ _ (Just _) _ _) = True
 hasFuncBody _ = False
 
 cFuncDefineToIRFuncDefine :: Declaration -> State (Int, Int) IRFunctionDefine
-cFuncDefineToIRFuncDefine fd@(FunctionDeclaration _ _ _ (Just bl) _) =
+cFuncDefineToIRFuncDefine fd@(FunctionDeclaration _ _ _ (Just bl) _ _) =
   IRFunctionDefine (funName fd) (map varName (inputArgs fd))
     . (++ [IRReturn (IRConstant "0")]) . concat
     <$> (modify (initIRVarId (nextVarId fd)) >>

@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/06/26 15:15:00 by mayeung          ###   ########.fr       --
+--   Updated: 2025/06/30 13:58:48 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -85,7 +85,7 @@ parseOkAct args path parseOk =
     print $ flip evalState (1, 1) $ cASTToIrAST parseOk
     putStrLn ""
     let fdsBlock = map (\case
-            FunctionDeclaration _ _ _ (Just bl) _ -> unBlock bl
+            FunctionDeclaration _ _ _ (Just bl) _ _ -> unBlock bl
             _ -> []) parseOk
         labelCheckRes = labelCheck fdsBlock in
       case labelCheckRes of
