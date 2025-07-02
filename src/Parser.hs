@@ -123,7 +123,8 @@ data FunTypeInfo =
     retType :: DT,
     fName :: IdentifierName,
     argumentList :: [DT],
-    funBody :: Maybe Block
+    funBody :: Maybe Block,
+    funcStorageClass :: Maybe StorageClass
   }
   deriving (Show, Eq)
 
@@ -771,6 +772,13 @@ topLevelVarStorageClassCheck (Just Static) Nothing = False
 topLevelVarStorageClassCheck _ (Just Static) = False
 topLevelVarStorageClassCheck _ _ = True
 
+topLevelFuncStorageClassCheck :: Maybe StorageClass -> Maybe StorageClass -> Bool
+topLevelFuncStorageClassCheck (Just Static) (Just Static) = True
+topLevelFuncStorageClassCheck (Just Static) (Just Extern) = True
+topLevelFuncStorageClassCheck (Just Static) Nothing = True
+topLevelFuncStorageClassCheck _ (Just Static) = False
+topLevelFuncStorageClassCheck _ _ = True
+
 updateTopLevelVarCurrentVar :: DT -> IdentifierName -> Maybe Expr -> Maybe StorageClass -> ParsecT String ParseInfo IO ()
 updateTopLevelVarCurrentVar dt vName vDf sClass = do
   topMap <- topLevelScopeIdent <$> getState
@@ -784,6 +792,15 @@ updateTopLevelVarCurrentVar dt vName vDf sClass = do
   modifyState (\p -> p {topLevelScopeIdent = M.insert vName typeInfo (topLevelScopeIdent p)})
   modifyState (\p -> p {currentScopeIdent = M.insert vName typeInfo (currentScopeIdent p)})
 
+getInitialiser :: ParsecT String u IO Expr -> ParsecT String u IO (Maybe Expr)
+getInitialiser parser = do
+  maybeEqual <- optionMaybe $ try equalLex
+  initialiser <- case maybeEqual of
+    Just _ -> Just <$> parser
+    _ -> pure Nothing
+  void semiColParser
+  pure initialiser
+
 topLevelVarDeclarationParser :: ParsecT String ParseInfo IO VariableDeclaration
 topLevelVarDeclarationParser = do
   sc1Try <- storageClassParser Nothing
@@ -791,41 +808,25 @@ topLevelVarDeclarationParser = do
   sc <- storageClassParser sc1Try
   vName <- identifierParser <?> "Valid identifier"
   topIdentMap <- topLevelScopeIdent <$> getState
-  
   when (M.member vName topIdentMap && isFuncIdentifier (topIdentMap M.! vName)) $
     unexpected $ vName ++ ". Already defined"
   when (M.member vName topIdentMap && isVarIdentifier (topIdentMap M.! vName)
     && (vdt (topIdentMap M.! vName) /= varType
       || not (topLevelVarStorageClassCheck (storeClass (topIdentMap M.! vName)) sc))) $
     unexpected $ vName ++ ". Type mismatch to previous declaration"
-  -- liftIO $ print topIdentMap
-  -- need refactor
+  initialiser <- getInitialiser intOperandParser
   if M.member vName topIdentMap
-    then case topIdentMap M.! vName of
-      FuncIdentifier _ -> unexpected $ vName ++ ". Already defined"
-      VarIdentifier vType _ _ vDefine sClass -> if vType /= varType || not (topLevelVarStorageClassCheck sClass sc)
-        then unexpected $ vName ++ ". Type mismatch to previous declaration"
-        else do
-          initialiser <- getinitialiser
-          let newSClass = if sc == Just Extern then sClass else sc
-          if isJust vDefine && isJust initialiser
-            then unexpected "variable redefine"
-            else do
-              updateTopLevelVarCurrentVar vType vName initialiser sc 
-              if isJust vDefine
-                then pure $ VariableDeclaration vType vName True vDefine newSClass
-                else pure $ VariableDeclaration vType vName True initialiser newSClass
+    then do
+      VarIdentifier vType _ _ vDefine sClass <- pure $ topIdentMap M.! vName
+      when (isJust vDefine && isJust initialiser) $
+        unexpected "variable redefine"
+      let newSClass = if sc == Just Extern then sClass else sc
+      let define = if isJust vDefine then vDefine else initialiser
+      updateTopLevelVarCurrentVar vType vName initialiser sc
+      pure $ VariableDeclaration vType vName True define newSClass
     else do
-      initialiser <- getinitialiser
       updateTopLevelVarCurrentVar varType vName initialiser sc
       pure $ VariableDeclaration varType vName True initialiser sc
-    where getinitialiser = do
-            maybeEqual <- optionMaybe $ try equalLex
-            initialiser <- case maybeEqual of
-              Just _ -> Just <$> intOperandParser
-              _ -> pure Nothing
-            void semiColParser
-            pure initialiser
 
 varDeclarationParser :: ParsecT String ParseInfo IO VariableDeclaration
 varDeclarationParser = do
@@ -835,11 +836,13 @@ varDeclarationParser = do
   vName <- identifierParser <?> "Valid identifier"
   parseInfo <- getState
   current <- currentScopeIdent <$> getState
+  topIdentMap <- topLevelScopeIdent <$> getState
   when (M.member vName current
     && (isFuncIdentifier (current M.! vName)
       || (storeClass (current M.! vName) /= Just Extern) || sc /= Just Extern)) $
     unexpected $ "Variable redeclare: " ++ vName
-  -- need refactor
+  when (sc == Just Extern && M.member vName topIdentMap && isFuncIdentifier (topIdentMap M.! vName)) $
+    unexpected $ vName ++ ". Already defined"
   if sc == Just Extern
     then do
       void semiColParser
@@ -853,22 +856,15 @@ varDeclarationParser = do
           newVarName = vName ++ "#" ++ show varId
           newVarMap = M.insert vName (VarIdentifier varType newVarName (topLevel parseInfo) Nothing sc) $ currentScopeIdent parseInfo
       putState $ parseInfo {currentVarId = varId + 1, currentScopeIdent = newVarMap}
-      initialiser <- getinitialiser exprParser
+      initialiser <- getInitialiser exprParser
       pure $ VariableDeclaration varType newVarName (topLevel parseInfo) initialiser sc
     else do
       let varId = currentVarId parseInfo
           newVarName = vName ++ "#" ++ show varId
           newVarMap = M.insert vName (VarIdentifier varType newVarName (topLevel parseInfo) Nothing sc) $ currentScopeIdent parseInfo
       putState $ parseInfo {currentVarId = varId + 1, currentScopeIdent = newVarMap}
-      initialiser <- getinitialiser intOperandParser
+      initialiser <- getInitialiser intOperandParser
       pure $ VariableDeclaration varType newVarName (topLevel parseInfo) initialiser sc
-  where getinitialiser parser = do
-          maybeEqual <- optionMaybe $ try equalLex
-          initialiser <- case maybeEqual of
-            Just _ -> Just <$> parser
-            _ -> pure Nothing
-          void semiColParser
-          pure initialiser
 
 expressionParser :: ParsecT String ParseInfo IO Statement
 expressionParser = Expression <$> exprParser
@@ -1092,16 +1088,16 @@ checkForFuncNameConflict iName = do
   pure iName
 
 compareFunTypeDeclare :: FunTypeInfo -> FunTypeInfo -> Bool
-compareFunTypeDeclare (FunTypeInfo lRt lFName lArgList _) (FunTypeInfo rRt rFName rArgList _) =
-  lRt == rRt && lFName == rFName && lArgList == rArgList
+compareFunTypeDeclare (FunTypeInfo lRt lFName lArgList _ lSc) (FunTypeInfo rRt rFName rArgList _ rSc) =
+  lRt == rRt && lFName == rFName && lArgList == rArgList && lSc == rSc
 
 checkForFuncTypeConflict :: ParseInfo -> Declaration -> ParsecT String ParseInfo IO [InputArgPair]
 checkForFuncTypeConflict parseInfo declare = case declare of
-  n@(FunctionDeclaration fn aList rType _ _ _) -> do
+  n@(FunctionDeclaration fn aList rType _ _ sc) -> do
     let current = currentScopeIdent parseInfo
     let outer = outerScopeIdent parseInfo
     let top = topLevelScopeIdent parseInfo
-    let newFuncType = FunTypeInfo rType fn (map dataType aList) Nothing
+    let newFuncType = FunTypeInfo rType fn (map dataType aList) Nothing sc
     let checkForPrevTypeConflict m = M.member fn m
           && isFuncIdentifier (m M.! fn)
           && (not . compareFunTypeDeclare newFuncType . fti) (m M.! fn)  
@@ -1141,12 +1137,28 @@ storageClassParser psc = do
       Nothing -> pure $ Just sc
       Just _ -> unexpected $ show sc
 
+checkLocalFuncDeclare :: Maybe StorageClass -> ParsecT String ParseInfo IO (Maybe StorageClass)
+checkLocalFuncDeclare sc = do
+  toplvl <- topLevel <$> getState
+  if not toplvl && sc == Just Static
+    then unexpected "static"
+    else pure sc
+
+checkFuncStorageClass :: IdentifierName -> Maybe StorageClass -> ParsecT String ParseInfo IO ()
+checkFuncStorageClass name sc = do
+  top <- topLevelScopeIdent <$> getState
+  when (M.member name top
+    && isFuncIdentifier (top M.! name)
+    && not (topLevelFuncStorageClassCheck (funcStorageClass $ fti (top M.! name)) sc)) $
+    unexpected "different storage class."
+
 functionDeclareParser :: ParsecT String ParseInfo IO Declaration
 functionDeclareParser = do
-  sc1Try <- storageClassParser Nothing
+  sc1Try <- storageClassParser Nothing >>= checkLocalFuncDeclare
   rType <- dataTypeParser
-  sc <- storageClassParser sc1Try
+  sc <- storageClassParser sc1Try >>= checkLocalFuncDeclare
   name <- identifierParser >>= checkForFuncNameConflict
+  checkFuncStorageClass name sc
   parseInfo <- getState
   toplvl <- topLevel <$> getState
   modifyState (\p -> p {outerScopeIdent = M.union (outerScopeIdent p) (currentScopeIdent p),
@@ -1154,7 +1166,7 @@ functionDeclareParser = do
   argList <- between openPParser closePParser (try argListParser)
     >>= checkForFuncTypeConflict parseInfo .
       (\aList -> FunctionDeclaration name aList rType Nothing 1 undefined)
-  let newTypeInfo = FuncIdentifier (FunTypeInfo rType name (map dataType argList) Nothing)
+  let newTypeInfo = FuncIdentifier (FunTypeInfo rType name (map dataType argList) Nothing sc)
   unless
     (M.member name (outerScopeIdent parseInfo)) $
     modifyState (\p -> p {outerScopeIdent = M.insert name newTypeInfo (outerScopeIdent p),
@@ -1167,7 +1179,7 @@ functionDeclareParser = do
         let current = currentScopeIdent parseInfo
         if M.member name current
           then case current M.! name of
-            FuncIdentifier (FunTypeInfo _ _ _ (Just _)) -> unexpected "Function redefinition"
+            FuncIdentifier (FunTypeInfo _ _ _ (Just _) _) -> unexpected "Function redefinition"
             _ -> Just <$> blockParser (M.fromList (map (\(ArgPair dt vName) -> (vName, VarIdentifier dt vName toplvl Nothing sc)) argList))
           else
             Just <$> blockParser (M.fromList (map (\(ArgPair dt vName) -> (vName, VarIdentifier dt vName toplvl Nothing sc)) argList))
@@ -1183,9 +1195,9 @@ functionDeclareParser = do
     jLabel
   s <- getState
   unless (funcNotYetDefined name s) $
-    modifyState (\p -> p {currentScopeIdent = M.insert name (FuncIdentifier (FunTypeInfo rType name (map dataType argList) block)) (currentScopeIdent p)})
+    modifyState (\p -> p {currentScopeIdent = M.insert name (FuncIdentifier (FunTypeInfo rType name (map dataType argList) block sc)) (currentScopeIdent p)})
   unless (funcNotYetDefined name s) $
-    modifyState (\p -> p {outerScopeIdent = M.insert name (FuncIdentifier (FunTypeInfo rType name (map dataType argList) block)) (outerScopeIdent p)})
+    modifyState (\p -> p {outerScopeIdent = M.insert name (FuncIdentifier (FunTypeInfo rType name (map dataType argList) block sc)) (outerScopeIdent p)})
   pure $ FunctionDeclaration name  argList rType block nVarId sc
 
 declareParser :: ParsecT String ParseInfo IO Declaration
