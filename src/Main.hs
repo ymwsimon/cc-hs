@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/06/30 13:58:48 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/03 11:05:52 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -25,6 +25,7 @@ import Assembly
 import System.Exit
 import System.Process
 import Control.Monad.State
+import qualified Data.Map as M
 
 data Args = Args
   {
@@ -77,35 +78,30 @@ convertCASTToAsmStr =
     . irASTToAsmAST
     . flip evalState (1, 1) . cASTToIrAST
 
-parseOkAct :: Args -> String -> [Declaration] -> IO (Either ParseError [Declaration])
-parseOkAct args path parseOk =
-  do
-    print parseOk
-    putStrLn ""
-    print $ flip evalState (1, 1) $ cASTToIrAST parseOk
-    putStrLn ""
-    let fdsBlock = map (\case
-            FunctionDeclaration _ _ _ (Just bl) _ _ -> unBlock bl
-            _ -> []) parseOk
-        labelCheckRes = labelCheck fdsBlock in
-      case labelCheckRes of
-        Left errs -> putStr (unlines errs) >> pure (parse (parserFail "") "" "")
-        Right labelMap -> do
-          print $ convertCASTToAsm $ updateGotoLabel parseOk labelMap
-          let updatedLabel = updateGotoLabel parseOk labelMap
-              converted = convertCASTToAsmStr updatedLabel
-          writeFile (outAsmFileName path) converted
-          (_, _, _, assemblerPid) <- if objOnly args
-            then createProcess $ proc "cc" [outAsmFileName path, "-c", "-o", outObjFileName path]
-            else createProcess $ proc "cc" [outAsmFileName path, "-o", outExeFileName path]
-          assemblerEC <- waitForProcess assemblerPid
-          if assemblerEC == ExitSuccess
-            then
-              do
-                putStrLn converted
-                pure $ Right updatedLabel
-            else
-              pure $ parse (parserFail "") "" ""
+parseOkAct :: Args -> String -> (M.Map String IdentifierType, [Declaration]) -> IO (Either ParseError [Declaration])
+parseOkAct args path (m, parseOk) = do
+  print parseOk
+  putStrLn ""
+  print $ flip evalState (1, 1) $ cASTToIrAST parseOk
+  putStrLn ""
+  let fdsBlock = map (\case
+          FunctionDeclaration _ _ _ (Just bl) _ _ -> unBlock bl
+          _ -> []) parseOk
+      labelCheckRes = labelCheck fdsBlock in
+    case labelCheckRes of
+      Left errs -> putStr (unlines errs) >> pure (parse (parserFail "") "" "")
+      Right labelMap -> do
+        print $ convertCASTToAsm $ updateGotoLabel parseOk labelMap
+        let updatedLabel = updateGotoLabel parseOk labelMap
+            converted = convertCASTToAsmStr updatedLabel
+        writeFile (outAsmFileName path) converted
+        (_, _, _, assemblerPid) <- if objOnly args
+          then createProcess $ proc "cc" [outAsmFileName path, "-c", "-o", outObjFileName path]
+          else createProcess $ proc "cc" [outAsmFileName path, "-o", outExeFileName path]
+        assemblerEC <- waitForProcess assemblerPid
+        if assemblerEC == ExitSuccess
+          then putStrLn converted >> pure (Right updatedLabel)
+          else pure $ parse (parserFail "") "" ""
 
 readNParse :: Args -> FilePath -> IO (Either ParseError [Declaration])
 readNParse args path =

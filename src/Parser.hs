@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/02 12:40:34 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/03 11:00:32 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -450,8 +450,11 @@ dataTypeParser = do
 intParser :: ParsecT String u IO String
 intParser = spaces >> many1 digit
 
-fileParser :: ParsecT String ParseInfo IO [Declaration]
-fileParser = manyTill declareParser $ try $ spaces >> eof
+fileParser :: ParsecT String ParseInfo IO (M.Map String IdentifierType, [Declaration])
+fileParser = do
+  declares <- manyTill declareParser $ try $ spaces >> eof
+  top <- topLevelScopeIdent <$> getState
+  pure (top, declares)
 
 binaryAssignmentOpParser :: ParsecT String u IO BinaryOp
 binaryAssignmentOpParser = foldl1 (<|>) $
