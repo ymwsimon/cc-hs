@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/03 11:00:32 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/03 11:16:43 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -1168,7 +1168,7 @@ functionDeclareParser = do
     currentScopeIdent = M.empty, currentVarId = if toplvl then 1 else currentVarId p, precedence = lowestPrecedence})
   argList <- between openPParser closePParser (try argListParser)
     >>= checkForFuncTypeConflict parseInfo .
-      (\aList -> FunctionDeclaration name aList rType Nothing 1 undefined)
+      (\aList -> FunctionDeclaration name aList rType Nothing 1 sc)
   let newTypeInfo = FuncIdentifier (FunTypeInfo rType name (map dataType argList) Nothing sc)
   unless
     (M.member name (outerScopeIdent parseInfo)) $
