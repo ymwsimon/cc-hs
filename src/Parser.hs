@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/03 11:16:43 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/03 15:13:33 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -63,7 +63,7 @@ data ParseInfo =
     precedence :: Int,
     labelId :: Int,
     currentVarId :: Int,
-    outerVarId :: Int,
+    globalVarId :: Int,
     jumpLabel :: [JumpLabel],
     topLevel :: Bool
   }
@@ -138,7 +138,7 @@ newtype Block = Block {unBlock :: [BlockItem]}
 
 data Expr =
   Constant String
-  | Variable String
+  | Variable String Bool (Maybe StorageClass)
   | FunctionCall String [Expr]
   | Unary UnaryOp Expr
   | Binary BinaryOp Expr Expr
@@ -212,7 +212,7 @@ defaultParsecState = ParseInfo
     precedence = lowestPrecedence,
     labelId = 1,
     currentVarId = 1,
-    outerVarId = 1,
+    globalVarId = 1,
     jumpLabel = [],
     topLevel = True
   }
@@ -524,7 +524,7 @@ unaryOpStringParser = foldl1 (<|>) $
       exclaimLex, complementLex]
 
 isVariableExpr :: Expr -> Bool
-isVariableExpr (Variable _) = True
+isVariableExpr (Variable {}) = True
 isVariableExpr _ = False
 
 binaryExprParser :: ParsecT String ParseInfo IO Expr
@@ -614,7 +614,7 @@ exprRightParser lExpr = do
   if isBinaryOpChar binOp && isEqOrHigherPrecedence binOp p
     then if binOp `elem` binaryAssignmentOp
           then case lExpr of
-                Variable _ -> do
+                Variable {} -> do
                     op <- binaryAssignmentOpParser
                     modifyState $ setPrecedence $ getBinOpPrecedence binOp
                     rExpr <- exprParser
@@ -639,7 +639,7 @@ intOperandParser = Constant <$> intParser
 
 postfixOp :: Expr -> ParsecT String u IO Expr
 postfixOp expr = case expr of
-    Variable _ -> do
+    Variable {} -> do
       maybePostOp <- lookAhead (try $ incrementLex <|> decrementLex) <|> pure ""
       if maybePostOp `elem` allPostUnaryOp
         then ($ expr) . Unary <$> postUnaryOpParser
@@ -667,8 +667,12 @@ variableParser = do
       (not (M.member vName current) && M.member vName outer && isFuncIdentifier (outer M.! vName))) $
     unexpected "Function identifier"
   if M.member vName current
-    then postfixOp $ Variable $ vn $ current M.! vName
-    else postfixOp $ Variable $ vn $ outer M.! vName
+    then do
+      let var = current M.! vName
+      postfixOp $ Variable (vn var) (topLv var) (storeClass var) 
+    else do
+      let var = outer M.! vName
+      postfixOp $ Variable (vn var) (topLv var) (storeClass var)
 
 isFuncIdentiferInVarMap :: String -> M.Map String IdentifierType -> M.Map String IdentifierType -> Bool
 isFuncIdentiferInVarMap fIdentifier current outer =
@@ -856,17 +860,19 @@ varDeclarationParser = do
     else if isNothing sc
       then do
       let varId = currentVarId parseInfo
-          newVarName = vName ++ "#" ++ show varId
+          newVarName = vName ++ "." ++ show varId
           newVarMap = M.insert vName (VarIdentifier varType newVarName (topLevel parseInfo) Nothing sc) $ currentScopeIdent parseInfo
       putState $ parseInfo {currentVarId = varId + 1, currentScopeIdent = newVarMap}
       initialiser <- getInitialiser exprParser
       pure $ VariableDeclaration varType newVarName (topLevel parseInfo) initialiser sc
     else do
-      let varId = currentVarId parseInfo
-          newVarName = vName ++ "#" ++ show varId
-          newVarMap = M.insert vName (VarIdentifier varType newVarName (topLevel parseInfo) Nothing sc) $ currentScopeIdent parseInfo
-      putState $ parseInfo {currentVarId = varId + 1, currentScopeIdent = newVarMap}
       initialiser <- getInitialiser intOperandParser
+      let varId = globalVarId parseInfo
+          newVarName = vName ++ "." ++ show varId
+          newLocalVarMap = M.insert vName (VarIdentifier varType newVarName (topLevel parseInfo) Nothing sc) $ currentScopeIdent parseInfo
+          newGlobalVarMap = M.insert newVarName (VarIdentifier varType newVarName (topLevel parseInfo) initialiser sc) $ topLevelScopeIdent parseInfo
+      putState $ parseInfo {globalVarId = varId + 1, currentScopeIdent = newLocalVarMap, topLevelScopeIdent = newGlobalVarMap}
+
       pure $ VariableDeclaration varType newVarName (topLevel parseInfo) initialiser sc
 
 expressionParser :: ParsecT String ParseInfo IO Statement
@@ -896,8 +902,7 @@ updateVarMapForNewScope :: ParseInfo -> M.Map String IdentifierType -> ParsecT S
 updateVarMapForNewScope parseInfo m = do
   putState $ parseInfo
     {currentScopeIdent = m,
-      outerScopeIdent = M.union (currentScopeIdent parseInfo) (outerScopeIdent parseInfo),
-      precedence = lowestPrecedence}
+      outerScopeIdent = M.union (currentScopeIdent parseInfo) (outerScopeIdent parseInfo)}
 
 keepIdsJumpLabel :: ParseInfo -> [JumpLabel] -> ParsecT s ParseInfo IO ()
 keepIdsJumpLabel parseInfo jLabel = do
@@ -1094,9 +1099,9 @@ compareFunTypeDeclare :: FunTypeInfo -> FunTypeInfo -> Bool
 compareFunTypeDeclare (FunTypeInfo lRt lFName lArgList _ lSc) (FunTypeInfo rRt rFName rArgList _ rSc) =
   lRt == rRt && lFName == rFName && lArgList == rArgList && lSc == rSc
 
-checkForFuncTypeConflict :: ParseInfo -> Declaration -> ParsecT String ParseInfo IO [InputArgPair]
+checkForFuncTypeConflict :: ParseInfo -> Declaration -> ParsecT String ParseInfo IO ()
 checkForFuncTypeConflict parseInfo declare = case declare of
-  n@(FunctionDeclaration fn aList rType _ _ sc) -> do
+  FunctionDeclaration fn aList rType _ _ sc -> do
     let current = currentScopeIdent parseInfo
     let outer = outerScopeIdent parseInfo
     let top = topLevelScopeIdent parseInfo
@@ -1110,7 +1115,6 @@ checkForFuncTypeConflict parseInfo declare = case declare of
     when (checkForPrevTypeConflict current || checkForPrevTypeConflict outer || checkForPrevTypeConflict top) $
       unexpected "Incompatible function type redeclare"
     modifyState (\p -> p {outerScopeIdent = M.insert fn (FuncIdentifier newFuncType) $ outerScopeIdent p})
-    pure $ inputArgs n
   _ -> undefined
 
 isFuncIdentifier :: IdentifierType -> Bool
@@ -1155,6 +1159,32 @@ checkFuncStorageClass name sc = do
     && not (topLevelFuncStorageClassCheck (funcStorageClass $ fti (top M.! name)) sc)) $
     unexpected "different storage class."
 
+updateVarMapForFuncBlockScope :: ParsecT String ParseInfo IO ()
+updateVarMapForFuncBlockScope = do
+  toplvl <- topLevel <$> getState
+  modifyState (\p -> p {outerScopeIdent = M.union (outerScopeIdent p) (currentScopeIdent p),
+    currentScopeIdent = M.empty, currentVarId = if toplvl then 1 else currentVarId p})
+
+addFuncDelclarationIfNeed :: FunTypeInfo -> ParsecT String ParseInfo IO ()
+addFuncDelclarationIfNeed newTypeInfo@(FunTypeInfo _ name _ _ _) = do
+  parseInfo <- getState
+  unless (M.member name (outerScopeIdent parseInfo)) $
+    modifyState (\p -> p {outerScopeIdent = M.insert name (FuncIdentifier newTypeInfo) (outerScopeIdent p),
+      topLevelScopeIdent = M.insert name (FuncIdentifier newTypeInfo) (topLevelScopeIdent p)})
+
+withFunctionBody :: IdentifierType -> Bool
+withFunctionBody typeIdentifier = case typeIdentifier of
+  FuncIdentifier (FunTypeInfo _ _ _ (Just _) _) -> True
+  _ -> False
+
+checkFuncDefinition :: IdentifierName -> ParseInfo -> ParsecT String ParseInfo IO ()
+checkFuncDefinition name parseInfo = do
+  let current = currentScopeIdent parseInfo
+      toplvl = topLevel parseInfo
+  unless toplvl $ unexpected "Function definition"
+  when (M.member name current && withFunctionBody (current M.! name)) $
+    unexpected "Function redefinition"
+
 functionDeclareParser :: ParsecT String ParseInfo IO Declaration
 functionDeclareParser = do
   sc1Try <- storageClassParser Nothing >>= checkLocalFuncDeclare
@@ -1163,30 +1193,17 @@ functionDeclareParser = do
   name <- identifierParser >>= checkForFuncNameConflict
   checkFuncStorageClass name sc
   parseInfo <- getState
+  updateVarMapForFuncBlockScope
   toplvl <- topLevel <$> getState
-  modifyState (\p -> p {outerScopeIdent = M.union (outerScopeIdent p) (currentScopeIdent p),
-    currentScopeIdent = M.empty, currentVarId = if toplvl then 1 else currentVarId p, precedence = lowestPrecedence})
   argList <- between openPParser closePParser (try argListParser)
-    >>= checkForFuncTypeConflict parseInfo .
-      (\aList -> FunctionDeclaration name aList rType Nothing 1 sc)
-  let newTypeInfo = FuncIdentifier (FunTypeInfo rType name (map dataType argList) Nothing sc)
-  unless
-    (M.member name (outerScopeIdent parseInfo)) $
-    modifyState (\p -> p {outerScopeIdent = M.insert name newTypeInfo (outerScopeIdent p),
-      topLevelScopeIdent = M.insert name newTypeInfo (topLevelScopeIdent p)})
+  checkForFuncTypeConflict parseInfo $
+      FunctionDeclaration name argList rType Nothing 1 sc
+  addFuncDelclarationIfNeed $ FunTypeInfo rType name (map dataType argList) Nothing sc
   maybeSemiColon <- lookAhead (try semiColParser <|> try openCurParser)
   block <- case maybeSemiColon of
     ";" -> semiColParser >> pure Nothing
-    "{" -> if topLevel parseInfo
-      then do
-        let current = currentScopeIdent parseInfo
-        if M.member name current
-          then case current M.! name of
-            FuncIdentifier (FunTypeInfo _ _ _ (Just _) _) -> unexpected "Function redefinition"
-            _ -> Just <$> blockParser (M.fromList (map (\(ArgPair dt vName) -> (vName, VarIdentifier dt vName toplvl Nothing sc)) argList))
-          else
-            Just <$> blockParser (M.fromList (map (\(ArgPair dt vName) -> (vName, VarIdentifier dt vName toplvl Nothing sc)) argList))
-      else unexpected "Function definition"
+    "{" -> checkFuncDefinition name parseInfo >>
+      Just <$> blockParser (M.fromList (map (\(ArgPair dt vName) -> (vName, VarIdentifier dt vName toplvl Nothing sc)) argList))
     _ -> unexpected maybeSemiColon
   nVarId <- currentVarId <$> getState
   jLabel <- getJumpLabel

@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/07/01 14:02:12 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/03 14:59:57 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -65,8 +65,8 @@ cStatmentToIRInstructions (S (Switch condition bl (SwitchLabel jLabel caseMap)))
   switchToIRs condition bl jLabel caseMap
 cStatmentToIRInstructions (S (Case statement l)) = caseToIRs statement l
 cStatmentToIRInstructions (S (Default statement l)) = defaultToIRs statement l
-cStatmentToIRInstructions (D (VD ((VariableDeclaration _ var _ (Just expr) _)))) =
-  cStatmentToIRInstructions (S (Expression (Assignment None (Variable var) expr)))
+cStatmentToIRInstructions (D (VD ((VariableDeclaration _ var lvl (Just expr) sc)))) =
+  cStatmentToIRInstructions (S (Expression (Assignment None (Variable var lvl sc) expr)))
 cStatmentToIRInstructions (D _) = pure []
 cStatmentToIRInstructions _ = undefined
 
@@ -191,7 +191,7 @@ binaryOperationToIRs op lExpr rExpr = do
     IRVar $ show varId)
 
 dropVarName :: String -> String
-dropVarName v = if '#' `elem` v then drop 1 $ dropWhile (/= '#') v else v
+dropVarName v = if '.' `elem` v then drop 1 $ dropWhile (/= '.') v else v
 
 assignmentToIRs :: BinaryOp -> Expr -> Expr -> State (Int, Int) ([IRInstruction], IRVal)
 assignmentToIRs op var rExpr = do
@@ -289,8 +289,8 @@ exprToIRs expr = case expr of
     Constant s -> pure ([], IRConstant s)
     Unary op uExpr -> unaryOperationToIRs op uExpr
     Binary op lExpr rExpr -> binaryOperationToIRs op lExpr rExpr
-    Variable var -> pure ([], IRVar (dropVarName var))
-    Assignment op (Variable var) rExpr -> assignmentToIRs op (Variable var) rExpr
+    Variable var _ _ -> pure ([], IRVar (dropVarName var))
+    Assignment op (Variable var lvl sc) rExpr -> assignmentToIRs op (Variable var lvl sc) rExpr
     Conditional condition tCond fCond -> conditionToIRs condition tCond fCond
     FunctionCall name exprs -> funcCallToIRs name exprs
     _ -> undefined
