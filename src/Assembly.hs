@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/06/27 17:02:37 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/04 13:00:51 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -16,11 +16,22 @@ import IR
 import Operation
 import Data.List
 import qualified Data.Map.Strict as M
+import Parser
+import Data.Maybe
 
-type AsmProgramAST = [AsmFunctionDefine]
+type AsmProgramAST = [AsmTopLevel]
+
+data AsmTopLevel =
+  AsmFunc {asmFuncD :: AsmFunctionDefine}
+  | AsmStaticVar {asmVarD :: AsmStaticVarDefine}
+  deriving (Show, Eq)
+
+data AsmStaticVarDefine =
+  AsmStaticVarDefine {asmVarName :: String, asmVarGlobal :: Bool, asmVarInit :: Int}
+  deriving (Show, Eq)
 
 data AsmFunctionDefine =
-  AsmFunctionDefine { asmFuncName :: String, instructions :: [AsmInstruction] }
+  AsmFunctionDefine {asmFuncName :: String, asmFuncGlobal :: Bool, instructions :: [AsmInstruction]}
   deriving (Show, Eq)
 
 data AsmInstruction =
@@ -94,6 +105,7 @@ data Operand =
   | Register Reg
   | Pseudo {identifier :: String}
   | Stack Int
+  | Data String
   deriving Eq
 
 instance Show Operand where
@@ -101,6 +113,7 @@ instance Show Operand where
   show (Register s) = "%" ++ show s
   show (Pseudo ident) = "tmpVar." ++ show ident
   show (Stack i) = show i ++ "(%rbp)"
+  show (Data s) = s ++ "(%rip)"
 
 instance Show AsmUnaryOp where
   show AsmNeg = "negl"
@@ -180,8 +193,18 @@ instance Show Reg where
   show R12D = "r12d"
   show R12 = "r12"
 
-irASTToAsmAST :: IRProgramAST -> AsmProgramAST
-irASTToAsmAST irAst = map (irFuncDefineToAsmFuncDefine (getFuncList irAst)) irAst
+isAsmFuncDefine :: AsmTopLevel -> Bool
+isAsmFuncDefine (AsmFunc _) = True
+isAsmFuncDefine _ = False
+
+isAsmStaticVarDefine :: AsmTopLevel -> Bool
+isAsmStaticVarDefine (AsmStaticVar _) = True
+isAsmStaticVarDefine _ = False
+
+irASTToAsmAST :: M.Map String IdentifierType -> IRProgramAST -> AsmProgramAST
+irASTToAsmAST m irAst = map
+  (AsmFunc . irFuncDefineToAsmFuncDefine m (getFuncList (filter isIRFuncDefine irAst)). irFuncD)
+  (filter isIRFuncDefine irAst)
 
 parametersRegister :: [Operand]
 parametersRegister = map Register [EDI, ESI, EDX, ECX, R8D, R9D] ++ map Stack [16, 24..]
@@ -190,21 +213,24 @@ getPaddingSize :: [a] -> Int
 getPaddingSize args = if odd $ length args then 8 else 0
 
 getFuncList :: IRProgramAST -> M.Map String String
-getFuncList = foldl' (\m fd -> M.insert (irFuncName fd) (irFuncName fd) m) M.empty
+getFuncList = foldl' (\m fd -> M.insert (irFuncName $ irFuncD fd) (irFuncName $ irFuncD fd) m) M.empty
 
-irFuncDefineToAsmFuncDefine :: M.Map String String -> IRFunctionDefine -> AsmFunctionDefine
-irFuncDefineToAsmFuncDefine funcList fd =
+irFuncDefineToAsmFuncDefine :: M.Map String IdentifierType -> M.Map String String -> IRFunctionDefine -> AsmFunctionDefine
+irFuncDefineToAsmFuncDefine gVarMap funcList fd = do
   let (m, instrs) = copyParametersToStack
           ((+ 1) . getMaxStackVarId $ irInstruction fd)
-          (M.empty, []) (zip parametersRegister (irParameter fd)) in
-        AsmFunctionDefine (irFuncName fd) $
-          instrs ++
-          [AllocateStack (getPaddingSize (drop 6 $ irParameter fd))] ++
-          concatMap (\irs -> irInstructionToAsmInstruction irs m funcList) (irInstruction fd)
+          (M.empty, []) (zip parametersRegister (irParameter fd))
+  AsmFunctionDefine (irFuncName fd) (irFuncGlobal fd) $
+    instrs ++
+    [AllocateStack (getPaddingSize (drop 6 $ irParameter fd))] ++
+    concatMap (\irs -> irInstructionToAsmInstruction irs m funcList gVarMap) (irInstruction fd)
 
-irOperandToAsmOperand :: IRVal -> M.Map String Int -> Operand
-irOperandToAsmOperand (IRConstant i) _ = Imm $ read i
-irOperandToAsmOperand (IRVar s) m = if M.member s m then Pseudo (show $ m M.! s) else Pseudo s
+irOperandToAsmOperand :: IRVal -> M.Map String Int -> M.Map String IdentifierType -> Operand
+irOperandToAsmOperand (IRConstant i) _ _ = Imm $ read i
+irOperandToAsmOperand (IRVar s) m gVarMap
+  | M.member s gVarMap && isVarIdentifier (gVarMap M.! s) = Data s
+  | M.member (dropVarName s) m = Pseudo $ show $ m M.! dropVarName s
+  | otherwise = Pseudo $ dropVarName s
 
 irUnaryOpToAsmOp :: UnaryOp -> AsmUnaryOp
 irUnaryOpToAsmOp Complement = AsmNot
@@ -224,72 +250,72 @@ irBinaryOpToAsmOp BitShiftLeft = AsmShiftL
 irBinaryOpToAsmOp BitShiftRight = AsmShiftR
 irBinaryOpToAsmOp _ = undefined
 
-irFuncCallToAsm :: String -> [IRVal] -> IRVal -> M.Map String String -> M.Map String Int -> [AsmInstruction]
-irFuncCallToAsm name args dst funcList m =
+irFuncCallToAsm :: String -> [IRVal] -> IRVal -> M.Map String String -> M.Map String Int -> M.Map String IdentifierType -> [AsmInstruction]
+irFuncCallToAsm name args dst funcList m gVarMap =
   let (regArg, stackArg) = splitAt 6 args
       paddingSize = getPaddingSize stackArg
       paddingInstr = [AllocateStack paddingSize]
-      copyRegArgsInstr = zipWith (\pr a -> Mov (irOperandToAsmOperand a m) pr) parametersRegister regArg
+      copyRegArgsInstr = zipWith (\pr a -> Mov (irOperandToAsmOperand a m gVarMap) pr) parametersRegister regArg
       copyStackArgsInstr = concatMap (\sa -> case sa of
         IRConstant c -> [Push (Imm $ read c)]
-        IRVar _ -> [Mov (irOperandToAsmOperand sa m) (Register RAX), Push (Register RAX)]) (reverse stackArg)
+        IRVar _ -> [Mov (irOperandToAsmOperand sa m gVarMap) (Register RAX), Push (Register RAX)]) (reverse stackArg)
       callInstrs = if M.member name funcList then [Call name] else [Call $ name ++ "@PLT"] in
   paddingInstr ++ copyRegArgsInstr ++ copyStackArgsInstr ++ callInstrs ++
-    [DeallocateStack (8 * length stackArg + paddingSize)] ++ [Mov (Register EAX) (irOperandToAsmOperand dst m)]
+    [DeallocateStack (8 * length stackArg + paddingSize)] ++ [Mov (Register EAX) (irOperandToAsmOperand dst m gVarMap)]
 
-irInstructionToAsmInstruction :: IRInstruction -> M.Map String Int -> M.Map String String -> [AsmInstruction]
-irInstructionToAsmInstruction instr m funcList = case instr of
+irInstructionToAsmInstruction :: IRInstruction -> M.Map String Int -> M.Map String String -> M.Map String IdentifierType -> [AsmInstruction]
+irInstructionToAsmInstruction instr m funcList gVarMap = case instr of
   IRReturn val ->
-    [Mov (irOperandToAsmOperand val m) (Register EAX), Ret]
+    [Mov (irOperandToAsmOperand val m gVarMap) (Register EAX), Ret]
   IRUnary NotRelation s d ->
-    [Cmp (Imm 0) (irOperandToAsmOperand s m), Mov (Imm 0) (irOperandToAsmOperand d m),
-      SetCC E $ irOperandToAsmOperand d m]
+    [Cmp (Imm 0) (irOperandToAsmOperand s m gVarMap), Mov (Imm 0) (irOperandToAsmOperand d m gVarMap),
+      SetCC E $ irOperandToAsmOperand d m gVarMap]
   IRUnary op s d ->
-    [Mov (irOperandToAsmOperand s m) (irOperandToAsmOperand d m),
-      AsmUnary (irUnaryOpToAsmOp op) (irOperandToAsmOperand d m)]
+    [Mov (irOperandToAsmOperand s m gVarMap) (irOperandToAsmOperand d m gVarMap),
+      AsmUnary (irUnaryOpToAsmOp op) (irOperandToAsmOperand d m gVarMap)]
   IRBinary Division lVal rVal d ->
-    [Mov (irOperandToAsmOperand lVal m) (Register AX), Cdq,
-      AsmIdiv $ irOperandToAsmOperand rVal m, Mov (Register AX) (irOperandToAsmOperand d m)]
+    [Mov (irOperandToAsmOperand lVal m gVarMap) (Register AX), Cdq,
+      AsmIdiv $ irOperandToAsmOperand rVal m gVarMap, Mov (Register AX) (irOperandToAsmOperand d m gVarMap)]
   IRBinary Modulo lVal rVal d ->
-    [Mov (irOperandToAsmOperand lVal m) (Register AX), Cdq,
-      AsmIdiv $ irOperandToAsmOperand rVal m, Mov (Register DX) (irOperandToAsmOperand d m)]
+    [Mov (irOperandToAsmOperand lVal m gVarMap) (Register AX), Cdq,
+      AsmIdiv $ irOperandToAsmOperand rVal m gVarMap, Mov (Register DX) (irOperandToAsmOperand d m gVarMap)]
   IRBinary BitShiftLeft lVal rVal d ->
-    [Mov (irOperandToAsmOperand lVal m) (Register R12D),
-      AsmBinary (irBinaryOpToAsmOp BitShiftLeft) (irOperandToAsmOperand rVal m) (Register R12D),
-      Mov (Register R12D) (irOperandToAsmOperand d m)]
+    [Mov (irOperandToAsmOperand lVal m gVarMap) (Register R12D),
+      AsmBinary (irBinaryOpToAsmOp BitShiftLeft) (irOperandToAsmOperand rVal m gVarMap) (Register R12D),
+      Mov (Register R12D) (irOperandToAsmOperand d m gVarMap)]
   IRBinary BitShiftRight lVal rVal d ->
-    [Mov (irOperandToAsmOperand lVal m) (Register R12D),
-      AsmBinary (irBinaryOpToAsmOp BitShiftRight) (irOperandToAsmOperand rVal m) (Register R12D),
-      Mov (Register R12D) (irOperandToAsmOperand d m)]
+    [Mov (irOperandToAsmOperand lVal m gVarMap) (Register R12D),
+      AsmBinary (irBinaryOpToAsmOp BitShiftRight) (irOperandToAsmOperand rVal m gVarMap) (Register R12D),
+      Mov (Register R12D) (irOperandToAsmOperand d m gVarMap)]
   IRJumpIfZero valToCheck jmpTarget ->
-    [Cmp (Imm 0) (irOperandToAsmOperand valToCheck m), JmpCC E jmpTarget]
+    [Cmp (Imm 0) (irOperandToAsmOperand valToCheck m gVarMap), JmpCC E jmpTarget]
   IRJumpIfNotZero valToCheck jmpTarget ->
-    [Cmp (Imm 0) (irOperandToAsmOperand valToCheck m), JmpCC NE jmpTarget]
+    [Cmp (Imm 0) (irOperandToAsmOperand valToCheck m gVarMap), JmpCC NE jmpTarget]
   IRBinary EqualRelation valL valR d ->
-    buildAsmIntrsForIRRelationOp E (irOperandToAsmOperand valL m)
-      (irOperandToAsmOperand valR m) (irOperandToAsmOperand d m)
+    buildAsmIntrsForIRRelationOp E (irOperandToAsmOperand valL m gVarMap)
+      (irOperandToAsmOperand valR m gVarMap) (irOperandToAsmOperand d m gVarMap)
   IRBinary NotEqualRelation valL valR d ->
-    buildAsmIntrsForIRRelationOp NE (irOperandToAsmOperand valL m)
-      (irOperandToAsmOperand valR m) (irOperandToAsmOperand d m)
+    buildAsmIntrsForIRRelationOp NE (irOperandToAsmOperand valL m gVarMap)
+      (irOperandToAsmOperand valR m gVarMap) (irOperandToAsmOperand d m gVarMap)
   IRBinary GreaterThanRelation valL valR d ->
-    buildAsmIntrsForIRRelationOp G (irOperandToAsmOperand valL m)
-      (irOperandToAsmOperand valR m) (irOperandToAsmOperand d m)
+    buildAsmIntrsForIRRelationOp G (irOperandToAsmOperand valL m gVarMap)
+      (irOperandToAsmOperand valR m gVarMap) (irOperandToAsmOperand d m gVarMap)
   IRBinary GreaterEqualRelation valL valR d ->
-    buildAsmIntrsForIRRelationOp GE (irOperandToAsmOperand valL m)
-      (irOperandToAsmOperand valR m) (irOperandToAsmOperand d m)
+    buildAsmIntrsForIRRelationOp GE (irOperandToAsmOperand valL m gVarMap)
+      (irOperandToAsmOperand valR m gVarMap) (irOperandToAsmOperand d m gVarMap)
   IRBinary LessThanRelation valL valR d ->
-    buildAsmIntrsForIRRelationOp L (irOperandToAsmOperand valL m)
-      (irOperandToAsmOperand valR m) (irOperandToAsmOperand d m)
+    buildAsmIntrsForIRRelationOp L (irOperandToAsmOperand valL m gVarMap)
+      (irOperandToAsmOperand valR m gVarMap) (irOperandToAsmOperand d m gVarMap)
   IRBinary LessEqualRelation valL valR d ->
-    buildAsmIntrsForIRRelationOp LE (irOperandToAsmOperand valL m)
-      (irOperandToAsmOperand valR m) (irOperandToAsmOperand d m)
+    buildAsmIntrsForIRRelationOp LE (irOperandToAsmOperand valL m gVarMap)
+      (irOperandToAsmOperand valR m gVarMap) (irOperandToAsmOperand d m gVarMap)
   IRBinary op lVal rVal d ->
-    [Mov (irOperandToAsmOperand lVal m) (irOperandToAsmOperand d m),
-      AsmBinary (irBinaryOpToAsmOp op) (irOperandToAsmOperand rVal m) (irOperandToAsmOperand d m)]
+    [Mov (irOperandToAsmOperand lVal m gVarMap) (irOperandToAsmOperand d m gVarMap),
+      AsmBinary (irBinaryOpToAsmOp op) (irOperandToAsmOperand rVal m gVarMap) (irOperandToAsmOperand d m gVarMap)]
   IRJump target -> [AsmJmp target]
   IRLabel target -> [AsmLabel target]
-  IRCopy s d -> [Mov (irOperandToAsmOperand s m) (irOperandToAsmOperand d m)]
-  IRFuncCall name args dst -> irFuncCallToAsm name args dst funcList m
+  IRCopy s d -> [Mov (irOperandToAsmOperand s m gVarMap) (irOperandToAsmOperand d m gVarMap)]
+  IRFuncCall name args dst -> irFuncCallToAsm name args dst funcList m gVarMap
 
 copyParametersToStack :: Int -> (M.Map String Int, [AsmInstruction])
   -> [(Operand, String)] -> (M.Map String Int, [AsmInstruction])
@@ -355,21 +381,30 @@ replacePseudoRegAllocateStackFixDoubleStackOperand afd =
                       $ convertAsmTempVarToStackAddr
                       $ instructions afd }
 
+isMemoryAddr :: Operand -> Bool
+isMemoryAddr (Stack _) = True
+isMemoryAddr (Data _) = True
+isMemoryAddr _ = False
+
 resolveDoubleStackOperand :: AsmInstruction -> [AsmInstruction]
 resolveDoubleStackOperand instr = case instr of
-  Mov (Stack i) (Stack j) ->
-    [Mov (Stack i) (Register R10D),
-      Mov (Register R10D) (Stack j)]
-  AsmBinary AsmMul mulVal (Stack i) ->
-    [Mov (Stack i) (Register R11D),
+  instrs@(Mov i j) -> if isMemoryAddr i && isMemoryAddr j
+    then [Mov i (Register R10D),
+        Mov (Register R10D) j]
+    else [instrs]
+  instrs@(AsmBinary AsmMul mulVal i) -> if isMemoryAddr i
+    then [Mov i (Register R11D),
       AsmBinary AsmMul mulVal $ Register R11D,
-      Mov (Register R11D) (Stack i) ]
-  AsmBinary op (Stack i) (Stack j) ->
-    [Mov (Stack i) (Register R10D),
-      AsmBinary op (Register R10D) (Stack j)]
-  Cmp (Stack i) (Stack j) ->
-    [Mov (Stack j) (Register R10D),
-      Cmp (Stack i) (Register R10D)]
+      Mov (Register R11D) i]
+    else [instrs]
+  instrs@(AsmBinary op i j) -> if isMemoryAddr i && isMemoryAddr j
+    then [Mov i (Register R10D),
+        AsmBinary op (Register R10D) j]
+    else [instrs]
+  instrs@(Cmp i j) -> if isMemoryAddr i && isMemoryAddr j
+    then [Mov j (Register R10D),
+      Cmp i (Register R10D)]
+    else [instrs]
   _ -> [instr]
 
 fixDivConstant :: AsmInstruction -> [AsmInstruction]
@@ -497,9 +532,25 @@ asmInstructionToStr (DeallocateStack i) = case i of
   _ -> pure $ tabulate ["addq", "$" ++ show i ++ ", %rsp"]
 
 asmFunctionDefineToStr :: AsmFunctionDefine -> String
-asmFunctionDefineToStr (AsmFunctionDefine fname instrs) =
-  unlines [tabulate [".globl", fname],
+asmFunctionDefineToStr (AsmFunctionDefine fname isGlobal instrs) =
+  unlines [tabulate $ if isGlobal then [".globl", fname] else [],
+    tabulate [".text"],
     fname ++ ":",
     tabulate ["pushq", "%rbp"],
     tabulate ["movq", "%rsp, %rbp"],
     unlines $ concatMap asmInstructionToStr instrs]
+
+asmStaticVarDefineToStr :: AsmStaticVarDefine -> String
+asmStaticVarDefineToStr (AsmStaticVarDefine vName isGlobal initVal) =
+  unlines [tabulate $ if isGlobal then [".globl", vName] else [],
+    tabulate [".data"],
+    tabulate [".align 4"],
+    vName ++ ":",
+    tabulate [".long " ++ show initVal]]
+
+globalVarMapToAsmStaticVarDefine :: M.Map String IdentifierType -> [AsmStaticVarDefine]
+globalVarMapToAsmStaticVarDefine m = concatMap (identToAsmStaticVar . snd) $ M.toList $ M.filter isVarIdentifier m
+  where identToAsmStaticVar ident = case ident of
+          VarIdentifier _ vName _ expr (Just Static) -> [AsmStaticVarDefine vName False (exprToInt $ fromMaybe (Constant "0") expr)]
+          VarIdentifier _ vName topLvl expr Nothing -> [AsmStaticVarDefine vName topLvl (exprToInt $ fromMaybe (Constant "0") expr)]
+          _ -> []

@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/07/03 14:59:57 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/04 13:10:26 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -19,18 +19,33 @@ import qualified Data.Map.Strict as M
 import Control.Monad (mapAndUnzipM)
 import Data.Char
 
-type IRProgramAST = [IRFunctionDefine]
+type IRProgramAST = [IRTopLevel]
+
+data IRTopLevel =
+  IRFunc {irFuncD :: IRFunctionDefine}
+  | IRStaticVar {irStaticVarD :: IRStaticVarDefine}
+  deriving (Show, Eq)
 
 data IRFunctionDefine =
-  IRFunctionDefine { irFuncName :: String, irParameter :: [String], irInstruction :: [IRInstruction] }
+  IRFunctionDefine
+  {
+    irFuncName :: String,
+    irFuncGlobal :: Bool,
+    irParameter :: [String],
+    irInstruction :: [IRInstruction]
+  }
+  deriving (Show, Eq)
+
+data IRStaticVarDefine =
+  IRStaticVarDefine {irVarName :: String, irVarGlobal :: Bool, irVarInitVal :: Int}
   deriving (Show, Eq)
 
 data IRInstruction =
   IRReturn IRVal
-  | IRUnary { irUnaryOp :: UnaryOp, irUnarySrc :: IRVal, irUnaryDst :: IRVal }
-  | IRBinary { irBinaryOp :: BinaryOp, irLOperand :: IRVal,
-      irROperand :: IRVal, irBinaryDst :: IRVal }
-  | IRCopy { irCopySrc :: IRVal, irCopyDst :: IRVal }
+  | IRUnary {irUnaryOp :: UnaryOp, irUnarySrc :: IRVal, irUnaryDst :: IRVal}
+  | IRBinary {irBinaryOp :: BinaryOp, irLOperand :: IRVal,
+      irROperand :: IRVal, irBinaryDst :: IRVal}
+  | IRCopy { irCopySrc :: IRVal, irCopyDst :: IRVal}
   | IRJump {irJumpTarget :: String}
   | IRJumpIfZero {irJumpZVal :: IRVal, irJumpZeroTarget :: String}
   | IRJumpIfNotZero {irJumpNZVal :: IRVal, irJumpNotZeroTarget :: String}
@@ -43,32 +58,39 @@ data IRVal =
   | IRVar String
   deriving (Show, Eq)
 
+isIRFuncDefine :: IRTopLevel -> Bool
+isIRFuncDefine (IRFunc _) = True
+isIRFuncDefine _ = False
+
+isIRStaticVarDefine :: IRTopLevel -> Bool
+isIRStaticVarDefine (IRStaticVar _) = True
+isIRStaticVarDefine _ = False
+
 cStatmentToIRInstructions :: BlockItem -> State (Int, Int) [IRInstruction]
-cStatmentToIRInstructions (S (Return expr)) = exprToReturnIRs expr
-cStatmentToIRInstructions (S Null) = pure []
-cStatmentToIRInstructions (S (Expression expr)) = exprToExpressionIRs expr
-cStatmentToIRInstructions (S (If condition tStat fStat)) = exprToIfIRs condition tStat fStat
-cStatmentToIRInstructions (S (Label _ l stat)) =
-  (IRLabel l :) <$> cStatmentToIRInstructions (S stat)
-cStatmentToIRInstructions (S (Goto l)) = pure [IRJump l]
-cStatmentToIRInstructions (S (Compound (Block bl))) =
-  concat <$> traverse cStatmentToIRInstructions bl
-cStatmentToIRInstructions (S (Break l)) = pure [IRJump l]
-cStatmentToIRInstructions (S (Continue l)) = pure [IRJump l]
-cStatmentToIRInstructions (S (DoWhile bl condition (LoopLabel jLabel))) =
-  doWhileToIRs bl condition jLabel
-cStatmentToIRInstructions (S (While condition bl (LoopLabel jLabel))) =
-  whileToIRs condition bl jLabel
-cStatmentToIRInstructions (S (For forInit condition post bl (LoopLabel jLabel))) =
-  forToIRs forInit condition post bl jLabel
-cStatmentToIRInstructions (S (Switch condition bl (SwitchLabel jLabel caseMap))) =
-  switchToIRs condition bl jLabel caseMap
-cStatmentToIRInstructions (S (Case statement l)) = caseToIRs statement l
-cStatmentToIRInstructions (S (Default statement l)) = defaultToIRs statement l
-cStatmentToIRInstructions (D (VD ((VariableDeclaration _ var lvl (Just expr) sc)))) =
-  cStatmentToIRInstructions (S (Expression (Assignment None (Variable var lvl sc) expr)))
-cStatmentToIRInstructions (D _) = pure []
-cStatmentToIRInstructions _ = undefined
+cStatmentToIRInstructions bi = case bi of
+  S (Return expr) -> exprToReturnIRs expr
+  S Null -> pure []
+  S (Expression expr) -> exprToExpressionIRs expr
+  S (If condition tStat fStat) -> exprToIfIRs condition tStat fStat
+  S (Label _ l stat) ->
+    (IRLabel l :) <$> cStatmentToIRInstructions (S stat)
+  S (Goto l) -> pure [IRJump l]
+  S (Compound (Block bl)) ->
+    concat <$> traverse cStatmentToIRInstructions bl
+  S (Break l) -> pure [IRJump l]
+  S (Continue l) -> pure [IRJump l]
+  S (DoWhile bl condition (LoopLabel jLabel)) -> doWhileToIRs bl condition jLabel
+  S (While condition bl (LoopLabel jLabel)) -> whileToIRs condition bl jLabel
+  S (For forInit condition post bl (LoopLabel jLabel)) ->
+    forToIRs forInit condition post bl jLabel
+  S (Switch condition bl (SwitchLabel jLabel caseMap)) ->
+    switchToIRs condition bl jLabel caseMap
+  S (Case statement l) -> caseToIRs statement l
+  S (Default statement l) -> defaultToIRs statement l
+  D (VD ((VariableDeclaration _ var False (Just expr) Nothing))) ->
+    cStatmentToIRInstructions (S (Expression (Assignment None (Variable var False Nothing) expr)))
+  D _ -> pure []
+  _ -> undefined
 
 initIRVarId :: a1 -> (a2, b) -> (a1, b)
 initIRVarId s (_, b) = (s, b)
@@ -77,13 +99,13 @@ hasFuncBody :: Declaration -> Bool
 hasFuncBody (FunctionDeclaration _ _ _ (Just _) _ _) = True
 hasFuncBody _ = False
 
-cFuncDefineToIRFuncDefine :: Declaration -> State (Int, Int) IRFunctionDefine
-cFuncDefineToIRFuncDefine fd@(FunctionDeclaration _ _ _ (Just bl) _ _) =
-  IRFunctionDefine (funName fd) (map varName (inputArgs fd))
+cFuncDefineToIRFuncDefine :: Declaration -> State (Int, Int) IRTopLevel
+cFuncDefineToIRFuncDefine fd@(FunctionDeclaration _ _ _ (Just bl) _ sc) =
+  IRFunc . IRFunctionDefine (funName fd) (sc /= Just Static) (map varName (inputArgs fd))
     . (++ [IRReturn (IRConstant "0")]) . concat
     <$> (modify (initIRVarId (nextVarId fd)) >>
       mapM cStatmentToIRInstructions (unBlock bl))
-cFuncDefineToIRFuncDefine _ = undefined
+cFuncDefineToIRFuncDefine  _ = undefined
 
 cASTToIrAST :: CProgramAST -> State (Int, Int) IRProgramAST
 cASTToIrAST = mapM cFuncDefineToIRFuncDefine . filter hasFuncBody
@@ -191,7 +213,7 @@ binaryOperationToIRs op lExpr rExpr = do
     IRVar $ show varId)
 
 dropVarName :: String -> String
-dropVarName v = if '.' `elem` v then drop 1 $ dropWhile (/= '.') v else v
+dropVarName v = if '#' `elem` v then drop 1 $ dropWhile (/= '#') v else v
 
 assignmentToIRs :: BinaryOp -> Expr -> Expr -> State (Int, Int) ([IRInstruction], IRVal)
 assignmentToIRs op var rExpr = do
@@ -286,14 +308,14 @@ funcCallToIRs name exprs = do
 
 exprToIRs :: Expr -> State (Int, Int) ([IRInstruction], IRVal)
 exprToIRs expr = case expr of
-    Constant s -> pure ([], IRConstant s)
-    Unary op uExpr -> unaryOperationToIRs op uExpr
-    Binary op lExpr rExpr -> binaryOperationToIRs op lExpr rExpr
-    Variable var _ _ -> pure ([], IRVar (dropVarName var))
-    Assignment op (Variable var lvl sc) rExpr -> assignmentToIRs op (Variable var lvl sc) rExpr
-    Conditional condition tCond fCond -> conditionToIRs condition tCond fCond
-    FunctionCall name exprs -> funcCallToIRs name exprs
-    _ -> undefined
+  Constant s -> pure ([], IRConstant s)
+  Unary op uExpr -> unaryOperationToIRs op uExpr
+  Binary op lExpr rExpr -> binaryOperationToIRs op lExpr rExpr
+  Variable var _ _ -> pure ([], IRVar var)
+  Assignment op (Variable var lvl sc) rExpr -> assignmentToIRs op (Variable var lvl sc) rExpr
+  Conditional condition tCond fCond -> conditionToIRs condition tCond fCond
+  FunctionCall name exprs -> funcCallToIRs name exprs
+  _ -> undefined
 
 extractVarId :: IRInstruction -> [Int]
 extractVarId instr = case instr of

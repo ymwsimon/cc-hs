@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/07/03 11:05:52 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/03 22:48:48 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -63,19 +63,20 @@ outObjFileName fileName
       take (length fileName - 2) fileName ++ ".o"
   | otherwise = ""
 
-convertCASTToAsm :: CProgramAST -> [AsmFunctionDefine]
-convertCASTToAsm = 
-    irASTToAsmAST
+convertCASTToAsm :: M.Map String IdentifierType -> CProgramAST -> AsmProgramAST
+convertCASTToAsm m =
+    irASTToAsmAST m
     . flip evalState (1, 1) . cASTToIrAST
 
-convertCASTToAsmStr :: CProgramAST -> String
-convertCASTToAsmStr =       
+convertCASTToAsmStr :: M.Map String IdentifierType -> CProgramAST -> String
+convertCASTToAsmStr m =
   concat
     . (++ [noExecutableStackString])
+    . (++ (map asmStaticVarDefineToStr $ globalVarMapToAsmStaticVarDefine m))
     . map
       (asmFunctionDefineToStr
-        . replacePseudoRegAllocateStackFixDoubleStackOperand)
-    . irASTToAsmAST
+        . replacePseudoRegAllocateStackFixDoubleStackOperand . asmFuncD)
+    . irASTToAsmAST m
     . flip evalState (1, 1) . cASTToIrAST
 
 parseOkAct :: Args -> String -> (M.Map String IdentifierType, [Declaration]) -> IO (Either ParseError [Declaration])
@@ -91,9 +92,10 @@ parseOkAct args path (m, parseOk) = do
     case labelCheckRes of
       Left errs -> putStr (unlines errs) >> pure (parse (parserFail "") "" "")
       Right labelMap -> do
-        print $ convertCASTToAsm $ updateGotoLabel parseOk labelMap
+        print m
+        print $ convertCASTToAsm m $ updateGotoLabel parseOk labelMap
         let updatedLabel = updateGotoLabel parseOk labelMap
-            converted = convertCASTToAsmStr updatedLabel
+            converted = convertCASTToAsmStr m updatedLabel
         writeFile (outAsmFileName path) converted
         (_, _, _, assemblerPid) <- if objOnly args
           then createProcess $ proc "cc" [outAsmFileName path, "-c", "-o", outObjFileName path]

@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/03 15:13:33 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/04 13:13:09 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -523,6 +523,11 @@ unaryOpStringParser = foldl1 (<|>) $
     [incrementLex, decrementLex, plusLex, minusLex,
       exclaimLex, complementLex]
 
+exprToInt :: Expr -> Int
+exprToInt expr = case expr of
+  Constant i -> read i
+  _ -> 0
+
 isVariableExpr :: Expr -> Bool
 isVariableExpr (Variable {}) = True
 isVariableExpr _ = False
@@ -783,6 +788,7 @@ topLevelFuncStorageClassCheck :: Maybe StorageClass -> Maybe StorageClass -> Boo
 topLevelFuncStorageClassCheck (Just Static) (Just Static) = True
 topLevelFuncStorageClassCheck (Just Static) (Just Extern) = True
 topLevelFuncStorageClassCheck (Just Static) Nothing = True
+-- topLevelFuncStorageClassCheck (Just Extern) (Just Static) = True
 topLevelFuncStorageClassCheck _ (Just Static) = False
 topLevelFuncStorageClassCheck _ _ = True
 
@@ -860,7 +866,7 @@ varDeclarationParser = do
     else if isNothing sc
       then do
       let varId = currentVarId parseInfo
-          newVarName = vName ++ "." ++ show varId
+          newVarName = vName ++ "#" ++ show varId
           newVarMap = M.insert vName (VarIdentifier varType newVarName (topLevel parseInfo) Nothing sc) $ currentScopeIdent parseInfo
       putState $ parseInfo {currentVarId = varId + 1, currentScopeIdent = newVarMap}
       initialiser <- getInitialiser exprParser
@@ -872,7 +878,6 @@ varDeclarationParser = do
           newLocalVarMap = M.insert vName (VarIdentifier varType newVarName (topLevel parseInfo) Nothing sc) $ currentScopeIdent parseInfo
           newGlobalVarMap = M.insert newVarName (VarIdentifier varType newVarName (topLevel parseInfo) initialiser sc) $ topLevelScopeIdent parseInfo
       putState $ parseInfo {globalVarId = varId + 1, currentScopeIdent = newLocalVarMap, topLevelScopeIdent = newGlobalVarMap}
-
       pure $ VariableDeclaration varType newVarName (topLevel parseInfo) initialiser sc
 
 expressionParser :: ParsecT String ParseInfo IO Statement
@@ -907,8 +912,10 @@ updateVarMapForNewScope parseInfo m = do
 keepIdsJumpLabel :: ParseInfo -> [JumpLabel] -> ParsecT s ParseInfo IO ()
 keepIdsJumpLabel parseInfo jLabel = do
   newVarId <- currentVarId <$> getState
+  newGVarId <- globalVarId <$> getState
+  top <- topLevelScopeIdent <$> getState
   lId <- labelId <$> getState
-  putState $ parseInfo {currentVarId = newVarId, labelId = lId, jumpLabel = jLabel}
+  putState $ parseInfo {currentVarId = newVarId, globalVarId = newGVarId, labelId = lId, jumpLabel = jLabel, topLevelScopeIdent = top}
 
 blockParser :: M.Map String IdentifierType -> ParsecT String ParseInfo IO Block
 blockParser m = do
@@ -1096,8 +1103,8 @@ checkForFuncNameConflict iName = do
   pure iName
 
 compareFunTypeDeclare :: FunTypeInfo -> FunTypeInfo -> Bool
-compareFunTypeDeclare (FunTypeInfo lRt lFName lArgList _ lSc) (FunTypeInfo rRt rFName rArgList _ rSc) =
-  lRt == rRt && lFName == rFName && lArgList == rArgList && lSc == rSc
+compareFunTypeDeclare (FunTypeInfo lRt lFName lArgList _ _) (FunTypeInfo rRt rFName rArgList _ _) =
+  lRt == rRt && lFName == rFName && lArgList == rArgList
 
 checkForFuncTypeConflict :: ParseInfo -> Declaration -> ParsecT String ParseInfo IO ()
 checkForFuncTypeConflict parseInfo declare = case declare of
@@ -1168,7 +1175,7 @@ updateVarMapForFuncBlockScope = do
 addFuncDelclarationIfNeed :: FunTypeInfo -> ParsecT String ParseInfo IO ()
 addFuncDelclarationIfNeed newTypeInfo@(FunTypeInfo _ name _ _ _) = do
   parseInfo <- getState
-  unless (M.member name (outerScopeIdent parseInfo)) $
+  unless (M.member name (outerScopeIdent parseInfo) || M.member name (topLevelScopeIdent parseInfo)) $
     modifyState (\p -> p {outerScopeIdent = M.insert name (FuncIdentifier newTypeInfo) (outerScopeIdent p),
       topLevelScopeIdent = M.insert name (FuncIdentifier newTypeInfo) (topLevelScopeIdent p)})
 
@@ -1213,12 +1220,17 @@ functionDeclareParser = do
   keepIdsJumpLabel
     (parseInfo {topLevelScopeIdent = topScope, outerScopeIdent = M.union outer (M.filter isFuncIdentifier current)})
     jLabel
+  let newSc = if M.member name topScope && isFuncIdentifier (topScope M.! name) && funcStorageClass (fti (topScope M.! name)) /= Just Extern
+      then funcStorageClass $ fti (topScope M.! name)
+      else sc
   s <- getState
+  let newFuncTypeInfo = FuncIdentifier (FunTypeInfo rType name (map dataType argList) block newSc)
   unless (funcNotYetDefined name s) $
-    modifyState (\p -> p {currentScopeIdent = M.insert name (FuncIdentifier (FunTypeInfo rType name (map dataType argList) block sc)) (currentScopeIdent p)})
-  unless (funcNotYetDefined name s) $
-    modifyState (\p -> p {outerScopeIdent = M.insert name (FuncIdentifier (FunTypeInfo rType name (map dataType argList) block sc)) (outerScopeIdent p)})
-  pure $ FunctionDeclaration name  argList rType block nVarId sc
+    modifyState (\p -> p {
+      currentScopeIdent = M.insert name newFuncTypeInfo (currentScopeIdent p),
+      outerScopeIdent = M.insert name newFuncTypeInfo (outerScopeIdent p),
+      topLevelScopeIdent = M.insert name newFuncTypeInfo (topLevelScopeIdent p)})
+  pure $ FunctionDeclaration name  argList rType block nVarId newSc
 
 declareParser :: ParsecT String ParseInfo IO Declaration
 declareParser = do
