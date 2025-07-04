@@ -134,7 +134,8 @@ exprToIfIRs condition tStat fStat = do
       Just fs -> do 
         fsIRs <- cStatmentToIRInstructions $ S fs
         dLabelId <- gets (show . snd) <* modify bumpOneToLabelId
-        pure ([IRJump $ "ifSkip" ++ dLabelId, IRLabel ("ifFalse" ++ lId)] ++ fsIRs ++ [IRLabel $ "ifSkip" ++ dLabelId], "ifFalse" ++ lId)
+        pure ([IRJump $ "ifSkip" ++ dLabelId, IRLabel ("ifFalse" ++ lId)] ++
+          fsIRs ++ [IRLabel $ "ifSkip" ++ dLabelId], "ifFalse" ++ lId)
       _ -> pure ([IRLabel ("ifSkip" ++ lId)], "ifSkip" ++ lId)
   pure $ cIRs ++ [IRJumpIfZero cValIR fLabel] ++ tStatIRs ++ fStatIRs
 
@@ -162,8 +163,7 @@ unaryOperationToIRs op uExpr
       pure (oldIRs ++ [IRUnary op irVal $ IRVar $ show varId], IRVar $ show varId)
 
 genJumpIRsIfNeeded :: BinaryOp -> (Int, Int) -> IRVal -> State (Int, Int) [IRInstruction]
-genJumpIRsIfNeeded op lId irVal =
-  case op of
+genJumpIRsIfNeeded op lId irVal = case op of
     LogicAnd ->
       pure [IRJumpIfZero irVal $ "false_label" ++ show (fst lId)]
     LogicOr ->
@@ -180,8 +180,7 @@ genJumpIRsAndLabel varId ids fstVal sndVal = do
 
 genLabelIfNeeded :: BinaryOp -> State (Int, Int) (Int, Int)
 genLabelIfNeeded op =
-  let getLabels =
-        do
+  let getLabels = do
           lId <- gets snd
           modify bumpOneToLabelId
           endLabelId <- gets snd
@@ -256,7 +255,8 @@ forInitToIRs fi = case fi of
   InitExpr (Just expr) -> cStatmentToIRInstructions $ S $ Expression expr
   _ -> pure []
 
-forToIRs :: ForInit -> Maybe Expr -> Maybe Expr -> Statement -> (String, String, String) -> State (Int, Int) [IRInstruction]
+forToIRs :: ForInit -> Maybe Expr -> Maybe Expr -> Statement ->
+  (String, String, String) -> State (Int, Int) [IRInstruction]
 forToIRs forInit condition post bl (sLabel, cLabel, dLabel) = do
   forInitIRs <- forInitToIRs forInit
   conditionIRs <- case condition of
@@ -276,9 +276,10 @@ caseMapToIRJump :: IRVal -> IRVal -> M.Map Int String -> [IRInstruction]
 caseMapToIRJump irVal resIRVal m = concatMap caseToIRJump $ M.toList m
   where caseToIRJump (val, l) =
           [IRBinary EqualRelation irVal (IRConstant (show val)) resIRVal,
-          IRJumpIfNotZero resIRVal l]
+            IRJumpIfNotZero resIRVal l]
 
-switchToIRs :: Expr -> Statement -> (Maybe String, String) -> M.Map Int String -> State (Int, Int) [IRInstruction]
+switchToIRs :: Expr -> Statement -> (Maybe String, String) ->
+  M.Map Int String -> State (Int, Int) [IRInstruction]
 switchToIRs condition bl (defaultLabel, doneLabel) caseMap = do
   (exprIRs, exprIRVal) <- exprToIRs condition
   varId <- gets fst <* modify bumpOneToVarId
@@ -312,7 +313,8 @@ exprToIRs expr = case expr of
   Unary op uExpr -> unaryOperationToIRs op uExpr
   Binary op lExpr rExpr -> binaryOperationToIRs op lExpr rExpr
   Variable var _ _ -> pure ([], IRVar var)
-  Assignment op (Variable var lvl sc) rExpr -> assignmentToIRs op (Variable var lvl sc) rExpr
+  Assignment op (Variable var lvl sc) rExpr ->
+    assignmentToIRs op (Variable var lvl sc) rExpr
   Conditional condition tCond fCond -> conditionToIRs condition tCond fCond
   FunctionCall name exprs -> funcCallToIRs name exprs
   _ -> undefined

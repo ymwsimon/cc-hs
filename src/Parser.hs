@@ -669,7 +669,8 @@ variableParser = do
   when (not (M.member vName current) && not (M.member vName outer)) $
     unexpected $ "Undefined variable: " ++ vName
   when ((M.member vName current && isFuncIdentifier (current M.! vName)) ||
-      (not (M.member vName current) && M.member vName outer && isFuncIdentifier (outer M.! vName))) $
+      (not (M.member vName current) && M.member vName outer &&
+        isFuncIdentifier (outer M.! vName))) $
     unexpected "Function identifier"
   if M.member vName current
     then do
@@ -765,7 +766,8 @@ argPairParser = do
       if M.member vName current
         then unexpected $ vName ++ ". Already defined"
         else do
-          modifyState (\p -> p {currentScopeIdent = M.insert vName (VarIdentifier dt vName False Nothing Nothing) (currentScopeIdent p)})
+          modifyState (\p -> p {currentScopeIdent =
+            M.insert vName (VarIdentifier dt vName False Nothing Nothing) (currentScopeIdent p)})
           pure $ ArgPair dt vName
     _ -> pure $ ArgPair dt ""
 
@@ -788,11 +790,11 @@ topLevelFuncStorageClassCheck :: Maybe StorageClass -> Maybe StorageClass -> Boo
 topLevelFuncStorageClassCheck (Just Static) (Just Static) = True
 topLevelFuncStorageClassCheck (Just Static) (Just Extern) = True
 topLevelFuncStorageClassCheck (Just Static) Nothing = True
--- topLevelFuncStorageClassCheck (Just Extern) (Just Static) = True
 topLevelFuncStorageClassCheck _ (Just Static) = False
 topLevelFuncStorageClassCheck _ _ = True
 
-updateTopLevelVarCurrentVar :: DT -> IdentifierName -> Maybe Expr -> Maybe StorageClass -> ParsecT String ParseInfo IO ()
+updateTopLevelVarCurrentVar :: DT -> IdentifierName -> Maybe Expr ->
+  Maybe StorageClass -> ParsecT String ParseInfo IO ()
 updateTopLevelVarCurrentVar dt vName vDf sClass = do
   topMap <- topLevelScopeIdent <$> getState
   let typeInfo = if M.member vName topMap
@@ -841,13 +843,50 @@ topLevelVarDeclarationParser = do
       updateTopLevelVarCurrentVar varType vName initialiser sc
       pure $ VariableDeclaration varType vName True initialiser sc
 
+localExternVarHandle :: DT -> Maybe StorageClass -> IdentifierName -> ParsecT String ParseInfo IO VariableDeclaration
+localExternVarHandle varType sc vName  = do
+  void semiColParser
+  parseInfo <- getState
+  unless (M.member vName $ topLevelScopeIdent parseInfo)
+      $ updateTopLevelVarCurrentVar varType vName Nothing sc
+  modifyState (\p -> p {currentScopeIdent = M.insert vName
+    (VarIdentifier varType vName (topLevel p) Nothing sc) $ currentScopeIdent p})
+  pure $ VariableDeclaration varType vName (topLevel parseInfo) Nothing sc
+
+localPlainVarHandle :: DT -> Maybe StorageClass -> IdentifierName -> ParsecT String ParseInfo IO VariableDeclaration
+localPlainVarHandle varType sc vName = do
+  parseInfo <- getState
+  let varId = currentVarId parseInfo
+      newVarName = vName ++ "#" ++ show varId
+      newVarMap = M.insert vName
+        (VarIdentifier varType newVarName (topLevel parseInfo) Nothing sc) $
+        currentScopeIdent parseInfo
+  putState $ parseInfo {currentVarId = varId + 1, currentScopeIdent = newVarMap}
+  initialiser <- getInitialiser exprParser
+  pure $ VariableDeclaration varType newVarName (topLevel parseInfo) initialiser sc
+
+localStaticVarHandle :: DT -> Maybe StorageClass -> IdentifierName -> ParsecT String ParseInfo IO VariableDeclaration
+localStaticVarHandle varType sc vName = do
+  initialiser <- getInitialiser intOperandParser
+  parseInfo <- getState
+  let varId = globalVarId parseInfo
+      newVarName = vName ++ "." ++ show varId
+      newLocalVarMap = M.insert vName
+        (VarIdentifier varType newVarName (topLevel parseInfo) Nothing sc) $
+        currentScopeIdent parseInfo
+      newGlobalVarMap = M.insert newVarName
+        (VarIdentifier varType newVarName (topLevel parseInfo) initialiser sc) $
+        topLevelScopeIdent parseInfo
+  putState $ parseInfo {globalVarId = varId + 1,
+    currentScopeIdent = newLocalVarMap, topLevelScopeIdent = newGlobalVarMap}
+  pure $ VariableDeclaration varType newVarName (topLevel parseInfo) initialiser sc
+
 varDeclarationParser :: ParsecT String ParseInfo IO VariableDeclaration
 varDeclarationParser = do
   sc1Try <- storageClassParser Nothing
   varType <- dataTypeParser
   sc <- storageClassParser sc1Try
   vName <- identifierParser <?> "Valid identifier"
-  parseInfo <- getState
   current <- currentScopeIdent <$> getState
   topIdentMap <- topLevelScopeIdent <$> getState
   when (M.member vName current
@@ -857,28 +896,10 @@ varDeclarationParser = do
   when (sc == Just Extern && M.member vName topIdentMap && isFuncIdentifier (topIdentMap M.! vName)) $
     unexpected $ vName ++ ". Already defined"
   if sc == Just Extern
-    then do
-      void semiColParser
-      unless (M.member vName $ topLevelScopeIdent parseInfo)
-          $ updateTopLevelVarCurrentVar varType vName Nothing sc
-      modifyState (\p -> p {currentScopeIdent = M.insert vName (VarIdentifier varType vName (topLevel p) Nothing sc) $ currentScopeIdent p})
-      pure $ VariableDeclaration varType vName (topLevel parseInfo) Nothing sc
+    then localExternVarHandle varType sc vName
     else if isNothing sc
-      then do
-      let varId = currentVarId parseInfo
-          newVarName = vName ++ "#" ++ show varId
-          newVarMap = M.insert vName (VarIdentifier varType newVarName (topLevel parseInfo) Nothing sc) $ currentScopeIdent parseInfo
-      putState $ parseInfo {currentVarId = varId + 1, currentScopeIdent = newVarMap}
-      initialiser <- getInitialiser exprParser
-      pure $ VariableDeclaration varType newVarName (topLevel parseInfo) initialiser sc
-    else do
-      initialiser <- getInitialiser intOperandParser
-      let varId = globalVarId parseInfo
-          newVarName = vName ++ "." ++ show varId
-          newLocalVarMap = M.insert vName (VarIdentifier varType newVarName (topLevel parseInfo) Nothing sc) $ currentScopeIdent parseInfo
-          newGlobalVarMap = M.insert newVarName (VarIdentifier varType newVarName (topLevel parseInfo) initialiser sc) $ topLevelScopeIdent parseInfo
-      putState $ parseInfo {globalVarId = varId + 1, currentScopeIdent = newLocalVarMap, topLevelScopeIdent = newGlobalVarMap}
-      pure $ VariableDeclaration varType newVarName (topLevel parseInfo) initialiser sc
+      then localPlainVarHandle varType sc vName
+    else localStaticVarHandle varType sc vName
 
 expressionParser :: ParsecT String ParseInfo IO Statement
 expressionParser = Expression <$> exprParser
@@ -915,7 +936,8 @@ keepIdsJumpLabel parseInfo jLabel = do
   newGVarId <- globalVarId <$> getState
   top <- topLevelScopeIdent <$> getState
   lId <- labelId <$> getState
-  putState $ parseInfo {currentVarId = newVarId, globalVarId = newGVarId, labelId = lId, jumpLabel = jLabel, topLevelScopeIdent = top}
+  putState $ parseInfo {currentVarId = newVarId, globalVarId = newGVarId,
+    labelId = lId, jumpLabel = jLabel, topLevelScopeIdent = top}
 
 blockParser :: M.Map String IdentifierType -> ParsecT String ParseInfo IO Block
 blockParser m = do
@@ -927,7 +949,8 @@ blockParser m = do
   jLabel <- getJumpLabel
   current <- currentScopeIdent <$> getState
   topScope <- topLevelScopeIdent <$> getState
-  keepIdsJumpLabel (parseInfo {topLevelScopeIdent = topScope, outerScopeIdent = M.union (outerScopeIdent parseInfo) (M.filter isFuncIdentifier current)}) jLabel
+  keepIdsJumpLabel (parseInfo {topLevelScopeIdent = topScope,
+    outerScopeIdent = M.union (outerScopeIdent parseInfo) (M.filter isFuncIdentifier current)}) jLabel
   pure $ Block block
 
 isSwitchLabel :: JumpLabel -> Bool
@@ -1025,7 +1048,8 @@ caseParser = do
           void colonParser
           lId <- getNextLabelId <* bumpLabelId
           modifyState (\p -> p {
-            jumpLabel = preJLabel ++ SwitchLabel jLabel (M.insert val ("case." ++ show val ++ "." ++ show lId) caseMap) : lbs})
+            jumpLabel = preJLabel ++ SwitchLabel jLabel
+              (M.insert val ("case." ++ show val ++ "." ++ show lId) caseMap) : lbs})
           state <- statementParser
           pure $ Case state $ "case." ++ show val ++ "." ++ show lId
     _ -> unexpected "Case"
@@ -1192,6 +1216,15 @@ checkFuncDefinition name parseInfo = do
   when (M.member name current && withFunctionBody (current M.! name)) $
     unexpected "Function redefinition"
 
+updateFuncInfoIfNeed :: IdentifierName -> IdentifierType -> ParsecT String ParseInfo IO ()
+updateFuncInfoIfNeed name newFuncTypeInfo  = do
+  s <- getState
+  unless (funcNotYetDefined name s) $
+    modifyState (\p -> p {
+      currentScopeIdent = M.insert name newFuncTypeInfo (currentScopeIdent p),
+      outerScopeIdent = M.insert name newFuncTypeInfo (outerScopeIdent p),
+      topLevelScopeIdent = M.insert name newFuncTypeInfo (topLevelScopeIdent p)}) 
+
 functionDeclareParser :: ParsecT String ParseInfo IO Declaration
 functionDeclareParser = do
   sc1Try <- storageClassParser Nothing >>= checkLocalFuncDeclare
@@ -1210,7 +1243,8 @@ functionDeclareParser = do
   block <- case maybeSemiColon of
     ";" -> semiColParser >> pure Nothing
     "{" -> checkFuncDefinition name parseInfo >>
-      Just <$> blockParser (M.fromList (map (\(ArgPair dt vName) -> (vName, VarIdentifier dt vName toplvl Nothing sc)) argList))
+      Just <$> blockParser (M.fromList (map (\(ArgPair dt vName) ->
+        (vName, VarIdentifier dt vName toplvl Nothing sc)) argList))
     _ -> unexpected maybeSemiColon
   nVarId <- currentVarId <$> getState
   jLabel <- getJumpLabel
@@ -1218,23 +1252,23 @@ functionDeclareParser = do
   outer <- outerScopeIdent <$> getState
   topScope <- topLevelScopeIdent <$> getState
   keepIdsJumpLabel
-    (parseInfo {topLevelScopeIdent = topScope, outerScopeIdent = M.union outer (M.filter isFuncIdentifier current)})
+    (parseInfo {topLevelScopeIdent = topScope,
+      outerScopeIdent = M.union outer (M.filter isFuncIdentifier current)})
     jLabel
-  let newSc = if M.member name topScope && isFuncIdentifier (topScope M.! name) && funcStorageClass (fti (topScope M.! name)) /= Just Extern
+  let newSc =
+        if M.member name topScope && isFuncIdentifier (topScope M.! name) &&
+          funcStorageClass (fti (topScope M.! name)) /= Just Extern
       then funcStorageClass $ fti (topScope M.! name)
       else sc
-  s <- getState
   let newFuncTypeInfo = FuncIdentifier (FunTypeInfo rType name (map dataType argList) block newSc)
-  unless (funcNotYetDefined name s) $
-    modifyState (\p -> p {
-      currentScopeIdent = M.insert name newFuncTypeInfo (currentScopeIdent p),
-      outerScopeIdent = M.insert name newFuncTypeInfo (outerScopeIdent p),
-      topLevelScopeIdent = M.insert name newFuncTypeInfo (topLevelScopeIdent p)})
-  pure $ FunctionDeclaration name  argList rType block nVarId newSc
+  updateFuncInfoIfNeed name newFuncTypeInfo
+  pure $ FunctionDeclaration name argList rType block nVarId newSc
 
 declareParser :: ParsecT String ParseInfo IO Declaration
 declareParser = do
-  maybeParen <- lookAhead (try $ storageClassParser Nothing >> dataTypeParser >> storageClassParser Nothing >> identifierParser >> openPParser) <|> pure ""
+  maybeParen <-
+    lookAhead (try $ storageClassParser Nothing >> dataTypeParser >>
+      storageClassParser Nothing >> identifierParser >> openPParser) <|> pure ""
   toplvl <- topLevel <$> getState
   if maybeParen == "("
     then functionDeclareParser

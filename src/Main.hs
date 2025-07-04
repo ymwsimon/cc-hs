@@ -92,10 +92,11 @@ parseOkAct args path (m, parseOk) = do
     case labelCheckRes of
       Left errs -> putStr (unlines errs) >> pure (parse (parserFail "") "" "")
       Right labelMap -> do
-        print m
-        print $ convertCASTToAsm m $ updateGotoLabel parseOk labelMap
         let updatedLabel = updateGotoLabel parseOk labelMap
-            converted = convertCASTToAsmStr m updatedLabel
+            varOnlyGlobalMap = M.filter isVarIdentifier m
+            converted = convertCASTToAsmStr varOnlyGlobalMap updatedLabel
+        print m
+        print $ convertCASTToAsm varOnlyGlobalMap $ updateGotoLabel parseOk labelMap
         writeFile (outAsmFileName path) converted
         (_, _, _, assemblerPid) <- if objOnly args
           then createProcess $ proc "cc" [outAsmFileName path, "-c", "-o", outObjFileName path]

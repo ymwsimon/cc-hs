@@ -44,6 +44,3 @@ data BinaryOp =
   | GreaterEqualRelation
   | None
   deriving (Show, Eq)
-
-varIdMapKey :: String
-varIdMapKey = "#varid"
