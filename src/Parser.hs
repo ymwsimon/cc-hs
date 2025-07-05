@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/04 13:13:09 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/05 16:54:33 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -22,6 +22,7 @@ import qualified Data.Map.Strict as M
 import Data.Char (isLetter, isAlphaNum, isDigit)
 import Data.Either (isLeft, fromRight, fromLeft)
 import Data.Maybe
+import Data.List (sort)
 
 type CProgramAST = [Declaration]
 
@@ -35,16 +36,23 @@ data JumpLabel =
   deriving (Show, Eq)
 
 data PrimType =
-  ITChar
-  | ITInt
-  | ITFloat
-  | ITDouble
+  TVoid
+  | TChar
+  | TUChar
+  | TShort
+  | TUShort
+  | TInt
+  | TUInt
+  | TLong
+  | TULong
+  | TFloat
+  | TDouble
+  | TLDouble
   deriving (Show, Eq)
 
 data DT =
   DTInternal PrimType
   | DTUserDefined String [DT]
-  | DTVoid
   deriving (Show, Eq)
 
 data IdentifierType =
@@ -59,7 +67,7 @@ data ParseInfo =
     currentScopeIdent :: M.Map String IdentifierType,
     outerScopeIdent :: M.Map String IdentifierType,
     topLevelScopeIdent :: M.Map String IdentifierType,
-    dataTypeMap :: M.Map String DT,
+    dataTypeMap :: M.Map [String] DT,
     precedence :: Int,
     labelId :: Int,
     currentVarId :: Int,
@@ -70,7 +78,7 @@ data ParseInfo =
   deriving (Show, Eq)
 
 data InputArgPair =
-  ArgPair 
+  ArgPair
   {
     dataType :: DT,
     varName :: String
@@ -184,23 +192,42 @@ binaryAssignmentOp =
 
 keywordList :: [String]
 keywordList = 
-  ["int", "void", "return", "if",
-  "else", "goto", "do", "while",
-  "for", "break", "continue", "switch",
-  "static", "extern", "auto", "register"]
+  ["int", "long", "short", "char", "float", "double",
+    "void", "signed", "unsigned",
+    "return", "if", "else", "goto", "do", "while",
+    "for", "break", "continue", "switch",
+    "static", "extern", "auto", "register"]
 
-primDataTypeStrList :: [String]
-primDataTypeStrList =
-  ["char", "int", "float", "double"]
+primDataTypeStrList :: [[String]]
+primDataTypeStrList = map sort
+  [["void"], ["char"], ["signed", "char"], ["unsigned", "char"],
+    ["short"], ["signed", "short"], ["unsigned", "short"],
+    ["int"], ["signed", "int"], ["unsigned", "int"],
+    ["long"], ["signed", "long"], ["long", "long"], ["signed", "long", "long"],
+    ["unsigned", "long"], ["unsigned", "long", "long"],
+    ["float"], ["double"], ["long", "double"]]
 
 primTypeList :: [PrimType]
-primTypeList = [ITChar, ITInt, ITFloat, ITDouble]
+primTypeList =
+  [TVoid, TChar, TChar, TUChar,
+    TShort, TShort, TUShort,
+    TInt, TInt, TUInt,
+    TLong, TLong, TLong, TLong,
+    TULong, TULong,
+    TFloat, TDouble, TLDouble]
+
+typeSpecifierStrList :: [String]
+typeSpecifierStrList =
+  ["void", "char", "int", "short", "long", "signed", "unsigned", "float", "double"]
+
+storageClassSpecifierStrList :: [String]
+storageClassSpecifierStrList = ["static", "extern"]
 
 primTypeStringToPrimType :: String -> PrimType
-primTypeStringToPrimType dt = M.fromList (zip primDataTypeStrList primTypeList) M.! dt 
+primTypeStringToPrimType dt = M.fromList (zip primDataTypeStrList primTypeList) M.! [dt] 
 
-primDataTypeMap :: M.Map String DT
-primDataTypeMap = M.fromList $ ("void", DTVoid) : zip primDataTypeStrList (map DTInternal primTypeList)
+primDataTypeMap :: M.Map [String] DT
+primDataTypeMap = M.fromList $ zip primDataTypeStrList (map DTInternal primTypeList)
 
 defaultParsecState :: ParseInfo
 defaultParsecState = ParseInfo
@@ -439,12 +466,56 @@ identifierParser = do
     then unexpected $ "Cannot use keyword as identifier: " ++ symbol
     else pure symbol
 
+declarationSpecifierStrList :: [String]
+declarationSpecifierStrList = typeSpecifierStrList ++ storageClassSpecifierStrList
+
+declarationSpecifierParser :: ([String], [String]) -> ParsecT String ParseInfo IO (Maybe StorageClass, DT)
+declarationSpecifierParser (toks, prohibitedList) = do
+  specifier <- lookAhead symbolExtract
+  when (specifier `elem` declarationSpecifierStrList
+    && specifier `elem` prohibitedList) $
+    unexpected specifier
+  toplvl <- topLevel <$> getState
+  when (not toplvl && specifier == "static") $
+    unexpected specifier
+  let newPBList =
+          (if (== 2) $ length $ filter (== "long") (specifier : toks)
+            then ["void", "char", "short", "long", "float", "double"]
+            else []) ++
+        concatMap prohibitedNextTokensList toks
+  if specifier `notElem` declarationSpecifierStrList
+    then do
+      unless (any (`notElem` storageClassSpecifierStrList) toks) $
+        unexpected "identifier. Need type specifier"
+      let sc = case filter (`elem` storageClassSpecifierStrList) toks of
+            [] -> Nothing 
+            ["static"] -> Just Static
+            ["extern"] -> Just Extern
+            _ -> undefined
+      pure (sc, primDataTypeMap M.! sort (filter (`notElem` storageClassSpecifierStrList) toks))
+    else symbolExtract >> declarationSpecifierParser (specifier : toks, newPBList)
+
+prohibitedNextTokensList :: String -> [String]
+prohibitedNextTokensList tok = case tok of
+  "void" -> ["void", "char", "int", "short", "long", "signed", "unsigned", "float", "double"]
+  "char" -> ["void", "char", "int", "short", "long", "float", "double"]
+  "int" -> ["void", "char", "int", "float", "double"]
+  "short" -> ["void", "char", "short", "long", "float", "double"]
+  "long" -> ["void", "char", "short", "float"]
+  "signed" -> ["void", "signed", "unsigned", "float", "double"]
+  "unsigned" -> ["void", "signed", "unsigned", "float", "double"]
+  "float" -> ["void", "char", "int", "short", "long", "signed", "unsigned", "float", "double"]
+  "double" -> ["void", "char", "int", "short", "signed", "unsigned", "float", "double"]
+  "static" -> ["static", "extern"]
+  "extern" -> ["static", "extern"]
+  _ -> []
+
 dataTypeParser :: ParsecT String ParseInfo IO DT
 dataTypeParser = do
   dtName <- symbolExtract
   dtMap <- dataTypeMap <$> getState
-  if M.member dtName dtMap && dtName /= "void"
-    then pure $ dtMap M.! dtName
+  if M.member [dtName] dtMap && dtName /= "void"
+    then pure $ dtMap M.! [dtName]
     else unexpected dtName
 
 intParser :: ParsecT String u IO String
@@ -930,14 +1001,18 @@ updateVarMapForNewScope parseInfo m = do
     {currentScopeIdent = m,
       outerScopeIdent = M.union (currentScopeIdent parseInfo) (outerScopeIdent parseInfo)}
 
-keepIdsJumpLabel :: ParseInfo -> [JumpLabel] -> ParsecT s ParseInfo IO ()
-keepIdsJumpLabel parseInfo jLabel = do
+keepIdsJumpLabel :: ParseInfo -> (M.Map String IdentifierType -> M.Map String IdentifierType) ->
+  ([JumpLabel] -> [JumpLabel]) -> ParsecT String ParseInfo IO ()
+keepIdsJumpLabel parseInfo outerExtract jLabelExtract = do
   newVarId <- currentVarId <$> getState
   newGVarId <- globalVarId <$> getState
   top <- topLevelScopeIdent <$> getState
+  outer <- outerExtract . outerScopeIdent <$> getState
   lId <- labelId <$> getState
+  jLabel <- jLabelExtract . jumpLabel <$> getState
   putState $ parseInfo {currentVarId = newVarId, globalVarId = newGVarId,
-    labelId = lId, jumpLabel = jLabel, topLevelScopeIdent = top}
+    labelId = lId, jumpLabel = jLabel, topLevelScopeIdent = top,
+    outerScopeIdent = outer}
 
 blockParser :: M.Map String IdentifierType -> ParsecT String ParseInfo IO Block
 blockParser m = do
@@ -946,11 +1021,9 @@ blockParser m = do
   updateVarMapForNewScope parseInfo m
   modifyState $ \p -> p {topLevel = False}
   block <- manyTill blockItemParser $ try closeCurParser
-  jLabel <- getJumpLabel
   current <- currentScopeIdent <$> getState
-  topScope <- topLevelScopeIdent <$> getState
-  keepIdsJumpLabel (parseInfo {topLevelScopeIdent = topScope,
-    outerScopeIdent = M.union (outerScopeIdent parseInfo) (M.filter isFuncIdentifier current)}) jLabel
+  let outerExtract = const $ M.union (outerScopeIdent parseInfo) (M.filter isFuncIdentifier current) in
+    keepIdsJumpLabel parseInfo outerExtract id
   pure $ Block block
 
 isSwitchLabel :: JumpLabel -> Bool
@@ -997,7 +1070,7 @@ whileParser = do
   condition <- parenExprParser
   whileBody <- statementParser
   jumpL <- getJumpLabel
-  keepIdsJumpLabel parseInfo $ drop 1 jumpL
+  keepIdsJumpLabel parseInfo id $ drop 1
   pure $ While condition whileBody $ (!! 0) jumpL
 
 doWhileParser :: ParsecT String ParseInfo IO Statement
@@ -1010,7 +1083,7 @@ doWhileParser = do
   void keyWhileParser
   condition <- parenExprParser <* semiColParser
   jumpL <- getJumpLabel
-  keepIdsJumpLabel parseInfo $ drop 1 jumpL
+  keepIdsJumpLabel parseInfo id $ drop 1
   pure $ DoWhile doWhileBody condition $ (!! 0) jumpL
 
 forInitParser :: ParsecT String ParseInfo IO ForInit
@@ -1031,7 +1104,7 @@ forLoopParser = do
   postBody <- optionMaybe (try exprParser) <* closePParser
   forBody <- statementParser
   jLabel <- getJumpLabel
-  keepIdsJumpLabel parseInfo $ drop 1 jLabel
+  keepIdsJumpLabel parseInfo id $ drop 1
   pure $ For forInit condition postBody forBody $ (!! 0) jLabel
 
 caseParser :: ParsecT String ParseInfo IO Statement
@@ -1077,7 +1150,7 @@ switchParser = do
   expr <- parenExprParser
   bl <- statementParser
   jLabel <- getJumpLabel
-  keepIdsJumpLabel parseInfo $ drop 1 jLabel
+  keepIdsJumpLabel parseInfo id $ drop 1
   pure $ Switch expr bl $ (!! 0) jLabel
 
 statementParser :: ParsecT String ParseInfo IO Statement
@@ -1115,7 +1188,7 @@ blockItemParser = do
 
 isValidDataType :: String -> ParsecT String ParseInfo IO Bool
 isValidDataType typeName =
-  M.member typeName . dataTypeMap <$> getState
+  M.member [typeName] . dataTypeMap <$> getState
 
 checkForFuncNameConflict :: String -> ParsecT String ParseInfo IO String
 checkForFuncNameConflict iName = do
@@ -1227,9 +1300,7 @@ updateFuncInfoIfNeed name newFuncTypeInfo  = do
 
 functionDeclareParser :: ParsecT String ParseInfo IO Declaration
 functionDeclareParser = do
-  sc1Try <- storageClassParser Nothing >>= checkLocalFuncDeclare
-  rType <- dataTypeParser
-  sc <- storageClassParser sc1Try >>= checkLocalFuncDeclare
+  (sc, rType) <- declarationSpecifierParser ([], [])
   name <- identifierParser >>= checkForFuncNameConflict
   checkFuncStorageClass name sc
   parseInfo <- getState
@@ -1247,21 +1318,16 @@ functionDeclareParser = do
         (vName, VarIdentifier dt vName toplvl Nothing sc)) argList))
     _ -> unexpected maybeSemiColon
   nVarId <- currentVarId <$> getState
-  jLabel <- getJumpLabel
   current <- currentScopeIdent <$> getState
   outer <- outerScopeIdent <$> getState
+  let outerExtract = const $ M.union outer (M.filter isFuncIdentifier current) in
+    keepIdsJumpLabel parseInfo outerExtract id
   topScope <- topLevelScopeIdent <$> getState
-  keepIdsJumpLabel
-    (parseInfo {topLevelScopeIdent = topScope,
-      outerScopeIdent = M.union outer (M.filter isFuncIdentifier current)})
-    jLabel
-  let newSc =
-        if M.member name topScope && isFuncIdentifier (topScope M.! name) &&
-          funcStorageClass (fti (topScope M.! name)) /= Just Extern
-      then funcStorageClass $ fti (topScope M.! name)
+  let newSc = if M.member name topScope && isFuncIdentifier (topScope M.! name) &&
+                funcStorageClass (fti (topScope M.! name)) /= Just Extern
+      then funcStorageClass $ fti $ topScope M.! name
       else sc
-  let newFuncTypeInfo = FuncIdentifier (FunTypeInfo rType name (map dataType argList) block newSc)
-  updateFuncInfoIfNeed name newFuncTypeInfo
+  updateFuncInfoIfNeed name $ FuncIdentifier $ FunTypeInfo rType name (map dataType argList) block newSc
   pure $ FunctionDeclaration name argList rType block nVarId newSc
 
 declareParser :: ParsecT String ParseInfo IO Declaration
