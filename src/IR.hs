@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/07/04 13:10:26 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/06 17:18:17 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -149,11 +149,11 @@ unaryOperationToIRs op uExpr
   | op `elem` [PostDecrement, PostIncrement] = do
     varId <- gets $ IRVar . show . fst
     modify bumpOneToVarId
-    (oldIRs, irVal) <- exprToIRs $ Binary (postPrefixToBin op) uExpr (Constant "1")
+    (oldIRs, irVal) <- exprToIRs $ Binary (postPrefixToBin op) uExpr (Constant $ ConstInt "1")
     (varIRs, irVar) <- exprToIRs uExpr
     pure (concat [[IRCopy irVar varId], oldIRs, varIRs, [IRCopy irVal irVar]], varId)
   | op `elem` [PreDecrement, PreIncrement] = do
-    (oldIRs, irVal) <- exprToIRs $ Binary (postPrefixToBin op) uExpr (Constant "1")
+    (oldIRs, irVal) <- exprToIRs $ Binary (postPrefixToBin op) uExpr (Constant $ ConstInt "1")
     (varIRs, irVar) <- exprToIRs uExpr
     pure (oldIRs ++ varIRs ++ [IRCopy irVal irVar], irVal)
   | otherwise = do
@@ -309,7 +309,8 @@ funcCallToIRs name exprs = do
 
 exprToIRs :: Expr -> State (Int, Int) ([IRInstruction], IRVal)
 exprToIRs expr = case expr of
-  Constant s -> pure ([], IRConstant s)
+  Constant (ConstInt s) -> pure ([], IRConstant s)
+  Constant (ConstLong s) -> pure ([], IRConstant s)
   Unary op uExpr -> unaryOperationToIRs op uExpr
   Binary op lExpr rExpr -> binaryOperationToIRs op lExpr rExpr
   Variable var _ _ -> pure ([], IRVar var)

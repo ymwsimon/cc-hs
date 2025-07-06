@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/07/04 13:00:51 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/06 17:18:41 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -578,7 +578,7 @@ globalVarMapToAsmStaticVarDefine m =
   concatMap (identToAsmStaticVar . snd) $ M.toList $ M.filter isVarIdentifier m
   where identToAsmStaticVar ident = case ident of
           VarIdentifier _ vName _ expr (Just Static) ->
-            [AsmStaticVarDefine vName False (exprToInt $ fromMaybe (Constant "0") expr)]
+            [AsmStaticVarDefine vName False (exprToInt $ fromMaybe (Constant $ ConstInt "0") expr)]
           VarIdentifier _ vName topLvl expr Nothing ->
-            [AsmStaticVarDefine vName topLvl (exprToInt $ fromMaybe (Constant "0") expr)]
+            [AsmStaticVarDefine vName topLvl (exprToInt $ fromMaybe (Constant $ ConstInt "0") expr)]
           _ -> []

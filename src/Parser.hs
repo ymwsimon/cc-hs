@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/06 14:11:35 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/06 18:32:42 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -52,6 +52,7 @@ data PrimType =
 
 data DT =
   DTInternal PrimType
+  | DTFuncType {argList :: [DT], retType :: DT}
   | DTUserDefined String [DT]
   deriving (Show, Eq)
 
@@ -114,7 +115,7 @@ data Declaration =
     {
       funName :: String,
       inputArgs :: [InputArgPair],
-      funRetType :: DT,
+      funcType :: DT,
       funDefine :: Maybe Block,
       nextVarId :: Int,
       storageClass :: Maybe StorageClass
@@ -128,9 +129,8 @@ data VariableDeclaration =
 data FunTypeInfo =
   FunTypeInfo
   {
-    retType :: DT,
+    funType :: DT,
     fName :: IdentifierName,
-    argumentList :: [DT],
     funBody :: Maybe Block,
     funcStorageClass :: Maybe StorageClass
   }
@@ -145,7 +145,7 @@ newtype Block = Block {unBlock :: [BlockItem]}
   deriving (Show, Eq)
 
 data Expr =
-  Constant String
+  Constant NumConst
   | Variable String Bool (Maybe StorageClass)
   | FunctionCall String [Expr]
   | Unary UnaryOp Expr
@@ -158,6 +158,11 @@ data StorageClass =
   Static
   | Extern
   deriving Eq
+
+data NumConst =
+  ConstInt String
+  | ConstLong String
+  deriving (Show, Eq)
 
 instance Show StorageClass where
   show Static = "static"
@@ -525,6 +530,9 @@ dataTypeParser = do
 intParser :: ParsecT String u IO String
 intParser = spaces >> many1 digit
 
+longParser :: ParsecT String u IO String
+longParser = spaces >> many1 digit <* oneOf "lL"
+
 fileParser :: ParsecT String ParseInfo IO (M.Map String IdentifierType, [Declaration])
 fileParser = do
   declares <- manyTill declareParser $ try $ spaces >> eof
@@ -600,7 +608,8 @@ unaryOpStringParser = foldl1 (<|>) $
 
 exprToInt :: Expr -> Int
 exprToInt expr = case expr of
-  Constant i -> read i
+  Constant (ConstInt i) -> read i
+  Constant (ConstLong i) -> read i
   _ -> 0
 
 isVariableExpr :: Expr -> Bool
@@ -715,7 +724,10 @@ exprRightParser lExpr = do
     else pure lExpr
 
 intOperandParser :: ParsecT String u IO Expr
-intOperandParser = Constant <$> intParser
+intOperandParser = Constant . ConstInt <$> intParser
+
+longOperandParser :: ParsecT String u IO Expr
+longOperandParser = Constant . ConstLong <$> longParser
 
 postfixOp :: Expr -> ParsecT String u IO Expr
 postfixOp expr = case expr of
@@ -748,12 +760,10 @@ variableParser = do
         isFuncIdentifier (outer M.! vName))) $
     unexpected "Function identifier"
   if M.member vName current
-    then do
-      let var = current M.! vName
-      postfixOp $ Variable (vn var) (topLv var) (storeClass var) 
-    else do
-      let var = outer M.! vName
-      postfixOp $ Variable (vn var) (topLv var) (storeClass var)
+    then let var = current M.! vName in
+        postfixOp $ Variable (vn var) (topLv var) (storeClass var) 
+    else let var = outer M.! vName in
+        postfixOp $ Variable (vn var) (topLv var) (storeClass var)
 
 isFuncIdentiferInVarMap :: String -> M.Map String IdentifierType -> M.Map String IdentifierType -> Bool
 isFuncIdentiferInVarMap fIdentifier current outer =
@@ -763,12 +773,8 @@ isFuncIdentiferInVarMap fIdentifier current outer =
 getFunTypeInfoFromVarMap :: String -> M.Map String IdentifierType -> M.Map String IdentifierType -> FunTypeInfo
 getFunTypeInfoFromVarMap fIdentifier current outer =
   if M.member fIdentifier current && isFuncIdentifier (current M.! fIdentifier)
-    then case current M.! fIdentifier of
-          FuncIdentifier fi -> fi
-          _ -> undefined
-    else case outer M.! fIdentifier of
-          FuncIdentifier fi -> fi
-          _ -> undefined
+    then fti $ current M.! fIdentifier
+    else fti $ outer M.! fIdentifier
 
 functionCallParser :: ParsecT String ParseInfo IO Expr
 functionCallParser = do
@@ -791,7 +797,7 @@ functionCallParser = do
             void closePParser
             pure exprs
         let funcInfo = getFunTypeInfoFromVarMap functionName current outer
-        if length paraList == length (argumentList funcInfo)
+        if length paraList == length (argList $ funType funcInfo)
           then pure $ FunctionCall functionName paraList
           else unexpected "Function call. Incorrect number of parameters"
 
@@ -1200,16 +1206,16 @@ checkForFuncNameConflict iName = do
   pure iName
 
 compareFunTypeDeclare :: FunTypeInfo -> FunTypeInfo -> Bool
-compareFunTypeDeclare (FunTypeInfo lRt lFName lArgList _ _) (FunTypeInfo rRt rFName rArgList _ _) =
-  lRt == rRt && lFName == rFName && lArgList == rArgList
+compareFunTypeDeclare (FunTypeInfo lFt lFName _ _) (FunTypeInfo rFt rFName _ _) =
+  lFt == rFt && lFName == rFName
 
 checkForFuncTypeConflict :: ParseInfo -> Declaration -> ParsecT String ParseInfo IO ()
 checkForFuncTypeConflict parseInfo declare = case declare of
-  FunctionDeclaration fn aList rType _ _ sc -> do
+  FunctionDeclaration fn _ fType _ _ sc -> do
     let current = currentScopeIdent parseInfo
     let outer = outerScopeIdent parseInfo
     let top = topLevelScopeIdent parseInfo
-    let newFuncType = FunTypeInfo rType fn (map dataType aList) Nothing sc
+    let newFuncType = FunTypeInfo fType fn Nothing sc
     let checkForPrevTypeConflict m = M.member fn m
           && isFuncIdentifier (m M.! fn)
           && (not . compareFunTypeDeclare newFuncType . fti) (m M.! fn)  
@@ -1270,7 +1276,7 @@ updateVarMapForFuncBlockScope = do
     currentScopeIdent = M.empty, currentVarId = if toplvl then 1 else currentVarId p})
 
 addFuncDelclarationIfNeed :: FunTypeInfo -> ParsecT String ParseInfo IO ()
-addFuncDelclarationIfNeed newTypeInfo@(FunTypeInfo _ name _ _ _) = do
+addFuncDelclarationIfNeed newTypeInfo@(FunTypeInfo _ name _ _) = do
   parseInfo <- getState
   unless (M.member name (outerScopeIdent parseInfo) || M.member name (topLevelScopeIdent parseInfo)) $
     modifyState (\p -> p {outerScopeIdent = M.insert name (FuncIdentifier newTypeInfo) (outerScopeIdent p),
@@ -1278,7 +1284,7 @@ addFuncDelclarationIfNeed newTypeInfo@(FunTypeInfo _ name _ _ _) = do
 
 withFunctionBody :: IdentifierType -> Bool
 withFunctionBody typeIdentifier = case typeIdentifier of
-  FuncIdentifier (FunTypeInfo _ _ _ (Just _) _) -> True
+  FuncIdentifier (FunTypeInfo _ _ (Just _) _) -> True
   _ -> False
 
 checkFuncDefinition :: IdentifierName -> ParseInfo -> ParsecT String ParseInfo IO ()
@@ -1306,16 +1312,16 @@ functionDeclareParser = do
   parseInfo <- getState
   updateVarMapForFuncBlockScope
   toplvl <- topLevel <$> getState
-  argList <- between openPParser closePParser (try argListParser)
+  aList <- between openPParser closePParser (try argListParser)
   checkForFuncTypeConflict parseInfo $
-      FunctionDeclaration name argList rType Nothing 1 sc
-  addFuncDelclarationIfNeed $ FunTypeInfo rType name (map dataType argList) Nothing sc
+      FunctionDeclaration name aList (DTFuncType (map dataType aList) rType) Nothing 1 sc
+  addFuncDelclarationIfNeed $ FunTypeInfo (DTFuncType (map dataType aList) rType) name Nothing sc
   maybeSemiColon <- lookAhead (try semiColParser <|> try openCurParser)
   block <- case maybeSemiColon of
     ";" -> semiColParser >> pure Nothing
     "{" -> checkFuncDefinition name parseInfo >>
       Just <$> blockParser (M.fromList (map (\(ArgPair dt vName) ->
-        (vName, VarIdentifier dt vName toplvl Nothing sc)) argList))
+        (vName, VarIdentifier dt vName toplvl Nothing sc)) aList))
     _ -> unexpected maybeSemiColon
   nVarId <- currentVarId <$> getState
   current <- currentScopeIdent <$> getState
@@ -1327,8 +1333,8 @@ functionDeclareParser = do
                 funcStorageClass (fti (topScope M.! name)) /= Just Extern
       then funcStorageClass $ fti $ topScope M.! name
       else sc
-  updateFuncInfoIfNeed name $ FuncIdentifier $ FunTypeInfo rType name (map dataType argList) block newSc
-  pure $ FunctionDeclaration name argList rType block nVarId newSc
+  updateFuncInfoIfNeed name $ FuncIdentifier $ FunTypeInfo (DTFuncType (map dataType aList) rType) name block newSc
+  pure $ FunctionDeclaration name aList (DTFuncType (map dataType aList) rType) block nVarId newSc
 
 declareParser :: ParsecT String ParseInfo IO Declaration
 declareParser = do
@@ -1409,8 +1415,8 @@ updateLabelBlockItem bi m = case bi of
 updateLabelSingle :: Declaration -> M.Map String String -> Declaration
 updateLabelSingle vd@(VD _) _ = vd
 updateLabelSingle fd@(FunctionDeclaration _ _ _ Nothing _ _) _ = fd
-updateLabelSingle (FunctionDeclaration n args rt (Just (Block bls)) lid sc) m =
-  FunctionDeclaration n args rt (Just (Block (map (`updateLabelBlockItem` m) bls))) lid sc
+updateLabelSingle (FunctionDeclaration n args ft (Just (Block bls)) lid sc) m =
+  FunctionDeclaration n args ft (Just (Block (map (`updateLabelBlockItem` m) bls))) lid sc
 
 updateGotoLabel :: [Declaration] -> [M.Map String String] -> [Declaration]
 updateGotoLabel = zipWith updateLabelSingle
