@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/07/06 17:18:41 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/06 19:08:42 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -18,6 +18,7 @@ import Data.List
 import qualified Data.Map.Strict as M
 import Parser
 import Data.Maybe
+import Data.Int
 
 type AsmProgramAST = [AsmTopLevel]
 
@@ -27,7 +28,7 @@ data AsmTopLevel =
   deriving (Show, Eq)
 
 data AsmStaticVarDefine =
-  AsmStaticVarDefine {asmVarName :: String, asmVarGlobal :: Bool, asmVarInit :: Int}
+  AsmStaticVarDefine {asmVarName :: String, asmVarGlobal :: Bool, asmVarInit :: Int64}
   deriving (Show, Eq)
 
 data AsmFunctionDefine =
@@ -101,7 +102,7 @@ data MemorySize =
   deriving (Show, Eq)
 
 data Operand =
-  Imm Int
+  Imm Int64
   | Register Reg
   | Pseudo {identifier :: String}
   | Stack Int
@@ -226,7 +227,7 @@ irFuncDefineToAsmFuncDefine gVarMap funcList fd = do
     concatMap (\irs -> irInstructionToAsmInstruction irs m funcList gVarMap) (irInstruction fd)
 
 irOperandToAsmOperand :: IRVal -> M.Map String Int -> M.Map String IdentifierType -> Operand
-irOperandToAsmOperand (IRConstant i) _ _ = Imm $ read i
+irOperandToAsmOperand (IRConstant i) _ _ = Imm i
 irOperandToAsmOperand (IRVar s) m gVarMap
   | M.member s gVarMap && isVarIdentifier (gVarMap M.! s) = Data s
   | M.member (dropVarName s) m = Pseudo $ show $ m M.! dropVarName s
@@ -260,7 +261,7 @@ irFuncCallToAsm name args dst funcList m gVarMap =
         zipWith (\pr a -> Mov (irOperandToAsmOperand a m gVarMap) pr)
           parametersRegister regArg
       copyStackArgsInstr = concatMap (\sa -> case sa of
-        IRConstant c -> [Push (Imm $ read c)]
+        IRConstant c -> [Push (Imm c)]
         IRVar _ ->
           [Mov (irOperandToAsmOperand sa m gVarMap) (Register RAX),
             Push (Register RAX)]) (reverse stackArg)
@@ -578,7 +579,7 @@ globalVarMapToAsmStaticVarDefine m =
   concatMap (identToAsmStaticVar . snd) $ M.toList $ M.filter isVarIdentifier m
   where identToAsmStaticVar ident = case ident of
           VarIdentifier _ vName _ expr (Just Static) ->
-            [AsmStaticVarDefine vName False (exprToInt $ fromMaybe (Constant $ ConstInt "0") expr)]
+            [AsmStaticVarDefine vName False (exprToInt $ fromMaybe (Constant $ ConstInt 0) expr)]
           VarIdentifier _ vName topLvl expr Nothing ->
-            [AsmStaticVarDefine vName topLvl (exprToInt $ fromMaybe (Constant $ ConstInt "0") expr)]
+            [AsmStaticVarDefine vName topLvl (exprToInt $ fromMaybe (Constant $ ConstInt 0) expr)]
           _ -> []

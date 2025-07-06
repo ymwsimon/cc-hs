@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/07/06 17:18:17 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/06 19:17:50 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -18,6 +18,7 @@ import Control.Monad.State
 import qualified Data.Map.Strict as M
 import Control.Monad (mapAndUnzipM)
 import Data.Char
+import Data.Int
 
 type IRProgramAST = [IRTopLevel]
 
@@ -54,7 +55,7 @@ data IRInstruction =
   deriving (Show, Eq)
 
 data IRVal =
-  IRConstant String
+  IRConstant Int64
   | IRVar String
   deriving (Show, Eq)
 
@@ -102,7 +103,7 @@ hasFuncBody _ = False
 cFuncDefineToIRFuncDefine :: Declaration -> State (Int, Int) IRTopLevel
 cFuncDefineToIRFuncDefine fd@(FunctionDeclaration _ _ _ (Just bl) _ sc) =
   IRFunc . IRFunctionDefine (funName fd) (sc /= Just Static) (map varName (inputArgs fd))
-    . (++ [IRReturn (IRConstant "0")]) . concat
+    . (++ [IRReturn (IRConstant 0)]) . concat
     <$> (modify (initIRVarId (nextVarId fd)) >>
       mapM cStatmentToIRInstructions (unBlock bl))
 cFuncDefineToIRFuncDefine  _ = undefined
@@ -149,11 +150,11 @@ unaryOperationToIRs op uExpr
   | op `elem` [PostDecrement, PostIncrement] = do
     varId <- gets $ IRVar . show . fst
     modify bumpOneToVarId
-    (oldIRs, irVal) <- exprToIRs $ Binary (postPrefixToBin op) uExpr (Constant $ ConstInt "1")
+    (oldIRs, irVal) <- exprToIRs $ Binary (postPrefixToBin op) uExpr (Constant $ ConstInt 1)
     (varIRs, irVar) <- exprToIRs uExpr
     pure (concat [[IRCopy irVar varId], oldIRs, varIRs, [IRCopy irVal irVar]], varId)
   | op `elem` [PreDecrement, PreIncrement] = do
-    (oldIRs, irVal) <- exprToIRs $ Binary (postPrefixToBin op) uExpr (Constant $ ConstInt "1")
+    (oldIRs, irVal) <- exprToIRs $ Binary (postPrefixToBin op) uExpr (Constant $ ConstInt 1)
     (varIRs, irVar) <- exprToIRs uExpr
     pure (oldIRs ++ varIRs ++ [IRCopy irVal irVar], irVal)
   | otherwise = do
@@ -201,8 +202,8 @@ binaryOperationToIRs op lExpr rExpr = do
   varId <- gets fst
   modify bumpOneToVarId
   resultIRVal <-
-    let trueVal = IRConstant "1"
-        falseVal = IRConstant "0" in
+    let trueVal = IRConstant 1
+        falseVal = IRConstant 0 in
       case op of
         LogicAnd -> genJumpIRsAndLabel varId ids trueVal falseVal
         LogicOr -> genJumpIRsAndLabel varId ids falseVal trueVal
@@ -272,14 +273,14 @@ forToIRs forInit condition post bl (sLabel, cLabel, dLabel) = do
   blIRs <- cStatmentToIRInstructions $ S bl
   pure $ forInitIRs ++ conditionIRs ++ blIRs ++ postIRs ++ [IRLabel dLabel]
 
-caseMapToIRJump :: IRVal -> IRVal -> M.Map Int String -> [IRInstruction]
+caseMapToIRJump :: IRVal -> IRVal -> M.Map Int64 String -> [IRInstruction]
 caseMapToIRJump irVal resIRVal m = concatMap caseToIRJump $ M.toList m
   where caseToIRJump (val, l) =
-          [IRBinary EqualRelation irVal (IRConstant (show val)) resIRVal,
+          [IRBinary EqualRelation irVal (IRConstant val) resIRVal,
             IRJumpIfNotZero resIRVal l]
 
 switchToIRs :: Expr -> Statement -> (Maybe String, String) ->
-  M.Map Int String -> State (Int, Int) [IRInstruction]
+  M.Map Int64 String -> State (Int, Int) [IRInstruction]
 switchToIRs condition bl (defaultLabel, doneLabel) caseMap = do
   (exprIRs, exprIRVal) <- exprToIRs condition
   varId <- gets fst <* modify bumpOneToVarId
@@ -309,7 +310,7 @@ funcCallToIRs name exprs = do
 
 exprToIRs :: Expr -> State (Int, Int) ([IRInstruction], IRVal)
 exprToIRs expr = case expr of
-  Constant (ConstInt s) -> pure ([], IRConstant s)
+  Constant (ConstInt s) -> pure ([], IRConstant $ fromIntegral s)
   Constant (ConstLong s) -> pure ([], IRConstant s)
   Unary op uExpr -> unaryOperationToIRs op uExpr
   Binary op lExpr rExpr -> binaryOperationToIRs op lExpr rExpr

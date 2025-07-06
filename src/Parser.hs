@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/06 18:32:42 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/06 19:05:33 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -23,6 +23,7 @@ import Data.Char (isLetter, isAlphaNum, isDigit)
 import Data.Either (isLeft, fromRight, fromLeft)
 import Data.Maybe
 import Data.List (sort)
+import Data.Int
 
 type CProgramAST = [Declaration]
 
@@ -32,7 +33,7 @@ type IdentifierName = String
 
 data JumpLabel =
   LoopLabel (String, String, String)
-  | SwitchLabel (Maybe String, String) (M.Map Int String)
+  | SwitchLabel (Maybe String, String) (M.Map Int64 String)
   deriving (Show, Eq)
 
 data PrimType =
@@ -147,6 +148,7 @@ newtype Block = Block {unBlock :: [BlockItem]}
 data Expr =
   Constant NumConst
   | Variable String Bool (Maybe StorageClass)
+  | Cast DT Expr
   | FunctionCall String [Expr]
   | Unary UnaryOp Expr
   | Binary BinaryOp Expr Expr
@@ -160,8 +162,8 @@ data StorageClass =
   deriving Eq
 
 data NumConst =
-  ConstInt String
-  | ConstLong String
+  ConstInt Int
+  | ConstLong Int64
   deriving (Show, Eq)
 
 instance Show StorageClass where
@@ -606,10 +608,10 @@ unaryOpStringParser = foldl1 (<|>) $
     [incrementLex, decrementLex, plusLex, minusLex,
       exclaimLex, complementLex]
 
-exprToInt :: Expr -> Int
+exprToInt :: Expr -> Int64
 exprToInt expr = case expr of
-  Constant (ConstInt i) -> read i
-  Constant (ConstLong i) -> read i
+  Constant (ConstInt i) -> fromIntegral i
+  Constant (ConstLong i) -> i
   _ -> 0
 
 isVariableExpr :: Expr -> Bool
@@ -724,10 +726,10 @@ exprRightParser lExpr = do
     else pure lExpr
 
 intOperandParser :: ParsecT String u IO Expr
-intOperandParser = Constant . ConstInt <$> intParser
+intOperandParser = Constant . ConstInt . read <$> intParser
 
 longOperandParser :: ParsecT String u IO Expr
-longOperandParser = Constant . ConstLong <$> longParser
+longOperandParser = Constant . ConstLong . read <$> longParser
 
 postfixOp :: Expr -> ParsecT String u IO Expr
 postfixOp expr = case expr of
