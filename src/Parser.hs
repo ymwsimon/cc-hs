@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/05 16:54:33 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/06 14:11:35 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -203,7 +203,9 @@ primDataTypeStrList = map sort
   [["void"], ["char"], ["signed", "char"], ["unsigned", "char"],
     ["short"], ["signed", "short"], ["unsigned", "short"],
     ["int"], ["signed", "int"], ["unsigned", "int"],
-    ["long"], ["signed", "long"], ["long", "long"], ["signed", "long", "long"],
+    ["long"], ["long", "int"], ["signed", "long"], ["signed", "long", "int"],
+    ["long", "long"], ["long", "long", "int"], ["signed", "long", "long"], 
+    ["signed", "long", "long", "int"],
     ["unsigned", "long"], ["unsigned", "long", "long"],
     ["float"], ["double"], ["long", "double"]]
 
@@ -212,6 +214,7 @@ primTypeList =
   [TVoid, TChar, TChar, TUChar,
     TShort, TShort, TUShort,
     TInt, TInt, TUInt,
+    TLong, TLong, TLong, TLong,
     TLong, TLong, TLong, TLong,
     TULong, TULong,
     TFloat, TDouble, TLDouble]
@@ -469,20 +472,15 @@ identifierParser = do
 declarationSpecifierStrList :: [String]
 declarationSpecifierStrList = typeSpecifierStrList ++ storageClassSpecifierStrList
 
-declarationSpecifierParser :: ([String], [String]) -> ParsecT String ParseInfo IO (Maybe StorageClass, DT)
-declarationSpecifierParser (toks, prohibitedList) = do
+declarationSpecifierParser :: Bool -> ([String], [String]) -> ParsecT String ParseInfo IO (Maybe StorageClass, DT)
+declarationSpecifierParser isFunc (toks, prohibitedList) = do
   specifier <- lookAhead symbolExtract
   when (specifier `elem` declarationSpecifierStrList
     && specifier `elem` prohibitedList) $
     unexpected specifier
   toplvl <- topLevel <$> getState
-  when (not toplvl && specifier == "static") $
+  when (isFunc && not toplvl && specifier == "static") $
     unexpected specifier
-  let newPBList =
-          (if (== 2) $ length $ filter (== "long") (specifier : toks)
-            then ["void", "char", "short", "long", "float", "double"]
-            else []) ++
-        concatMap prohibitedNextTokensList toks
   if specifier `notElem` declarationSpecifierStrList
     then do
       unless (any (`notElem` storageClassSpecifierStrList) toks) $
@@ -493,7 +491,13 @@ declarationSpecifierParser (toks, prohibitedList) = do
             ["extern"] -> Just Extern
             _ -> undefined
       pure (sc, primDataTypeMap M.! sort (filter (`notElem` storageClassSpecifierStrList) toks))
-    else symbolExtract >> declarationSpecifierParser (specifier : toks, newPBList)
+    else
+      let newPBList =
+           (if (== 2) $ length $ filter (== "long") (specifier : toks)
+            then ["void", "char", "short", "long", "float", "double"]
+            else []) ++
+            concatMap prohibitedNextTokensList (specifier : toks) in
+      symbolExtract >> declarationSpecifierParser isFunc (specifier : toks, newPBList)
 
 prohibitedNextTokensList :: String -> [String]
 prohibitedNextTokensList tok = case tok of
@@ -889,9 +893,7 @@ getInitialiser parser = do
 
 topLevelVarDeclarationParser :: ParsecT String ParseInfo IO VariableDeclaration
 topLevelVarDeclarationParser = do
-  sc1Try <- storageClassParser Nothing
-  varType <- dataTypeParser
-  sc <- storageClassParser sc1Try
+  (sc, varType) <- declarationSpecifierParser False ([], [])
   vName <- identifierParser <?> "Valid identifier"
   topIdentMap <- topLevelScopeIdent <$> getState
   when (M.member vName topIdentMap && isFuncIdentifier (topIdentMap M.! vName)) $
@@ -954,9 +956,7 @@ localStaticVarHandle varType sc vName = do
 
 varDeclarationParser :: ParsecT String ParseInfo IO VariableDeclaration
 varDeclarationParser = do
-  sc1Try <- storageClassParser Nothing
-  varType <- dataTypeParser
-  sc <- storageClassParser sc1Try
+  (sc, varType) <- declarationSpecifierParser False ([], [])
   vName <- identifierParser <?> "Valid identifier"
   current <- currentScopeIdent <$> getState
   topIdentMap <- topLevelScopeIdent <$> getState
@@ -1300,7 +1300,7 @@ updateFuncInfoIfNeed name newFuncTypeInfo  = do
 
 functionDeclareParser :: ParsecT String ParseInfo IO Declaration
 functionDeclareParser = do
-  (sc, rType) <- declarationSpecifierParser ([], [])
+  (sc, rType) <- declarationSpecifierParser True ([], [])
   name <- identifierParser >>= checkForFuncNameConflict
   checkFuncStorageClass name sc
   parseInfo <- getState
@@ -1333,8 +1333,7 @@ functionDeclareParser = do
 declareParser :: ParsecT String ParseInfo IO Declaration
 declareParser = do
   maybeParen <-
-    lookAhead (try $ storageClassParser Nothing >> dataTypeParser >>
-      storageClassParser Nothing >> identifierParser >> openPParser) <|> pure ""
+    lookAhead (try $ many1 (try symbolExtract) >> openPParser) <|> pure ""
   toplvl <- topLevel <$> getState
   if maybeParen == "("
     then functionDeclareParser
