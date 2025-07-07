@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/07 11:20:39 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/07 16:30:37 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -59,7 +59,7 @@ data DT =
 
 data IdentifierType =
   VarIdentifier {vdt :: DT, vn :: IdentifierName, topLv :: Bool,
-    varDefine :: Maybe Expr, storeClass :: Maybe StorageClass}
+    varDefine :: Maybe TypedExpr, storeClass :: Maybe StorageClass}
   | FuncIdentifier {fti :: FunTypeInfo}
   deriving (Show, Eq)
 
@@ -89,22 +89,22 @@ data InputArgPair =
 
 data ForInit =
   InitDecl VariableDeclaration
-  | InitExpr (Maybe Expr)
+  | InitExpr (Maybe TypedExpr)
   deriving (Show, Eq)
 
 data Statement =
-  Expression Expr
-  | Return Expr
-  | If Expr Statement (Maybe Statement)
+  Expression TypedExpr
+  | Return TypedExpr
+  | If TypedExpr Statement (Maybe Statement)
   | Goto String
   | Label String String Statement
   | Compound Block
   | Break String
   | Continue String
-  | While Expr Statement JumpLabel
-  | DoWhile Statement Expr JumpLabel
-  | For ForInit (Maybe Expr) (Maybe Expr) Statement JumpLabel
-  | Switch Expr Statement JumpLabel
+  | While TypedExpr Statement JumpLabel
+  | DoWhile Statement TypedExpr JumpLabel
+  | For ForInit (Maybe TypedExpr) (Maybe TypedExpr) Statement JumpLabel
+  | Switch TypedExpr Statement JumpLabel
   | Case Statement String
   | Default Statement String
   | Null
@@ -124,7 +124,7 @@ data Declaration =
   deriving (Show, Eq)
 
 data VariableDeclaration =
-  VariableDeclaration DT IdentifierName Bool (Maybe Expr) (Maybe StorageClass)
+  VariableDeclaration DT IdentifierName Bool (Maybe TypedExpr) (Maybe StorageClass)
   deriving (Show, Eq)
 
 data FunTypeInfo =
@@ -145,15 +145,18 @@ data BlockItem =
 newtype Block = Block {unBlock :: [BlockItem]}
   deriving (Show, Eq)
 
+data TypedExpr = TExpr {texpr :: Expr, tDT :: DT}
+  deriving (Show, Eq)
+
 data Expr =
   Constant NumConst
   | Variable String Bool (Maybe StorageClass)
-  | Cast DT Expr
-  | FunctionCall String [Expr]
-  | Unary UnaryOp Expr
-  | Binary BinaryOp Expr Expr
-  | Assignment BinaryOp Expr Expr
-  | Conditional Expr Expr Expr
+  | Cast DT TypedExpr
+  | FunctionCall String [TypedExpr]
+  | Unary UnaryOp TypedExpr
+  | Binary BinaryOp TypedExpr TypedExpr
+  | Assignment BinaryOp TypedExpr TypedExpr
+  | Conditional TypedExpr TypedExpr TypedExpr
   deriving (Show, Eq)
 
 data StorageClass =
@@ -635,17 +638,17 @@ unaryOpStringParser = foldl1 (<|>) $
     [incrementLex, decrementLex, plusLex, minusLex,
       exclaimLex, complementLex]
 
-exprToInt :: Expr -> Int64
-exprToInt expr = case expr of
+exprToInt :: TypedExpr -> Int64
+exprToInt (TExpr expr _) = case expr of
   Constant (ConstInt i) -> fromIntegral i
   Constant (ConstLong i) -> i
   _ -> 0
 
-isVariableExpr :: Expr -> Bool
-isVariableExpr (Variable {}) = True
+isVariableExpr :: TypedExpr -> Bool
+isVariableExpr (TExpr (Variable {}) _) = True
 isVariableExpr _ = False
 
-intLongConstantParser :: ParsecT String ParseInfo IO Expr
+intLongConstantParser :: ParsecT String ParseInfo IO TypedExpr
 intLongConstantParser = do
   maybeLong <- lookAhead $ optionMaybe $ try longParser
   liftIO $ print maybeLong
@@ -654,24 +657,25 @@ intLongConstantParser = do
       void longParser
       let lVal = read l :: Integer
       if lVal <= fromIntegral (maxBound :: Int64)
-        then pure $ Constant $ ConstLong $ fromInteger lVal
+        then pure $ TExpr (Constant $ ConstLong $ fromInteger lVal) $ DTInternal TInt
         else unexpected "large integer value"
     _ -> do
       val <- intParser
       let iVal = read val :: Integer
       if iVal <= fromIntegral (maxBound :: Int32)
-        then pure $ Constant $ ConstInt $ fromIntegral iVal
+        then pure $ TExpr (Constant $ ConstInt $ fromIntegral iVal) $ DTInternal TInt
         else if iVal <= fromIntegral (maxBound :: Int64)
-          then pure $ Constant $ ConstLong $ fromIntegral iVal
+          then pure $ TExpr (Constant $ ConstLong $ fromIntegral iVal) $ DTInternal TLong
           else unexpected "large integer value"
 
-binaryExprParser :: ParsecT String ParseInfo IO Expr
-binaryExprParser = flip Binary
-  <$> factorParser
-  <*> binaryOpParser
-  <*> factorParser
+binaryExprParser :: ParsecT String ParseInfo IO TypedExpr
+binaryExprParser = do
+  lExpr <- factorParser
+  binOp <- binaryOpParser
+  rExpr <- factorParser
+  pure $ TExpr (Binary binOp lExpr rExpr) $ getExprsCommonType lExpr rExpr
 
-unaryExprParser :: ParsecT String ParseInfo IO Expr
+unaryExprParser :: ParsecT String ParseInfo IO TypedExpr
 unaryExprParser = do
   uOpStr <- lookAhead unaryOpStringParser
   uOp <- unaryOpParser
@@ -680,9 +684,15 @@ unaryExprParser = do
   expr <- exprParser
   when (uOp `elem` [PreDecrement, PreIncrement] && not (isVariableExpr expr)) $
     unexpected "Need lvalue for prefix operation"
-  Unary uOp expr <$ modifyState (setPrecedence p)
+  TExpr (Unary uOp expr) (tDT expr) <$ modifyState (setPrecedence p)
 
-exprParser :: ParsecT String ParseInfo IO Expr
+getExprsCommonType :: TypedExpr -> TypedExpr -> DT
+getExprsCommonType (TExpr _ lDT) (TExpr _ rDT) =
+  if lDT == rDT
+    then lDT
+    else DTInternal TLong
+
+exprParser :: ParsecT String ParseInfo IO TypedExpr
 exprParser = factorParser >>= exprRightParser
 
 isBinaryOpChar :: String -> Bool
@@ -735,7 +745,7 @@ useNewLabelId oldParseIno = do
 isEqOrHigherPrecedence :: String -> Int -> Bool
 isEqOrHigherPrecedence binOp p = (binaryOpPrecedence M.! binOp) <= p
 
-condtionalTrueParser :: ParsecT String ParseInfo IO Expr
+condtionalTrueParser :: ParsecT String ParseInfo IO TypedExpr
 condtionalTrueParser = do
   void questionParser
   oldState <- precedence <$> getState
@@ -745,8 +755,8 @@ condtionalTrueParser = do
   void colonParser
   pure expr
 
-exprRightParser :: Expr -> ParsecT String ParseInfo IO Expr
-exprRightParser lExpr = do
+exprRightParser :: TypedExpr -> ParsecT String ParseInfo IO TypedExpr
+exprRightParser l@(TExpr lExpr dt) = do
   binOp <- lookAhead (try binaryOpStringParser) <|> pure ""
   p <- precedence <$> getState
   if isBinaryOpChar binOp && isEqOrHigherPrecedence binOp p
@@ -756,38 +766,38 @@ exprRightParser lExpr = do
                     op <- binaryAssignmentOpParser
                     modifyState $ setPrecedence $ getBinOpPrecedence binOp
                     rExpr <- exprParser
-                    exprRightParser $ Assignment op lExpr rExpr
+                    exprRightParser $ TExpr (Assignment op l rExpr) dt
                 _ -> unexpected "Invalid lvalue on the left side"
           else if binOp == "?"
             then do
               tCond <- condtionalTrueParser
               modifyState $ setPrecedence $ getBinOpPrecedence binOp
               fCond <- exprParser
-              exprRightParser $ Conditional lExpr tCond fCond
+              exprRightParser $ TExpr (Conditional l tCond fCond) (getExprsCommonType tCond fCond)
             else do
               op <- binaryOpParser
               modifyState $ updatePrecedence $ getBinOpPrecedence binOp
               rExpr <- exprParser
               modifyState $ setPrecedence p
-              exprRightParser $ Binary op lExpr rExpr
-    else pure lExpr
+              exprRightParser $ TExpr (Binary op l rExpr) (getExprsCommonType l rExpr)
+    else pure l
 
-intOperandParser :: ParsecT String u IO Expr
-intOperandParser = Constant . ConstInt . read <$> intParser
+intOperandParser :: ParsecT String u IO TypedExpr
+intOperandParser = flip TExpr (DTInternal TInt) . Constant . ConstInt . read <$> intParser
 
-longOperandParser :: ParsecT String u IO Expr
-longOperandParser = Constant . ConstLong . read <$> longParser
+longOperandParser :: ParsecT String u IO TypedExpr
+longOperandParser = flip TExpr (DTInternal TLong) . Constant . ConstLong . read <$> longParser
 
-postfixOp :: Expr -> ParsecT String u IO Expr
-postfixOp expr = case expr of
+postfixOp :: TypedExpr -> ParsecT String u IO TypedExpr
+postfixOp e@(TExpr expr dt) = case expr of
     Variable {} -> do
       maybePostOp <- lookAhead (try $ incrementLex <|> decrementLex) <|> pure ""
       if maybePostOp `elem` allPostUnaryOp
-        then ($ expr) . Unary <$> postUnaryOpParser
-        else pure expr
-    _ -> pure expr
+        then flip TExpr dt . ($ e) . Unary <$> postUnaryOpParser
+        else pure e
+    _ -> pure e
 
-parenExprParser :: ParsecT String ParseInfo IO Expr
+parenExprParser :: ParsecT String ParseInfo IO TypedExpr
 parenExprParser = do
   void openPParser
   p <- precedence <$> getState
@@ -797,7 +807,7 @@ parenExprParser = do
   modifyState $ setPrecedence p
   postfixOp expr
 
-variableParser :: ParsecT String ParseInfo IO Expr
+variableParser :: ParsecT String ParseInfo IO TypedExpr
 variableParser = do
   vName <- identifierParser
   current <- currentScopeIdent <$> getState
@@ -810,9 +820,9 @@ variableParser = do
     unexpected "Function identifier"
   if M.member vName current
     then let var = current M.! vName in
-        postfixOp $ Variable (vn var) (topLv var) (storeClass var) 
+        postfixOp $ TExpr (Variable (vn var) (topLv var) (storeClass var)) (vdt var)
     else let var = outer M.! vName in
-        postfixOp $ Variable (vn var) (topLv var) (storeClass var)
+        postfixOp $ TExpr  (Variable (vn var) (topLv var) (storeClass var)) (vdt var)
 
 isFuncIdentiferInVarMap :: String -> M.Map String IdentifierType -> M.Map String IdentifierType -> Bool
 isFuncIdentiferInVarMap fIdentifier current outer =
@@ -825,7 +835,7 @@ getFunTypeInfoFromVarMap fIdentifier current outer =
     then fti $ current M.! fIdentifier
     else fti $ outer M.! fIdentifier
 
-functionCallParser :: ParsecT String ParseInfo IO Expr
+functionCallParser :: ParsecT String ParseInfo IO TypedExpr
 functionCallParser = do
   functionName <- identifierParser <* openPParser
   current <- currentScopeIdent <$> getState
@@ -847,20 +857,20 @@ functionCallParser = do
             pure exprs
         let funcInfo = getFunTypeInfoFromVarMap functionName current outer
         if length paraList == length (argList $ funType funcInfo)
-          then pure $ FunctionCall functionName paraList
+          then pure $ TExpr (FunctionCall functionName paraList) (funType $ fti $ outer M.! functionName)
           else unexpected "Function call. Incorrect number of parameters"
 
-castParser :: ParsecT String ParseInfo IO Expr
+castParser :: ParsecT String ParseInfo IO TypedExpr
 castParser = do
   void openPParser
   (_, cType) <- declarationSpecifierParser False ([], storageClassSpecifierStrList)
   void closePParser
-  Cast cType <$> exprParser
+  e <- exprParser
+  pure $ TExpr (Cast cType e) cType
 
-factorParser :: ParsecT String ParseInfo IO Expr
+factorParser :: ParsecT String ParseInfo IO TypedExpr
 factorParser = do
-  spaces
-  c <- lookAhead anyChar
+  c <- lookAhead $ try $ spaces >> anyChar
   next c where
     next c
       | isDigit c = intLongConstantParser
@@ -935,7 +945,7 @@ topLevelFuncStorageClassCheck (Just Static) Nothing = True
 topLevelFuncStorageClassCheck _ (Just Static) = False
 topLevelFuncStorageClassCheck _ _ = True
 
-updateTopLevelVarCurrentVar :: DT -> IdentifierName -> Maybe Expr ->
+updateTopLevelVarCurrentVar :: DT -> IdentifierName -> Maybe TypedExpr ->
   Maybe StorageClass -> ParsecT String ParseInfo IO ()
 updateTopLevelVarCurrentVar dt vName vDf sClass = do
   topMap <- topLevelScopeIdent <$> getState
@@ -949,7 +959,7 @@ updateTopLevelVarCurrentVar dt vName vDf sClass = do
   modifyState (\p -> p {topLevelScopeIdent = M.insert vName typeInfo (topLevelScopeIdent p)})
   modifyState (\p -> p {currentScopeIdent = M.insert vName typeInfo (currentScopeIdent p)})
 
-getInitialiser :: ParsecT String u IO Expr -> ParsecT String u IO (Maybe Expr)
+getInitialiser :: ParsecT String u IO TypedExpr -> ParsecT String u IO (Maybe TypedExpr)
 getInitialiser parser = do
   maybeEqual <- optionMaybe $ try equalLex
   initialiser <- case maybeEqual of
