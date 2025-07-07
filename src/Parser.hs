@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/07 11:04:02 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/07 11:20:39 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -850,6 +850,13 @@ functionCallParser = do
           then pure $ FunctionCall functionName paraList
           else unexpected "Function call. Incorrect number of parameters"
 
+castParser :: ParsecT String ParseInfo IO Expr
+castParser = do
+  void openPParser
+  (_, cType) <- declarationSpecifierParser False ([], storageClassSpecifierStrList)
+  void closePParser
+  Cast cType <$> exprParser
+
 factorParser :: ParsecT String ParseInfo IO Expr
 factorParser = do
   spaces
@@ -858,7 +865,12 @@ factorParser = do
     next c
       | isDigit c = intLongConstantParser
       | [c] `elem` allUnaryOp = unaryExprParser
-      | c == '(' = parenExprParser
+      | c == '(' = do
+        maybeDT <- lookAhead $ optionMaybe $ try $
+          openPParser >> declarationSpecifierParser False ([], storageClassSpecifierStrList)
+        case maybeDT of
+          Just _ -> castParser
+          _ -> parenExprParser
       | otherwise = do
           maybeParen <- lookAhead (try (identifierParser >> openPParser)) <|> pure ""
           case maybeParen of
