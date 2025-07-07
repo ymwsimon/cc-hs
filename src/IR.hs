@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/07/07 17:40:44 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/07 20:24:04 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -38,7 +38,7 @@ data IRFunctionDefine =
   deriving (Show, Eq)
 
 data IRStaticVarDefine =
-  IRStaticVarDefine {irVarName :: String, irVarGlobal :: Bool, irVarInitVal :: Int}
+  IRStaticVarDefine {irVarName :: String, irVarGlobal :: Bool, irType :: DT, irVarInitVal :: StaticInit}
   deriving (Show, Eq)
 
 data IRInstruction =
@@ -46,7 +46,7 @@ data IRInstruction =
   | IRUnary {irUnaryOp :: UnaryOp, irUnarySrc :: IRVal, irUnaryDst :: IRVal}
   | IRBinary {irBinaryOp :: BinaryOp, irLOperand :: IRVal,
       irROperand :: IRVal, irBinaryDst :: IRVal}
-  | IRCopy { irCopySrc :: IRVal, irCopyDst :: IRVal}
+  | IRCopy {irCopySrc :: IRVal, irCopyDst :: IRVal}
   | IRJump {irJumpTarget :: String}
   | IRJumpIfZero {irJumpZVal :: IRVal, irJumpZeroTarget :: String}
   | IRJumpIfNotZero {irJumpNZVal :: IRVal, irJumpNotZeroTarget :: String}
@@ -57,6 +57,11 @@ data IRInstruction =
 data IRVal =
   IRConstant Int64
   | IRVar String
+  deriving (Show, Eq)
+
+data StaticInit =
+  IntInit Int32
+  | LongInit Int64
   deriving (Show, Eq)
 
 isIRFuncDefine :: IRTopLevel -> Bool

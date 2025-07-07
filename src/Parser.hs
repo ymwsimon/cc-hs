@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/07 18:01:44 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/07 20:22:20 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -75,7 +75,8 @@ data ParseInfo =
     currentVarId :: Int,
     globalVarId :: Int,
     jumpLabel :: [JumpLabel],
-    topLevel :: Bool
+    topLevel :: Bool,
+    funcReturnType :: DT
   }
   deriving (Show, Eq)
 
@@ -260,7 +261,8 @@ defaultParsecState = ParseInfo
     currentVarId = 1,
     globalVarId = 1,
     jumpLabel = [],
-    topLevel = True
+    topLevel = True,
+    funcReturnType = DTInternal TVoid
   }
 
 binaryOpPrecedence :: M.Map String Int
@@ -668,9 +670,12 @@ intLongConstantParser = do
           else unexpected "large integer value"
 
 cvtTypedExpr :: TypedExpr -> DT -> TypedExpr
-cvtTypedExpr te@(TExpr _ dt) cDT
+cvtTypedExpr te@(TExpr e dt) cDT
   | dt == cDT = te
-  | otherwise = TExpr (Cast cDT te) cDT
+  | otherwise = case e of
+      Constant (ConstInt i) -> TExpr (Constant $ ConstLong $ fromIntegral i) cDT
+      Constant (ConstLong l) -> TExpr (Constant $ ConstInt $ fromIntegral l) cDT
+      _ -> TExpr (Cast cDT te) cDT
 
 unaryExprParser :: ParsecT String ParseInfo IO TypedExpr
 unaryExprParser = do
@@ -900,7 +905,8 @@ factorParser = do
 returnStatParser :: ParsecT String ParseInfo IO Statement
 returnStatParser = do
   void keyReturnParser
-  expr <- exprParser
+  rType <- funcReturnType <$> getState
+  expr <- flip cvtTypedExpr rType <$> exprParser
   void semiColParser
   pure $ Return expr
 
@@ -1022,12 +1028,12 @@ localPlainVarHandle varType sc vName = do
         (VarIdentifier varType newVarName (topLevel parseInfo) Nothing sc) $
         currentScopeIdent parseInfo
   putState $ parseInfo {currentVarId = varId + 1, currentScopeIdent = newVarMap}
-  initialiser <- getInitialiser exprParser
+  initialiser <- fmap (`cvtTypedExpr` varType) <$> getInitialiser exprParser
   pure $ VariableDeclaration varType newVarName (topLevel parseInfo) initialiser sc
 
 localStaticVarHandle :: DT -> Maybe StorageClass -> IdentifierName -> ParsecT String ParseInfo IO VariableDeclaration
 localStaticVarHandle varType sc vName = do
-  initialiser <- getInitialiser intLongConstantParser
+  initialiser <- fmap (`cvtTypedExpr` varType) <$> getInitialiser intLongConstantParser
   parseInfo <- getState
   let varId = globalVarId parseInfo
       newVarName = vName ++ "." ++ show varId
@@ -1400,6 +1406,7 @@ functionDeclareParser = do
       FunctionDeclaration name aList (DTFuncType (map dataType aList) rType) Nothing 1 sc
   addFuncDelclarationIfNeed $ FunTypeInfo (DTFuncType (map dataType aList) rType) name Nothing sc
   maybeSemiColon <- lookAhead (try semiColParser <|> try openCurParser)
+  modifyState (\p -> p {funcReturnType = rType})
   block <- case maybeSemiColon of
     ";" -> semiColParser >> pure Nothing
     "{" -> checkFuncDefinition name parseInfo >>
