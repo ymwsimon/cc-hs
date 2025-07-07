@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/06 19:05:33 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/07 11:04:02 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -208,21 +208,27 @@ keywordList =
 primDataTypeStrList :: [[String]]
 primDataTypeStrList = map sort
   [["void"], ["char"], ["signed", "char"], ["unsigned", "char"],
-    ["short"], ["signed", "short"], ["unsigned", "short"],
-    ["int"], ["signed", "int"], ["unsigned", "int"],
+    ["short"], ["signed", "short"], ["short", "int"], ["signed", "short", "int"],
+    ["unsigned", "short"], ["unsigned", "short", "int"],
+    ["int"], ["signed", "int"], ["signed"],
+    ["unsigned", "int"], ["unsigned"],
     ["long"], ["long", "int"], ["signed", "long"], ["signed", "long", "int"],
     ["long", "long"], ["long", "long", "int"], ["signed", "long", "long"], 
     ["signed", "long", "long", "int"],
     ["unsigned", "long"], ["unsigned", "long", "long"],
+    ["unsigned", "long", "int"], ["unsigned", "long", "long", "int"],
     ["float"], ["double"], ["long", "double"]]
 
 primTypeList :: [PrimType]
 primTypeList =
   [TVoid, TChar, TChar, TUChar,
-    TShort, TShort, TUShort,
-    TInt, TInt, TUInt,
+    TShort, TShort, TShort, TShort,
+    TUShort, TUShort,
+    TInt, TInt, TInt,
+    TUInt, TUInt,
     TLong, TLong, TLong, TLong,
     TLong, TLong, TLong, TLong,
+    TULong, TULong,
     TULong, TULong,
     TFloat, TDouble, TLDouble]
 
@@ -517,9 +523,30 @@ prohibitedNextTokensList tok = case tok of
   "unsigned" -> ["void", "signed", "unsigned", "float", "double"]
   "float" -> ["void", "char", "int", "short", "long", "signed", "unsigned", "float", "double"]
   "double" -> ["void", "char", "int", "short", "signed", "unsigned", "float", "double"]
-  "static" -> ["static", "extern"]
-  "extern" -> ["static", "extern"]
+  "static" -> storageClassSpecifierStrList
+  "extern" -> storageClassSpecifierStrList
   _ -> []
+
+typeSpecifierParser :: ([String], [String]) -> ParsecT String ParseInfo IO DT
+typeSpecifierParser (toks, prohibitedList) = do
+  specifier <- lookAhead symbolExtract
+  when (specifier `elem` declarationSpecifierStrList
+    && specifier `elem` prohibitedList) $
+    unexpected specifier
+  when (specifier `elem` storageClassSpecifierStrList) $
+    unexpected specifier
+  if specifier `notElem` declarationSpecifierStrList
+    then do
+      when (null toks) $
+        unexpected "identifier. Need type specifier"
+      pure $ primDataTypeMap M.! sort (filter (`notElem` storageClassSpecifierStrList) toks)
+    else
+      let newPBList =
+           (if (== 2) $ length $ filter (== "long") (specifier : toks)
+            then ["void", "char", "short", "long", "float", "double"]
+            else []) ++
+            concatMap prohibitedNextTokensList (specifier : toks) in
+      symbolExtract >> typeSpecifierParser (specifier : toks, newPBList)
 
 dataTypeParser :: ParsecT String ParseInfo IO DT
 dataTypeParser = do
@@ -617,6 +644,26 @@ exprToInt expr = case expr of
 isVariableExpr :: Expr -> Bool
 isVariableExpr (Variable {}) = True
 isVariableExpr _ = False
+
+intLongConstantParser :: ParsecT String ParseInfo IO Expr
+intLongConstantParser = do
+  maybeLong <- lookAhead $ optionMaybe $ try longParser
+  liftIO $ print maybeLong
+  case maybeLong of
+    Just l -> do
+      void longParser
+      let lVal = read l :: Integer
+      if lVal <= fromIntegral (maxBound :: Int64)
+        then pure $ Constant $ ConstLong $ fromInteger lVal
+        else unexpected "large integer value"
+    _ -> do
+      val <- intParser
+      let iVal = read val :: Integer
+      if iVal <= fromIntegral (maxBound :: Int32)
+        then pure $ Constant $ ConstInt $ fromIntegral iVal
+        else if iVal <= fromIntegral (maxBound :: Int64)
+          then pure $ Constant $ ConstLong $ fromIntegral iVal
+          else unexpected "large integer value"
 
 binaryExprParser :: ParsecT String ParseInfo IO Expr
 binaryExprParser = flip Binary
@@ -809,7 +856,7 @@ factorParser = do
   c <- lookAhead anyChar
   next c where
     next c
-      | isDigit c = intOperandParser
+      | isDigit c = intLongConstantParser
       | [c] `elem` allUnaryOp = unaryExprParser
       | c == '(' = parenExprParser
       | otherwise = do
@@ -840,10 +887,10 @@ ifStatParser = do
 
 argPairParser :: ParsecT String ParseInfo IO InputArgPair
 argPairParser = do
-  dt <- dataTypeParser
-  maybeNoName <- lookAhead (try closePParser <|> try commaParser) <|> pure ""
-  case maybeNoName of
-    "" -> do
+  (_, dt) <- declarationSpecifierParser False ([], "void" : storageClassSpecifierStrList)
+  maybeIdent <- lookAhead $ optionMaybe $ try identifierParser
+  case maybeIdent of
+    Just _ -> do
       vName <- identifierParser
       current <- currentScopeIdent <$> getState
       if M.member vName current
@@ -910,7 +957,7 @@ topLevelVarDeclarationParser = do
     && (vdt (topIdentMap M.! vName) /= varType
       || not (topLevelVarStorageClassCheck (storeClass (topIdentMap M.! vName)) sc))) $
     unexpected $ vName ++ ". Type mismatch to previous declaration"
-  initialiser <- getInitialiser intOperandParser
+  initialiser <- getInitialiser intLongConstantParser
   if M.member vName topIdentMap
     then do
       VarIdentifier vType _ _ vDefine sClass <- pure $ topIdentMap M.! vName
@@ -948,7 +995,7 @@ localPlainVarHandle varType sc vName = do
 
 localStaticVarHandle :: DT -> Maybe StorageClass -> IdentifierName -> ParsecT String ParseInfo IO VariableDeclaration
 localStaticVarHandle varType sc vName = do
-  initialiser <- getInitialiser intOperandParser
+  initialiser <- getInitialiser intLongConstantParser
   parseInfo <- getState
   let varId = globalVarId parseInfo
       newVarName = vName ++ "." ++ show varId
@@ -1097,9 +1144,11 @@ doWhileParser = do
 forInitParser :: ParsecT String ParseInfo IO ForInit
 forInitParser = do
   maybeType <- lookAhead (try keyIntParser) <|> pure ""
-  case maybeType of
-    "int" -> InitDecl <$> varDeclarationParser
-    _ -> InitExpr <$> optionMaybe exprParser <* semiColParser
+  if maybeType `elem` storageClassSpecifierStrList
+    then unexpected maybeType
+    else if maybeType `elem` typeSpecifierStrList
+      then InitDecl <$> varDeclarationParser
+      else InitExpr <$> optionMaybe exprParser <* semiColParser
 
 forLoopParser :: ParsecT String ParseInfo IO Statement
 forLoopParser = do
@@ -1189,10 +1238,10 @@ statementParser = do
 
 blockItemParser :: ParsecT String ParseInfo IO BlockItem
 blockItemParser = do
-  maybeType <- lookAhead $ optionMaybe $ try keyIntParser <|> try storageClassStrParser
-  case maybeType of
-    Just _ -> D <$> declareParser
-    _ -> S <$> statementParser
+  maybeType <- lookAhead $ optionMaybe $ try symbolExtract
+  if isJust maybeType && fromJust maybeType `elem` declarationSpecifierStrList
+    then D <$> declareParser
+    else S <$> statementParser
 
 isValidDataType :: String -> ParsecT String ParseInfo IO Bool
 isValidDataType typeName =
