@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/07/07 16:15:26 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/07 17:40:44 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -319,7 +319,8 @@ exprToIRs (TExpr expr _) = case expr of
     assignmentToIRs op vExpr rExpr
   Conditional condition tCond fCond -> conditionToIRs condition tCond fCond
   FunctionCall name exprs -> funcCallToIRs name exprs
-  _ -> undefined
+  Cast _ cExpr -> exprToIRs cExpr
+  -- _ -> undefined
 
 extractVarId :: IRInstruction -> [Int]
 extractVarId instr = case instr of

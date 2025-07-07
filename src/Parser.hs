@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/07 16:30:37 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/07 18:01:44 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -651,7 +651,6 @@ isVariableExpr _ = False
 intLongConstantParser :: ParsecT String ParseInfo IO TypedExpr
 intLongConstantParser = do
   maybeLong <- lookAhead $ optionMaybe $ try longParser
-  liftIO $ print maybeLong
   case maybeLong of
     Just l -> do
       void longParser
@@ -668,12 +667,10 @@ intLongConstantParser = do
           then pure $ TExpr (Constant $ ConstLong $ fromIntegral iVal) $ DTInternal TLong
           else unexpected "large integer value"
 
-binaryExprParser :: ParsecT String ParseInfo IO TypedExpr
-binaryExprParser = do
-  lExpr <- factorParser
-  binOp <- binaryOpParser
-  rExpr <- factorParser
-  pure $ TExpr (Binary binOp lExpr rExpr) $ getExprsCommonType lExpr rExpr
+cvtTypedExpr :: TypedExpr -> DT -> TypedExpr
+cvtTypedExpr te@(TExpr _ dt) cDT
+  | dt == cDT = te
+  | otherwise = TExpr (Cast cDT te) cDT
 
 unaryExprParser :: ParsecT String ParseInfo IO TypedExpr
 unaryExprParser = do
@@ -684,7 +681,8 @@ unaryExprParser = do
   expr <- exprParser
   when (uOp `elem` [PreDecrement, PreIncrement] && not (isVariableExpr expr)) $
     unexpected "Need lvalue for prefix operation"
-  TExpr (Unary uOp expr) (tDT expr) <$ modifyState (setPrecedence p)
+  let dt = if uOp == NotRelation then DTInternal TInt else tDT expr
+  TExpr (Unary uOp expr) dt <$ modifyState (setPrecedence p)
 
 getExprsCommonType :: TypedExpr -> TypedExpr -> DT
 getExprsCommonType (TExpr _ lDT) (TExpr _ rDT) =
@@ -756,7 +754,7 @@ condtionalTrueParser = do
   pure expr
 
 exprRightParser :: TypedExpr -> ParsecT String ParseInfo IO TypedExpr
-exprRightParser l@(TExpr lExpr dt) = do
+exprRightParser l@(TExpr lExpr lDt) = do
   binOp <- lookAhead (try binaryOpStringParser) <|> pure ""
   p <- precedence <$> getState
   if isBinaryOpChar binOp && isEqOrHigherPrecedence binOp p
@@ -765,21 +763,31 @@ exprRightParser l@(TExpr lExpr dt) = do
                 Variable {} -> do
                     op <- binaryAssignmentOpParser
                     modifyState $ setPrecedence $ getBinOpPrecedence binOp
-                    rExpr <- exprParser
-                    exprRightParser $ TExpr (Assignment op l rExpr) dt
+                    rExpr <- flip cvtTypedExpr lDt <$> exprParser
+                    exprRightParser $ TExpr (Assignment op l rExpr) lDt
                 _ -> unexpected "Invalid lvalue on the left side"
           else if binOp == "?"
             then do
               tCond <- condtionalTrueParser
               modifyState $ setPrecedence $ getBinOpPrecedence binOp
               fCond <- exprParser
-              exprRightParser $ TExpr (Conditional l tCond fCond) (getExprsCommonType tCond fCond)
+              let cType = getExprsCommonType tCond fCond
+              exprRightParser $ TExpr 
+                (Conditional l (cvtTypedExpr tCond cType) (cvtTypedExpr fCond cType)) cType
             else do
               op <- binaryOpParser
               modifyState $ updatePrecedence $ getBinOpPrecedence binOp
               rExpr <- exprParser
               modifyState $ setPrecedence p
-              exprRightParser $ TExpr (Binary op l rExpr) (getExprsCommonType l rExpr)
+              case op of
+                LogicAnd -> exprRightParser $ TExpr (Binary op l rExpr) $ DTInternal TInt
+                LogicOr -> exprRightParser $ TExpr (Binary op l rExpr) $ DTInternal TInt
+                _ -> do
+                  let cType = getExprsCommonType l rExpr
+                  let dt = if op `elem` [Plus, Minus, Multiply, Division, Modulo]
+                      then cType else DTInternal TInt
+                  exprRightParser $ TExpr
+                    (Binary op (cvtTypedExpr l cType) (cvtTypedExpr rExpr cType)) dt
     else pure l
 
 intOperandParser :: ParsecT String u IO TypedExpr
@@ -840,25 +848,27 @@ functionCallParser = do
   functionName <- identifierParser <* openPParser
   current <- currentScopeIdent <$> getState
   outer <- outerScopeIdent <$> getState
-  if M.member functionName current && isVarIdentifier (current M.! functionName)
-    then unexpected "using variable as function."
-    else if not (isFuncIdentiferInVarMap functionName current outer)
-      then unexpected $ functionName ++ ". Not declared before"
-      else do
-        maybeCloseParen <- lookAhead (try closePParser) <|> pure ""
-        paraList <- case maybeCloseParen of
-          ")" -> closePParser >> pure []
-          _ -> do
-            p <- precedence <$> getState
-            modifyState $ updatePrecedence lowestPrecedence
-            exprs <- sepBy exprParser (try commaParser)
-            modifyState $ setPrecedence p
-            void closePParser
-            pure exprs
-        let funcInfo = getFunTypeInfoFromVarMap functionName current outer
-        if length paraList == length (argList $ funType funcInfo)
-          then pure $ TExpr (FunctionCall functionName paraList) (funType $ fti $ outer M.! functionName)
-          else unexpected "Function call. Incorrect number of parameters"
+  when (M.member functionName current && isVarIdentifier (current M.! functionName)) $
+    unexpected "using variable as function."
+  unless (isFuncIdentiferInVarMap functionName current outer) $
+    unexpected $ functionName ++ ". Not declared before"
+  maybeCloseParen <- lookAhead (try closePParser) <|> pure ""
+  paraList <- case maybeCloseParen of
+    ")" -> closePParser >> pure []
+    _ -> do
+      p <- precedence <$> getState
+      modifyState $ updatePrecedence lowestPrecedence
+      exprs <- sepBy exprParser (try commaParser)
+      modifyState $ setPrecedence p
+      void closePParser
+      pure exprs
+  let funcInfo = getFunTypeInfoFromVarMap functionName current outer
+  unless (length paraList == length (argList $ funType funcInfo)) $
+    unexpected "Function call. Incorrect number of parameters"
+  let convertedParaList = zipWith cvtTypedExpr paraList (argList $ funType funcInfo)
+  pure $ TExpr
+    (FunctionCall functionName convertedParaList)
+    (funType $ fti $ outer M.! functionName)
 
 castParser :: ParsecT String ParseInfo IO TypedExpr
 castParser = do
