@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/07/08 15:27:10 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/09 00:20:38 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -303,7 +303,11 @@ irFuncCallToAsm name args dst funcList m gVarMap =
         zipWith (\pr a -> Mov (dtToAsmType $ irValToDT a) (irOperandToAsmOperand a m gVarMap) pr)
           parametersRegister regArg
       copyStackArgsInstr = concatMap (\sa -> case sa of
-        IRConstant _ c -> [Push (Imm $ numConstToInt c)]
+        IRConstant dt c -> case dt of
+          DTInternal TLong ->
+            [Mov QuadWord (Imm $ numConstToInt c) (Register R10),
+              Push (Register R10)]
+          _ -> [Push (Imm $ numConstToInt c)]
         IRVar t _ ->
           [Mov (dtToAsmType t)(irOperandToAsmOperand sa m gVarMap) (Register RAX),
             Push (Register RAX)]) (reverse stackArg)
@@ -450,26 +454,28 @@ isImm _ = False
 
 resolveDoubleStackOperand :: AsmInstruction -> [AsmInstruction]
 resolveDoubleStackOperand instr = case instr of
-  instrs@(Mov t i j) -> if isMemoryAddr i && isMemoryAddr j
-    then [Mov t i (Register R10D),
-        Mov t (Register R10D) j]
+  instrs@(Mov t i j) -> if isMemoryAddr i && isMemoryAddr j || t == QuadWord && isMemoryAddr j
+    then [Mov t i (Register R10),
+        Mov t (Register R10) j]
     else [instrs]
-  instrs@(AsmBinary AsmMul t mulVal i) -> if isMemoryAddr i
-    then [Mov t i (Register R11D),
-      AsmBinary AsmMul t mulVal $ Register R11D,
-      Mov t (Register R11D) i]
+  instrs@(AsmBinary AsmMul t mulVal i) -> if isMemoryAddr i || t == QuadWord && isMemoryAddr i
+    then [Mov t mulVal (Register R10),
+          Mov t i (Register R11),
+          AsmBinary AsmMul t (Register R10) $ Register R11,
+          Mov t (Register R11) i]
     else [instrs]
-  instrs@(AsmBinary op t i j) -> if isMemoryAddr i && isMemoryAddr j
-    then [Mov t i (Register R10D),
-        AsmBinary op t (Register R10D) j]
+  instrs@(AsmBinary op t i j) -> if isMemoryAddr i && isMemoryAddr j || t == QuadWord && isMemoryAddr j
+    then [Mov t i (Register R10),
+        AsmBinary op t (Register R10) j]
     else [instrs]
-  instrs@(Cmp t i j) -> if isMemoryAddr i && isMemoryAddr j
-    then [Mov t j (Register R10D),
-      Cmp t i (Register R10D)]
+  instrs@(Cmp t i j) -> if isMemoryAddr i && isMemoryAddr j || t == QuadWord
+    then [Mov t i (Register R10),
+          Mov t j (Register R11),
+          Cmp t (Register R10) (Register R11)]
     else [instrs]
   instrs@(Movsx i j) -> if isImm i || (isMemoryAddr i && isMemoryAddr j) || isMemoryAddr j
-    then [Mov LongWord i $ Register R10D,
-          Movsx (Register R10D) (Register R11),
+    then [Mov LongWord i $ Register R10,
+          Movsx (Register R10) (Register R11),
           Mov QuadWord (Register R11) j]
     else [instrs]
   _ -> [instr]
@@ -590,9 +596,9 @@ asmInstructionToStr instr = case instr of
     show (convertToNSizeOperand Byte s) ++ ", " ++ show (convertToNSizeOperand Byte d)]
   AsmUnary op t d -> pure $ tabulate [show op ++ asmTypeToAsmStrSuffix t, show (convertToNSizeOperand (asmTypeToMemSize t) d)]
   AsmBinary AsmShiftL t r l ->
-    pure $ tabulate [show AsmShiftL ++ asmTypeToAsmStrSuffix t, show (convertToNSizeOperand Byte r) ++ ", " ++ show l]
+    pure $ tabulate [show AsmShiftL ++ asmTypeToAsmStrSuffix t, show (convertToNSizeOperand (asmTypeToMemSize t) r) ++ ", " ++ show (convertToNSizeOperand (asmTypeToMemSize t) l)]
   AsmBinary AsmShiftR t r l ->
-    pure $ tabulate [show AsmShiftR ++ asmTypeToAsmStrSuffix t, show (convertToNSizeOperand Byte r) ++ ", " ++ show l]
+    pure $ tabulate [show AsmShiftR ++ asmTypeToAsmStrSuffix t, show (convertToNSizeOperand (asmTypeToMemSize t) r) ++ ", " ++ show (convertToNSizeOperand (asmTypeToMemSize t) l)]
   AsmBinary op t r l ->
     pure $ tabulate [show op ++ asmTypeToAsmStrSuffix t,
     show (convertToNSizeOperand (asmTypeToMemSize t) r) ++ ", " ++ show (convertToNSizeOperand (asmTypeToMemSize t) l)]

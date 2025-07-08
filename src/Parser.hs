@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/08 15:17:51 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/09 00:45:07 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -157,7 +157,7 @@ data Expr =
   | FunctionCall String [TypedExpr]
   | Unary UnaryOp TypedExpr
   | Binary BinaryOp TypedExpr TypedExpr
-  | Assignment BinaryOp TypedExpr TypedExpr
+  | Assignment TypedExpr TypedExpr
   | Conditional TypedExpr TypedExpr TypedExpr
   deriving (Show, Eq)
 
@@ -605,6 +605,11 @@ binaryOpParser = foldl1 (<|>) $
           LessEqualRelation, LessThanRelation,
           GreaterEqualRelation, GreaterThanRelation]
 
+relationOp :: [BinaryOp]
+relationOp = [EqualRelation, NotEqualRelation,
+          LessEqualRelation, LessThanRelation,
+          GreaterEqualRelation, GreaterThanRelation]
+
 unaryOpParser :: ParsecT String u IO UnaryOp
 unaryOpParser = foldl1 (<|>) $
   map try $
@@ -665,7 +670,7 @@ intLongConstantParser = do
       void longParser
       let lVal = read l :: Integer
       if lVal <= fromIntegral (maxBound :: Int64)
-        then pure $ TExpr (Constant $ ConstLong $ fromInteger lVal) $ DTInternal TInt
+        then pure $ TExpr (Constant $ ConstLong $ fromInteger lVal) $ DTInternal TLong
         else unexpected "large integer value"
     _ -> do
       val <- intParser
@@ -680,8 +685,8 @@ cvtTypedExpr :: TypedExpr -> DT -> TypedExpr
 cvtTypedExpr te@(TExpr e dt) cDT
   | dt == cDT = te
   | otherwise = case e of
-      Constant (ConstInt i) -> TExpr (Constant $ ConstLong $ fromIntegral i) cDT
-      Constant (ConstLong l) -> TExpr (Constant $ ConstInt $ fromIntegral l) cDT
+      Constant (ConstInt i) -> TExpr (Constant $ ConstInt $ fromIntegral i) cDT
+      Constant (ConstLong l) -> TExpr (Constant $ ConstLong $ fromIntegral l) cDT
       _ -> TExpr (Cast cDT te) cDT
 
 unaryExprParser :: ParsecT String ParseInfo IO TypedExpr
@@ -775,8 +780,13 @@ exprRightParser l@(TExpr lExpr lDt) = do
                 Variable {} -> do
                     op <- binaryAssignmentOpParser
                     modifyState $ setPrecedence $ getBinOpPrecedence binOp
-                    rExpr <- flip cvtTypedExpr lDt <$> exprParser
-                    exprRightParser $ TExpr (Assignment op l rExpr) lDt
+                    e <- exprParser
+                    let cType = getExprsCommonType l e
+                    let te = case op of
+                          None -> TExpr (Assignment l (cvtTypedExpr e lDt)) lDt
+                          _ -> TExpr (Assignment l
+                            (cvtTypedExpr (TExpr (Binary op (cvtTypedExpr l cType) (cvtTypedExpr e cType)) cType) lDt)) lDt
+                    exprRightParser te
                 _ -> unexpected "Invalid lvalue on the left side"
           else if binOp == "?"
             then do
@@ -796,8 +806,10 @@ exprRightParser l@(TExpr lExpr lDt) = do
                 LogicOr -> exprRightParser $ TExpr (Binary op l rExpr) $ DTInternal TInt
                 _ -> do
                   let cType = getExprsCommonType l rExpr
-                  let dt = if op `elem` [Plus, Minus, Multiply, Division, Modulo]
-                      then cType else DTInternal TInt
+                  -- let dt = if op `notElem` relationOp
+                      -- then DTInternal TInt else cType
+                  let dt = if op `elem` [Plus, Minus, Multiply, Division, Modulo, BitShiftLeft, BitShiftRight, BitAnd, BitOr, BitXor]
+                          then cType else DTInternal TInt
                   exprRightParser $ TExpr
                     (Binary op (cvtTypedExpr l cType) (cvtTypedExpr rExpr cType)) dt
     else pure l
@@ -880,7 +892,7 @@ functionCallParser = do
   let convertedParaList = zipWith cvtTypedExpr paraList (argList $ funType funcInfo)
   pure $ TExpr
     (FunctionCall functionName convertedParaList)
-    (funType $ fti $ outer M.! functionName)
+    (retType $ funType $ fti $ outer M.! functionName)
 
 isAssignmentExpr :: Expr -> Bool
 isAssignmentExpr e = case e of
@@ -895,7 +907,6 @@ castParser = do
   e@(TExpr innerE _) <- exprParser
   when (isAssignmentExpr innerE) $
     unexpected "cast of assignment expression"
-  liftIO $ print e
   pure $ TExpr (Cast cType e) cType
 
 factorParser :: ParsecT String ParseInfo IO TypedExpr
@@ -1237,11 +1248,14 @@ caseParser = do
         else do
           void colonParser
           lId <- getNextLabelId <* bumpLabelId
+          let cLabel = if val < 0
+              then "case.m" ++ show (abs val) ++ "." ++ show lId
+              else "case." ++ show val ++ "." ++ show lId
           modifyState (\p -> p {
             jumpLabel = preJLabel ++ SwitchLabel jLabel
-              (M.insert val ("case." ++ show val ++ "." ++ show lId) caseMap) : lbs})
+              (M.insert val cLabel caseMap) : lbs})
           state <- statementParser
-          pure $ Case state $ "case." ++ show val ++ "." ++ show lId
+          pure $ Case state cLabel
     _ -> unexpected "Case"
 
 defaultParser :: ParsecT String ParseInfo IO Statement

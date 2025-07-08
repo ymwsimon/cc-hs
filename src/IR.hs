@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/07/08 15:05:00 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/09 00:20:22 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -104,7 +104,7 @@ cStatmentToIRInstructions bi = case bi of
   S (Default statement l) -> defaultToIRs statement l
   D (VD ((VariableDeclaration dt var False (Just expr) Nothing))) ->
     cStatmentToIRInstructions (S (Expression
-      (TExpr (Assignment None (TExpr (Variable var False Nothing) dt) expr) dt)))
+      (TExpr (Assignment (TExpr (Variable var False Nothing) dt) expr) dt)))
   D _ -> pure []
   _ -> undefined
 
@@ -255,11 +255,9 @@ binaryOperationToIRs op dt lExpr rExpr = do
 dropVarName :: String -> String
 dropVarName v = if '#' `elem` v then drop 1 $ dropWhile (/= '#') v else v
 
-assignmentToIRs :: BinaryOp -> DT -> TypedExpr -> TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
-assignmentToIRs op dt var rExpr = do
-  (rIRs, rVal) <- case op of
-    None -> exprToIRs rExpr
-    _ -> binaryOperationToIRs op dt var rExpr
+assignmentToIRs :: TypedExpr -> TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
+assignmentToIRs var rExpr = do
+  (rIRs, rVal) <- exprToIRs rExpr
   (varIRs, irVar) <- exprToIRs var
   pure (rIRs ++ varIRs ++ [IRCopy rVal irVar], irVar)
 
@@ -316,7 +314,10 @@ forToIRs forInit condition post bl (sLabel, cLabel, dLabel) = do
 caseMapToIRJump :: IRVal -> IRVal -> M.Map Int64 String -> [IRInstruction]
 caseMapToIRJump irVal resIRVal m = concatMap caseToIRJump $ M.toList m
   where caseToIRJump (val, l) =
-          [IRBinary EqualRelation irVal (IRConstant (DTInternal TInt) $ ConstInt $ fromIntegral val) resIRVal,
+          let irConst = if irValToDT irVal ==DTInternal TLong
+                          then IRConstant (DTInternal TLong) $ ConstLong val
+                          else IRConstant (DTInternal TInt) $ ConstInt $ fromIntegral val in
+          [IRBinary EqualRelation irVal irConst resIRVal,
             IRJumpIfNotZero resIRVal l]
 
 switchToIRs :: TypedExpr -> Statement -> (Maybe String, String) ->
@@ -354,7 +355,7 @@ castToIRs dt te@(TExpr _ tdt) = do
   if dt == tdt
     then pure (teIRs, teIRVal)
     else do
-      varId <- gets $ IRVar tdt . show . fst
+      varId <- gets $ IRVar dt . show . fst
       modify bumpOneToVarId
       if dt == DTInternal TLong
         then pure (teIRs ++ [IRSignExtend teIRVal varId], varId)
@@ -363,12 +364,12 @@ castToIRs dt te@(TExpr _ tdt) = do
 exprToIRs :: TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
 exprToIRs (TExpr expr dt) = case expr of
   Constant (ConstInt s) -> pure ([], IRConstant (DTInternal TInt) $ ConstInt s)
-  Constant (ConstLong s) -> pure ([], IRConstant (DTInternal TInt) $ ConstLong s)
+  Constant (ConstLong s) -> pure ([], IRConstant (DTInternal TLong) $ ConstLong s)
   Unary op uExpr -> unaryOperationToIRs op dt uExpr
   Binary op lExpr rExpr -> binaryOperationToIRs op dt lExpr rExpr
   Variable var _ _ -> pure ([], IRVar dt var)
-  Assignment op vExpr rExpr ->
-    assignmentToIRs op dt vExpr rExpr
+  Assignment vExpr rExpr ->
+    assignmentToIRs vExpr rExpr
   Conditional condition tCond fCond -> conditionToIRs dt condition tCond fCond
   FunctionCall name exprs -> funcCallToIRs name dt exprs
   Cast cDt cExpr -> castToIRs cDt cExpr
