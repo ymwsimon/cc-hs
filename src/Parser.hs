@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/07 20:22:20 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/08 15:17:51 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -76,7 +76,8 @@ data ParseInfo =
     globalVarId :: Int,
     jumpLabel :: [JumpLabel],
     topLevel :: Bool,
-    funcReturnType :: DT
+    funcReturnType :: DT,
+    switchValSize :: DT
   }
   deriving (Show, Eq)
 
@@ -166,7 +167,7 @@ data StorageClass =
   deriving Eq
 
 data NumConst =
-  ConstInt Int
+  ConstInt Int32
   | ConstLong Int64
   deriving (Show, Eq)
 
@@ -262,7 +263,8 @@ defaultParsecState = ParseInfo
     globalVarId = 1,
     jumpLabel = [],
     topLevel = True,
-    funcReturnType = DTInternal TVoid
+    funcReturnType = DTInternal TVoid,
+    switchValSize = DTInternal TInt
   }
 
 binaryOpPrecedence :: M.Map String Int
@@ -492,14 +494,14 @@ declarationSpecifierStrList = typeSpecifierStrList ++ storageClassSpecifierStrLi
 
 declarationSpecifierParser :: Bool -> ([String], [String]) -> ParsecT String ParseInfo IO (Maybe StorageClass, DT)
 declarationSpecifierParser isFunc (toks, prohibitedList) = do
-  specifier <- lookAhead symbolExtract
-  when (specifier `elem` declarationSpecifierStrList
-    && specifier `elem` prohibitedList) $
-    unexpected specifier
+  specifier <- lookAhead $ optionMaybe symbolExtract
+  when (isJust specifier && fromJust specifier `elem` declarationSpecifierStrList
+    && fromJust specifier `elem` prohibitedList) $
+    unexpected $ fromJust specifier
   toplvl <- topLevel <$> getState
-  when (isFunc && not toplvl && specifier == "static") $
-    unexpected specifier
-  if specifier `notElem` declarationSpecifierStrList
+  when (isFunc && not toplvl && specifier == Just "static") $
+    unexpected $ fromJust specifier
+  if isNothing specifier || isJust specifier && fromJust specifier `notElem` declarationSpecifierStrList
     then do
       unless (any (`notElem` storageClassSpecifierStrList) toks) $
         unexpected "identifier. Need type specifier"
@@ -511,11 +513,11 @@ declarationSpecifierParser isFunc (toks, prohibitedList) = do
       pure (sc, primDataTypeMap M.! sort (filter (`notElem` storageClassSpecifierStrList) toks))
     else
       let newPBList =
-           (if (== 2) $ length $ filter (== "long") (specifier : toks)
+           (if (== 2) $ length $ filter (== "long") (fromJust specifier : toks)
             then ["void", "char", "short", "long", "float", "double"]
             else []) ++
-            concatMap prohibitedNextTokensList (specifier : toks) in
-      symbolExtract >> declarationSpecifierParser isFunc (specifier : toks, newPBList)
+            concatMap prohibitedNextTokensList (fromJust specifier : toks) in
+      symbolExtract >> declarationSpecifierParser isFunc (fromJust specifier : toks, newPBList)
 
 prohibitedNextTokensList :: String -> [String]
 prohibitedNextTokensList tok = case tok of
@@ -645,6 +647,11 @@ exprToInt (TExpr expr _) = case expr of
   Constant (ConstInt i) -> fromIntegral i
   Constant (ConstLong i) -> i
   _ -> 0
+
+numConstToInt :: NumConst -> Int64
+numConstToInt n = case n of
+  ConstInt i -> fromIntegral i
+  ConstLong l -> l
 
 isVariableExpr :: TypedExpr -> Bool
 isVariableExpr (TExpr (Variable {}) _) = True
@@ -875,12 +882,20 @@ functionCallParser = do
     (FunctionCall functionName convertedParaList)
     (funType $ fti $ outer M.! functionName)
 
+isAssignmentExpr :: Expr -> Bool
+isAssignmentExpr e = case e of
+  Assignment {} -> True
+  _ -> False
+
 castParser :: ParsecT String ParseInfo IO TypedExpr
 castParser = do
   void openPParser
   (_, cType) <- declarationSpecifierParser False ([], storageClassSpecifierStrList)
   void closePParser
-  e <- exprParser
+  e@(TExpr innerE _) <- exprParser
+  when (isAssignmentExpr innerE) $
+    unexpected "cast of assignment expression"
+  liftIO $ print e
   pure $ TExpr (Cast cType e) cType
 
 factorParser :: ParsecT String ParseInfo IO TypedExpr
@@ -1013,6 +1028,9 @@ localExternVarHandle :: DT -> Maybe StorageClass -> IdentifierName -> ParsecT St
 localExternVarHandle varType sc vName  = do
   void semiColParser
   parseInfo <- getState
+  top <- topLevelScopeIdent <$> getState
+  when (M.member vName top && vdt (top M.! vName) /= varType) $
+    unexpected "different data type"
   unless (M.member vName $ topLevelScopeIdent parseInfo)
       $ updateTopLevelVarCurrentVar varType vName Nothing sc
   modifyState (\p -> p {currentScopeIdent = M.insert vName
@@ -1181,10 +1199,8 @@ doWhileParser = do
 
 forInitParser :: ParsecT String ParseInfo IO ForInit
 forInitParser = do
-  maybeType <- lookAhead (try keyIntParser) <|> pure ""
-  if maybeType `elem` storageClassSpecifierStrList
-    then unexpected maybeType
-    else if maybeType `elem` typeSpecifierStrList
+  maybeType <- lookAhead $ optionMaybe $ declarationSpecifierParser False ([], storageClassSpecifierStrList)
+  if isJust maybeType
       then InitDecl <$> varDeclarationParser
       else InitExpr <$> optionMaybe exprParser <* semiColParser
 
@@ -1209,7 +1225,13 @@ caseParser = do
   case jL of
     SwitchLabel jLabel caseMap : lbs -> do
       void keyCaseParser
-      val <- read <$> intParser
+      sType <- switchValSize <$> getState
+      val <- case sType of
+        DTInternal TChar -> fromIntegral . (read :: String -> Int8) <$> (try longParser <|> intParser)
+        DTInternal TShort -> fromIntegral . (read :: String -> Int16) <$> (try longParser <|> intParser)
+        DTInternal TInt -> fromIntegral . (read :: String -> Int32) <$> (try longParser <|> intParser)
+        DTInternal TLong -> (read :: String -> Int64) <$> (try longParser <|> intParser)
+        _ -> undefined
       if M.member val caseMap
         then unexpected $ show val ++ ": Already defined."
         else do
@@ -1236,13 +1258,19 @@ defaultParser = do
       pure $ Default state $ "default" ++ show lId
     _ -> unexpected "Default"
 
+isIntDT :: DT -> Bool
+isIntDT dt = dt `elem` [DTInternal TChar, DTInternal TShort, DTInternal TInt, DTInternal TLong,
+  DTInternal TUChar, DTInternal TUShort, DTInternal TUInt, DTInternal TULong]
+
 switchParser :: ParsecT String ParseInfo IO Statement
 switchParser = do
   parseInfo <- getState
   updateVarMapForNewScope parseInfo M.empty
   void keySwitchParser
   makeSwitchLabel
-  expr <- parenExprParser
+  expr@(TExpr _ dt) <- parenExprParser
+  unless (isIntDT dt) $ unexpected "non integer type"
+  modifyState $ \p -> p{switchValSize = dt}
   bl <- statementParser
   jLabel <- getJumpLabel
   keepIdsJumpLabel parseInfo id $ drop 1

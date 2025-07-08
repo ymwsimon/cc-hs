@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/07/03 22:48:48 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/07 22:48:40 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -24,7 +24,6 @@ import IR
 import Assembly
 import System.Exit
 import System.Process
-import Control.Monad.State
 import qualified Data.Map as M
 
 data Args = Args
@@ -64,26 +63,24 @@ outObjFileName fileName
   | otherwise = ""
 
 convertCASTToAsm :: M.Map String IdentifierType -> CProgramAST -> AsmProgramAST
-convertCASTToAsm m =
-    irASTToAsmAST m
-    . flip evalState (1, 1) . cASTToIrAST
+convertCASTToAsm m = irASTToAsmAST m . cASTToIrAST
 
 convertCASTToAsmStr :: M.Map String IdentifierType -> CProgramAST -> String
 convertCASTToAsmStr m =
   concat
     . (++ [noExecutableStackString])
-    . (++ (map asmStaticVarDefineToStr $ globalVarMapToAsmStaticVarDefine m))
+    . (++ (map (asmStaticVarDefineToStr . irStaticVarToAsmStaticVarDefine) $ staticVarConvertion m))
     . map
       (asmFunctionDefineToStr
         . replacePseudoRegAllocateStackFixDoubleStackOperand . asmFuncD)
     . irASTToAsmAST m
-    . flip evalState (1, 1) . cASTToIrAST
+    . cASTToIrAST
 
 parseOkAct :: Args -> String -> (M.Map String IdentifierType, [Declaration]) -> IO (Either ParseError [Declaration])
 parseOkAct args path (m, parseOk) = do
   print parseOk
   putStrLn ""
-  print $ flip evalState (1, 1) $ cASTToIrAST parseOk
+  print $ cASTToIrAST parseOk
   putStrLn ""
   let fdsBlock = map (\case
           FunctionDeclaration _ _ _ (Just bl) _ _ -> unBlock bl

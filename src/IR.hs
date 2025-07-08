@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/07/07 20:24:04 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/08 15:05:00 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -19,6 +19,7 @@ import qualified Data.Map.Strict as M
 import Control.Monad (mapAndUnzipM)
 import Data.Char
 import Data.Int
+import Data.Maybe (fromMaybe)
 
 type IRProgramAST = [IRTopLevel]
 
@@ -38,11 +39,14 @@ data IRFunctionDefine =
   deriving (Show, Eq)
 
 data IRStaticVarDefine =
-  IRStaticVarDefine {irVarName :: String, irVarGlobal :: Bool, irType :: DT, irVarInitVal :: StaticInit}
+  IRStaticVarDefine {irVarName :: String, irVarGlobal :: Bool,
+    irType :: DT, irVarInitVal :: StaticInit}
   deriving (Show, Eq)
 
 data IRInstruction =
   IRReturn IRVal
+  | IRSignExtend {signeExtendSrc :: IRVal, signExtendDst :: IRVal}
+  | IRTruncate {truncateSrc :: IRVal, truncateDst :: IRVal}
   | IRUnary {irUnaryOp :: UnaryOp, irUnarySrc :: IRVal, irUnaryDst :: IRVal}
   | IRBinary {irBinaryOp :: BinaryOp, irLOperand :: IRVal,
       irROperand :: IRVal, irBinaryDst :: IRVal}
@@ -55,13 +59,13 @@ data IRInstruction =
   deriving (Show, Eq)
 
 data IRVal =
-  IRConstant Int64
-  | IRVar String
+  IRConstant DT NumConst
+  | IRVar DT String
   deriving (Show, Eq)
 
 data StaticInit =
-  IntInit Int32
-  | LongInit Int64
+  IntInit NumConst
+  | LongInit NumConst
   deriving (Show, Eq)
 
 isIRFuncDefine :: IRTopLevel -> Bool
@@ -71,6 +75,11 @@ isIRFuncDefine _ = False
 isIRStaticVarDefine :: IRTopLevel -> Bool
 isIRStaticVarDefine (IRStaticVar _) = True
 isIRStaticVarDefine _ = False
+
+irValToDT :: IRVal -> DT
+irValToDT irVal = case irVal of
+  IRConstant dt _ -> dt
+  IRVar dt _ -> dt
 
 cStatmentToIRInstructions :: BlockItem -> State (Int, Int) [IRInstruction]
 cStatmentToIRInstructions bi = case bi of
@@ -94,7 +103,8 @@ cStatmentToIRInstructions bi = case bi of
   S (Case statement l) -> caseToIRs statement l
   S (Default statement l) -> defaultToIRs statement l
   D (VD ((VariableDeclaration dt var False (Just expr) Nothing))) ->
-    cStatmentToIRInstructions (S (Expression (TExpr (Assignment None (TExpr (Variable var False Nothing) dt) expr) dt)))
+    cStatmentToIRInstructions (S (Expression
+      (TExpr (Assignment None (TExpr (Variable var False Nothing) dt) expr) dt)))
   D _ -> pure []
   _ -> undefined
 
@@ -108,13 +118,36 @@ hasFuncBody _ = False
 cFuncDefineToIRFuncDefine :: Declaration -> State (Int, Int) IRTopLevel
 cFuncDefineToIRFuncDefine fd@(FunctionDeclaration _ _ _ (Just bl) _ sc) =
   IRFunc . IRFunctionDefine (funName fd) (sc /= Just Static) (map varName (inputArgs fd))
-    . (++ [IRReturn (IRConstant 0)]) . concat
+    . (++ [IRReturn (IRConstant (DTInternal TInt) $ ConstInt 0)]) . concat
     <$> (modify (initIRVarId (nextVarId fd)) >>
       mapM cStatmentToIRInstructions (unBlock bl))
 cFuncDefineToIRFuncDefine  _ = undefined
 
-cASTToIrAST :: CProgramAST -> State (Int, Int) IRProgramAST
-cASTToIrAST = mapM cFuncDefineToIRFuncDefine . filter hasFuncBody
+cASTToIrAST :: CProgramAST -> IRProgramAST
+cASTToIrAST = flip evalState (1, 1) . mapM cFuncDefineToIRFuncDefine . filter hasFuncBody
+
+exprToStaticInit :: TypedExpr -> StaticInit
+exprToStaticInit (TExpr e _) = case e of
+  Constant (ConstInt i) -> IntInit $ ConstInt i
+  Constant (ConstLong l) -> LongInit $ ConstLong l
+  _ -> undefined
+
+staticInitToInt :: StaticInit -> Int64
+staticInitToInt (IntInit (ConstInt i)) = fromIntegral i
+staticInitToInt (LongInit (ConstLong l)) = l
+staticInitToInt _ = 0
+
+staticVarConvertion :: M.Map String IdentifierType -> [IRTopLevel]
+staticVarConvertion m = map IRStaticVar .
+  concatMap (identToStaticVar . snd) $ M.toList $ M.filter isVarIdentifier m
+  where identToStaticVar ident = case ident of
+          VarIdentifier dt vName _ expr (Just Static) ->
+            [IRStaticVarDefine vName False dt
+              (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstInt 0) (DTInternal TInt)) expr)]
+          VarIdentifier dt vName topLvl expr Nothing ->
+            [IRStaticVarDefine vName topLvl dt
+              (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstInt 0) (DTInternal TInt)) expr)]
+          _ -> []
 
 bumpOneToVarId :: Num a => (a, b) -> (a, b)
 bumpOneToVarId (a, b) = (a + 1, b)
@@ -150,23 +183,25 @@ postPrefixToBin op
   | op `elem` [PostDecrement, PreDecrement] = Minus
   | otherwise = Plus
 
-unaryOperationToIRs :: UnaryOp -> TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
-unaryOperationToIRs op uExpr
+unaryOperationToIRs :: UnaryOp -> DT -> TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
+unaryOperationToIRs op dt uExpr
   | op `elem` [PostDecrement, PostIncrement] = do
-    varId <- gets $ IRVar . show . fst
+    varId <- gets $ IRVar dt . show . fst
     modify bumpOneToVarId
-    (oldIRs, irVal) <- exprToIRs $ TExpr (Binary (postPrefixToBin op) uExpr (TExpr (Constant $ ConstInt 1) (DTInternal TInt))) $ tDT uExpr
+    (oldIRs, irVal) <- exprToIRs $ TExpr
+      (Binary (postPrefixToBin op) uExpr (TExpr (Constant $ ConstInt 1) (DTInternal TInt))) $ tDT uExpr
     (varIRs, irVar) <- exprToIRs uExpr
     pure (concat [[IRCopy irVar varId], oldIRs, varIRs, [IRCopy irVal irVar]], varId)
   | op `elem` [PreDecrement, PreIncrement] = do
-    (oldIRs, irVal) <- exprToIRs $ TExpr (Binary (postPrefixToBin op) uExpr (TExpr (Constant $ ConstInt 1) (DTInternal TInt))) $ tDT uExpr
+    (oldIRs, irVal) <- exprToIRs $ TExpr 
+      (Binary (postPrefixToBin op) uExpr (TExpr (Constant $ ConstInt 1) (DTInternal TInt))) $ tDT uExpr
     (varIRs, irVar) <- exprToIRs uExpr
     pure (oldIRs ++ varIRs ++ [IRCopy irVal irVar], irVal)
   | otherwise = do
       (oldIRs, irVal) <- exprToIRs uExpr
       varId <- gets fst
       modify bumpOneToVarId
-      pure (oldIRs ++ [IRUnary op irVal $ IRVar $ show varId], IRVar $ show varId)
+      pure (oldIRs ++ [IRUnary op irVal $ IRVar dt $ show varId], IRVar dt $ show varId)
 
 genJumpIRsIfNeeded :: BinaryOp -> (Int, Int) -> IRVal -> State (Int, Int) [IRInstruction]
 genJumpIRsIfNeeded op lId irVal = case op of
@@ -178,10 +213,10 @@ genJumpIRsIfNeeded op lId irVal = case op of
 
 genJumpIRsAndLabel :: Int -> (Int, Int) -> IRVal -> IRVal -> State (Int, Int) [IRInstruction]
 genJumpIRsAndLabel varId ids fstVal sndVal = do
-  pure [IRCopy fstVal $ IRVar $ show varId,
+  pure [IRCopy fstVal $ IRVar (DTInternal TInt) $ show varId,
     IRJump $ "end_label" ++ show (snd ids),
     IRLabel $ "false_label" ++ show (fst ids),
-    IRCopy sndVal $ IRVar $ show varId,
+    IRCopy sndVal $ IRVar (DTInternal TInt) $ show varId,
     IRLabel $ "end_label" ++ show (snd ids)]
 
 genLabelIfNeeded :: BinaryOp -> State (Int, Int) (Int, Int)
@@ -197,8 +232,8 @@ genLabelIfNeeded op =
     LogicOr -> getLabels
     _ -> pure (-1, -1)
 
-binaryOperationToIRs :: BinaryOp -> TypedExpr -> TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
-binaryOperationToIRs op lExpr rExpr = do
+binaryOperationToIRs :: BinaryOp -> DT -> TypedExpr -> TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
+binaryOperationToIRs op dt lExpr rExpr = do
   ids <- genLabelIfNeeded op
   (irsFromLExpr, irValFromLExpr) <- exprToIRs lExpr
   lExprCondJumpIRs <- genJumpIRsIfNeeded op ids irValFromLExpr
@@ -207,33 +242,33 @@ binaryOperationToIRs op lExpr rExpr = do
   varId <- gets fst
   modify bumpOneToVarId
   resultIRVal <-
-    let trueVal = IRConstant 1
-        falseVal = IRConstant 0 in
+    let trueVal = IRConstant (DTInternal TInt) $ ConstInt 1
+        falseVal = IRConstant (DTInternal TInt) $ ConstInt 0 in
       case op of
         LogicAnd -> genJumpIRsAndLabel varId ids trueVal falseVal
         LogicOr -> genJumpIRsAndLabel varId ids falseVal trueVal
-        _ -> pure [IRBinary op irValFromLExpr irValFromRExpr $ IRVar $ show varId]
+        _ -> pure [IRBinary op irValFromLExpr irValFromRExpr $ IRVar dt $ show varId]
   pure (concat
     [irsFromLExpr, lExprCondJumpIRs, irsFromRExpr, rExprCondJumpIRs, resultIRVal],
-    IRVar $ show varId)
+    IRVar dt $ show varId)
 
 dropVarName :: String -> String
 dropVarName v = if '#' `elem` v then drop 1 $ dropWhile (/= '#') v else v
 
-assignmentToIRs :: BinaryOp -> TypedExpr -> TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
-assignmentToIRs op var rExpr = do
+assignmentToIRs :: BinaryOp -> DT -> TypedExpr -> TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
+assignmentToIRs op dt var rExpr = do
   (rIRs, rVal) <- case op of
     None -> exprToIRs rExpr
-    _ -> binaryOperationToIRs op var rExpr
+    _ -> binaryOperationToIRs op dt var rExpr
   (varIRs, irVar) <- exprToIRs var
   pure (rIRs ++ varIRs ++ [IRCopy rVal irVar], irVar)
 
-conditionToIRs :: TypedExpr -> TypedExpr -> TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
-conditionToIRs condition tExpr fExpr = do
+conditionToIRs :: DT -> TypedExpr -> TypedExpr -> TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
+conditionToIRs dt condition tExpr fExpr = do
   (cIRs, cValIR) <- exprToIRs condition
   (tIRs, tValIR) <- exprToIRs tExpr
   (fIRs, fValIR) <- exprToIRs fExpr
-  resValIR <- gets (IRVar . show . fst) <* modify bumpOneToVarId
+  resValIR <- gets (IRVar dt . show . fst) <* modify bumpOneToVarId
   fLabel <- gets (show . snd) <* modify bumpOneToLabelId
   dLabel <- gets (show . snd) <* modify bumpOneToLabelId
   pure (cIRs ++ [IRJumpIfZero cValIR ("condF" ++ fLabel)]
@@ -281,19 +316,19 @@ forToIRs forInit condition post bl (sLabel, cLabel, dLabel) = do
 caseMapToIRJump :: IRVal -> IRVal -> M.Map Int64 String -> [IRInstruction]
 caseMapToIRJump irVal resIRVal m = concatMap caseToIRJump $ M.toList m
   where caseToIRJump (val, l) =
-          [IRBinary EqualRelation irVal (IRConstant val) resIRVal,
+          [IRBinary EqualRelation irVal (IRConstant (DTInternal TInt) $ ConstInt $ fromIntegral val) resIRVal,
             IRJumpIfNotZero resIRVal l]
 
 switchToIRs :: TypedExpr -> Statement -> (Maybe String, String) ->
   M.Map Int64 String -> State (Int, Int) [IRInstruction]
-switchToIRs condition bl (defaultLabel, doneLabel) caseMap = do
-  (exprIRs, exprIRVal) <- exprToIRs condition
+switchToIRs c@(TExpr _ cDt) bl (defaultLabel, doneLabel) caseMap = do
+  (exprIRs, exprIRVal) <- exprToIRs c
   varId <- gets fst <* modify bumpOneToVarId
   blIRs <- cStatmentToIRInstructions $ S bl
   defaultIRs <- case defaultLabel of
     Just l -> pure [IRJump l]
     _ -> pure []
-  let caseIRs = caseMapToIRJump exprIRVal (IRVar (show varId)) caseMap
+  let caseIRs = caseMapToIRJump exprIRVal (IRVar cDt (show varId)) caseMap
   pure $ exprIRs ++ caseIRs ++ defaultIRs ++ [IRJump doneLabel] ++ blIRs ++ [IRLabel doneLabel]
 
 caseToIRs :: Statement -> String -> State (Int, Int) [IRInstruction]
@@ -306,26 +341,37 @@ defaultToIRs statement l = do
   stateIRs <- cStatmentToIRInstructions $ S statement
   pure $ IRLabel l : stateIRs
 
-funcCallToIRs :: String -> [TypedExpr] -> State (Int, Int) ([IRInstruction], IRVal)
-funcCallToIRs name exprs = do
-  varId <- gets $ IRVar . show . fst
+funcCallToIRs :: String -> DT -> [TypedExpr] -> State (Int, Int) ([IRInstruction], IRVal)
+funcCallToIRs name dt exprs = do
+  varId <- gets $ IRVar dt . show . fst
   modify bumpOneToVarId
   (irs, irVal) <- mapAndUnzipM exprToIRs exprs
   pure (concat irs ++ [IRFuncCall name irVal varId], varId)
 
+castToIRs :: DT -> TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
+castToIRs dt te@(TExpr _ tdt) = do
+  (teIRs, teIRVal) <- exprToIRs te
+  if dt == tdt
+    then pure (teIRs, teIRVal)
+    else do
+      varId <- gets $ IRVar tdt . show . fst
+      modify bumpOneToVarId
+      if dt == DTInternal TLong
+        then pure (teIRs ++ [IRSignExtend teIRVal varId], varId)
+        else pure (teIRs ++ [IRTruncate teIRVal varId], varId)
+
 exprToIRs :: TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
-exprToIRs (TExpr expr _) = case expr of
-  Constant (ConstInt s) -> pure ([], IRConstant $ fromIntegral s)
-  Constant (ConstLong s) -> pure ([], IRConstant s)
-  Unary op uExpr -> unaryOperationToIRs op uExpr
-  Binary op lExpr rExpr -> binaryOperationToIRs op lExpr rExpr
-  Variable var _ _ -> pure ([], IRVar var)
+exprToIRs (TExpr expr dt) = case expr of
+  Constant (ConstInt s) -> pure ([], IRConstant (DTInternal TInt) $ ConstInt s)
+  Constant (ConstLong s) -> pure ([], IRConstant (DTInternal TInt) $ ConstLong s)
+  Unary op uExpr -> unaryOperationToIRs op dt uExpr
+  Binary op lExpr rExpr -> binaryOperationToIRs op dt lExpr rExpr
+  Variable var _ _ -> pure ([], IRVar dt var)
   Assignment op vExpr rExpr ->
-    assignmentToIRs op vExpr rExpr
-  Conditional condition tCond fCond -> conditionToIRs condition tCond fCond
-  FunctionCall name exprs -> funcCallToIRs name exprs
-  Cast _ cExpr -> exprToIRs cExpr
-  -- _ -> undefined
+    assignmentToIRs op dt vExpr rExpr
+  Conditional condition tCond fCond -> conditionToIRs dt condition tCond fCond
+  FunctionCall name exprs -> funcCallToIRs name dt exprs
+  Cast cDt cExpr -> castToIRs cDt cExpr
 
 extractVarId :: IRInstruction -> [Int]
 extractVarId instr = case instr of
@@ -338,9 +384,11 @@ extractVarId instr = case instr of
   IRJumpIfNotZero v _ -> [getVarId v]
   IRLabel _ -> []
   IRFuncCall _ args d -> map getVarId (d : args)
+  IRSignExtend s d -> [getVarId s, getVarId d]
+  IRTruncate s d -> [getVarId s, getVarId d]
   where getVarId i = case i of
-          IRConstant _ -> 0
-          IRVar iv -> if all isDigit iv then read iv else 0
+          IRConstant _ _ -> 0
+          IRVar _ iv -> if all isDigit iv then read iv else 0
 
 getMaxStackVarId :: [IRInstruction] -> Int
 getMaxStackVarId = maximum . concatMap extractVarId 
