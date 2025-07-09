@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/07/09 00:20:22 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/09 01:47:11 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -349,6 +349,14 @@ funcCallToIRs name dt exprs = do
   (irs, irVal) <- mapAndUnzipM exprToIRs exprs
   pure (concat irs ++ [IRFuncCall name irVal varId], varId)
 
+truncateIRVal :: IRVal -> DT -> IRVal
+truncateIRVal irVal dt = case irVal of
+  og@(IRConstant _ (ConstLong l)) -> case dt of
+    DTInternal TInt -> IRConstant dt (ConstInt (fromIntegral l))
+    DTInternal TLong -> og
+    _ -> undefined
+  _ -> irVal
+
 castToIRs :: DT -> TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
 castToIRs dt te@(TExpr _ tdt) = do
   (teIRs, teIRVal) <- exprToIRs te
@@ -359,7 +367,7 @@ castToIRs dt te@(TExpr _ tdt) = do
       modify bumpOneToVarId
       if dt == DTInternal TLong
         then pure (teIRs ++ [IRSignExtend teIRVal varId], varId)
-        else pure (teIRs ++ [IRTruncate teIRVal varId], varId)
+        else pure (teIRs ++ [IRTruncate (truncateIRVal teIRVal dt) varId], varId)
 
 exprToIRs :: TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
 exprToIRs (TExpr expr dt) = case expr of

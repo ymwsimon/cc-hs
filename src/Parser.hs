@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/09 00:45:07 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/09 01:47:48 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -806,10 +806,10 @@ exprRightParser l@(TExpr lExpr lDt) = do
                 LogicOr -> exprRightParser $ TExpr (Binary op l rExpr) $ DTInternal TInt
                 _ -> do
                   let cType = getExprsCommonType l rExpr
-                  -- let dt = if op `notElem` relationOp
-                      -- then DTInternal TInt else cType
-                  let dt = if op `elem` [Plus, Minus, Multiply, Division, Modulo, BitShiftLeft, BitShiftRight, BitAnd, BitOr, BitXor]
-                          then cType else DTInternal TInt
+                  let dt
+                        | op `elem` [Plus, Minus, Multiply, Division, Modulo, BitAnd, BitOr, BitXor] = cType
+                        | op `elem` [BitShiftLeft, BitShiftRight] = lDt
+                        | otherwise = DTInternal TInt
                   exprRightParser $ TExpr
                     (Binary op (cvtTypedExpr l cType) (cvtTypedExpr rExpr cType)) dt
     else pure l
