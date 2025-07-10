@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:50:42 by mayeung           #+#    #+#             --
---   Updated: 2025/07/10 17:15:21 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/10 17:18:26 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -60,8 +60,8 @@ binaryOpToHaskellOperator op = case op of
   Plus -> (+)
   Minus -> (-)
   Multiply -> (*)
-  Division -> (\l r -> fst (quotRem l r))
-  Modulo -> (\l r -> snd (quotRem l r))
+  Division -> quot
+  Modulo -> rem
   BitOr -> (.|.)
   BitAnd -> (.&.)
   BitXor -> xor
