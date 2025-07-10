@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/10 15:10:51 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/10 16:54:51 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -640,6 +640,9 @@ postUnaryOpParser = foldl1 (<|>) $
     zipWith (>>) [incrementLex, decrementLex] $
       map pure [PostIncrement, PostDecrement]
 
+incrementDecrement :: [UnaryOp]
+incrementDecrement = [PreIncrement, PreDecrement, PostIncrement, PostDecrement]
+
 binaryOpStringParser :: ParsecT String u IO String
 binaryOpStringParser = foldl1 (<|>) $
   map try
@@ -688,8 +691,8 @@ isConstantTypedExpr (TExpr expr _) = case expr of
   Variable {} -> False
   Cast _ e -> isConstantTypedExpr e
   FunctionCall {} -> False
-  Unary _ e -> isConstantTypedExpr e
-  Binary _ l r -> isConstantTypedExpr l && isConstantTypedExpr r
+  Unary op e -> (op `notElem` incrementDecrement) && isConstantTypedExpr e
+  Binary op l r -> op /= Division && isConstantTypedExpr l && isConstantTypedExpr r
   Assignment {} -> False
   Conditional c t f -> isConstantTypedExpr c && isConstantTypedExpr t && isConstantTypedExpr f
 
@@ -708,11 +711,13 @@ exprToConstantExpr te@(TExpr e dt) =
   Cast _ expr -> (`TExpr` dt) $ constructor $ exprToInteger $ exprToConstantExpr expr
   Unary op expr -> (`TExpr` dt) $ constructor $ unaryOpToHaskellOperator op $ exprToInteger $ exprToConstantExpr expr
   Binary op lExpr rExpr ->
+    if op == Division then te
+    else
     (`TExpr` dt) $ constructor $ binaryOpToHaskellOperator op
       (exprToInteger $ exprToConstantExpr lExpr)
       (exprToInteger $ exprToConstantExpr rExpr)
   Conditional c t f -> (`TExpr` dt) $ constructor $ 
-    if exprToInteger (exprToConstantExpr c) == 1 then
+    if exprToInteger (exprToConstantExpr c) /= 0 then
       exprToInteger $ exprToConstantExpr t else exprToInteger $ exprToConstantExpr f
   _ -> undefined
 
@@ -776,7 +781,7 @@ unaryExprParser = do
   when (uOp `elem` [PreDecrement, PreIncrement] && not (isVariableExpr expr)) $
     unexpected "Need lvalue for prefix operation"
   let dt = if uOp == NotRelation then DTInternal TInt else tDT expr
-  TExpr (Unary uOp expr) dt <$ modifyState (setPrecedence p)
+  foldToConstExpr (TExpr (Unary uOp expr) dt) <$ modifyState (setPrecedence p)
 
 getDTSize :: DT -> Int
 getDTSize dt = case dt of
@@ -871,7 +876,7 @@ condtionalTrueParser = do
   expr <- exprParser
   modifyState $ setPrecedence oldState
   void colonParser
-  pure expr
+  pure $ foldToConstExpr expr
 
 exprRightParser :: TypedExpr -> ParsecT String ParseInfo IO TypedExpr
 exprRightParser l@(TExpr lExpr lDt) = do
@@ -890,9 +895,9 @@ exprRightParser l@(TExpr lExpr lDt) = do
                           | op `elem` [BitShiftLeft, BitShiftRight] = lDt
                           | otherwise = DTInternal TInt
                     let te = case op of
-                          None -> TExpr (Assignment l (cvtTypedExpr e lDt)) lDt
+                          None -> TExpr (Assignment l (foldToConstExpr (cvtTypedExpr e lDt))) lDt
                           _ -> TExpr (Assignment l
-                            (cvtTypedExpr (TExpr (Binary op (cvtTypedExpr l dt) (cvtTypedExpr e dt)) dt) lDt)) lDt
+                            (cvtTypedExpr (TExpr (Binary op (cvtTypedExpr l dt) (foldToConstExpr (cvtTypedExpr e dt))) dt) lDt)) lDt
                     exprRightParser te
                 _ -> unexpected "Invalid lvalue on the left side"
           else if binOp == "?"
@@ -902,15 +907,15 @@ exprRightParser l@(TExpr lExpr lDt) = do
               fCond <- exprParser
               let cType = getExprsCommonType tCond fCond
               exprRightParser $ TExpr 
-                (Conditional l (cvtTypedExpr tCond cType) (cvtTypedExpr fCond cType)) cType
+                (Conditional l (foldToConstExpr (cvtTypedExpr tCond cType)) (foldToConstExpr (cvtTypedExpr fCond cType))) cType
             else do
               op <- binaryOpParser
               modifyState $ updatePrecedence $ getBinOpPrecedence binOp
               rExpr <- exprParser
               modifyState $ setPrecedence p
               case op of
-                LogicAnd -> exprRightParser $ TExpr (Binary op l rExpr) $ DTInternal TInt
-                LogicOr -> exprRightParser $ TExpr (Binary op l rExpr) $ DTInternal TInt
+                LogicAnd -> exprRightParser $ TExpr (Binary op (foldToConstExpr l) (foldToConstExpr rExpr)) $ DTInternal TInt
+                LogicOr -> exprRightParser $ TExpr (Binary op (foldToConstExpr l) (foldToConstExpr rExpr)) $ DTInternal TInt
                 _ -> do
                   let cType = getExprsCommonType l rExpr
                   let dt
@@ -918,7 +923,7 @@ exprRightParser l@(TExpr lExpr lDt) = do
                         | op `elem` [BitShiftLeft, BitShiftRight] = lDt
                         | otherwise = DTInternal TInt
                   exprRightParser $ (`cvtTypedExpr` dt) $ TExpr
-                    (Binary op (cvtTypedExpr l cType) (cvtTypedExpr rExpr cType)) cType
+                    (Binary op (foldToConstExpr (cvtTypedExpr l cType)) (foldToConstExpr (cvtTypedExpr rExpr cType))) cType
     else pure l
 
 intOperandParser :: ParsecT String u IO TypedExpr
@@ -944,7 +949,7 @@ parenExprParser = do
   expr <- exprParser
   void closePParser
   modifyState $ setPrecedence p
-  postfixOp expr
+  postfixOp $ foldToConstExpr expr
 
 variableParser :: ParsecT String ParseInfo IO TypedExpr
 variableParser = do
@@ -998,7 +1003,7 @@ functionCallParser = do
     unexpected "Function call. Incorrect number of parameters"
   let convertedParaList = zipWith cvtTypedExpr paraList (argList $ funType funcInfo)
   pure $ TExpr
-    (FunctionCall functionName convertedParaList)
+    (FunctionCall functionName (map foldToConstExpr convertedParaList))
     (retType $ funType $ fti $ outer M.! functionName)
 
 isAssignmentExpr :: Expr -> Bool
@@ -1016,7 +1021,7 @@ castParser = do
   e@(TExpr innerE _) <- exprParser
   when (isAssignmentExpr innerE) $
     unexpected "cast of assignment expression"
-  TExpr (Cast cType e) cType <$ modifyState (setPrecedence p)
+  foldToConstExpr (TExpr (Cast cType e) cType) <$ modifyState (setPrecedence p)
 
 factorParser :: ParsecT String ParseInfo IO TypedExpr
 factorParser = do
@@ -1043,7 +1048,7 @@ returnStatParser = do
   rType <- funcReturnType <$> getState
   expr <- flip cvtTypedExpr rType <$> exprParser
   void semiColParser
-  pure $ Return expr
+  pure $ Return $ foldToConstExpr expr
 
 ifStatParser :: ParsecT String ParseInfo IO Statement
 ifStatParser = do
@@ -1056,7 +1061,7 @@ ifStatParser = do
         void keyElseParser
         Just <$> statementParser
     _ -> pure Nothing
-  pure $ If cond tStat fStat
+  pure $ If (foldToConstExpr cond) tStat fStat
 
 argPairParser :: ParsecT String ParseInfo IO InputArgPair
 argPairParser = do
@@ -1117,7 +1122,7 @@ getInitialiser parser = do
     Just _ -> Just <$> parser
     _ -> pure Nothing
   void semiColParser
-  pure initialiser
+  pure $ foldToConstExpr <$> initialiser
 
 topLevelVarDeclarationParser :: ParsecT String ParseInfo IO VariableDeclaration
 topLevelVarDeclarationParser = do
@@ -1130,7 +1135,7 @@ topLevelVarDeclarationParser = do
     && (vdt (topIdentMap M.! vName) /= varType
       || not (topLevelVarStorageClassCheck (storeClass (topIdentMap M.! vName)) sc))) $
     unexpected $ vName ++ ". Type mismatch to previous declaration"
-  initialiser <- fmap (`cvtTypedExpr` varType) <$> getInitialiser exprParser
+  initialiser <- fmap (foldToConstExpr . (`cvtTypedExpr` varType)) <$> getInitialiser exprParser
   unless (isNothing initialiser || isConstantTypedExpr (fromJust initialiser)) $
     unexpected "non constant intialiser"
   if M.member vName topIdentMap
@@ -1168,12 +1173,12 @@ localPlainVarHandle varType sc vName = do
         (VarIdentifier varType newVarName (topLevel parseInfo) Nothing sc) $
         currentScopeIdent parseInfo
   putState $ parseInfo {currentVarId = varId + 1, currentScopeIdent = newVarMap}
-  initialiser <- fmap (`cvtTypedExpr` varType) <$> getInitialiser exprParser
+  initialiser <- fmap (foldToConstExpr . (`cvtTypedExpr` varType)) <$> getInitialiser exprParser
   pure $ VariableDeclaration varType newVarName (topLevel parseInfo) initialiser sc
 
 localStaticVarHandle :: DT -> Maybe StorageClass -> IdentifierName -> ParsecT String ParseInfo IO VariableDeclaration
 localStaticVarHandle varType sc vName = do
-  initialiser <- fmap (`cvtTypedExpr` varType) <$> getInitialiser exprParser
+  initialiser <- fmap (foldToConstExpr . (`cvtTypedExpr` varType)) <$> getInitialiser exprParser
   unless (isNothing initialiser || isConstantTypedExpr (fromJust initialiser)) $
     unexpected "non constant intialiser"
   parseInfo <- getState
@@ -1208,7 +1213,7 @@ varDeclarationParser = do
     else localStaticVarHandle varType sc vName
 
 expressionParser :: ParsecT String ParseInfo IO Statement
-expressionParser = Expression <$> exprParser
+expressionParser = Expression . foldToConstExpr <$> exprParser
 
 nullStatParser :: ParsecT String ParseInfo IO Statement
 nullStatParser = semiColParser >> pure Null
@@ -1306,7 +1311,7 @@ whileParser = do
   whileBody <- statementParser
   jumpL <- getJumpLabel
   keepIdsJumpLabel parseInfo id $ drop 1
-  pure $ While condition whileBody $ (!! 0) jumpL
+  pure $ While (foldToConstExpr condition) whileBody $ (!! 0) jumpL
 
 doWhileParser :: ParsecT String ParseInfo IO Statement
 doWhileParser = do
@@ -1319,14 +1324,14 @@ doWhileParser = do
   condition <- parenExprParser <* semiColParser
   jumpL <- getJumpLabel
   keepIdsJumpLabel parseInfo id $ drop 1
-  pure $ DoWhile doWhileBody condition $ (!! 0) jumpL
+  pure $ DoWhile doWhileBody (foldToConstExpr condition) $ (!! 0) jumpL
 
 forInitParser :: ParsecT String ParseInfo IO ForInit
 forInitParser = do
   maybeType <- lookAhead $ optionMaybe $ declarationSpecifierParser False ([], storageClassSpecifierStrList)
   if isJust maybeType
       then InitDecl <$> varDeclarationParser
-      else InitExpr <$> optionMaybe exprParser <* semiColParser
+      else InitExpr . fmap foldToConstExpr <$> optionMaybe exprParser <* semiColParser
 
 forLoopParser :: ParsecT String ParseInfo IO Statement
 forLoopParser = do

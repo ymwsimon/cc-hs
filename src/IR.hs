@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/07/10 14:44:22 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/10 15:51:23 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -160,7 +160,7 @@ exprToStaticInit (TExpr e dt) =
   Binary op (TExpr lExpr _) (TExpr rExpr _) ->
     constructor $ binaryOpToHaskellOperator op (constantExprToInt lExpr) (constantExprToInt rExpr) 
   Conditional c t f ->
-    if staticInitToInt (exprToStaticInit c) == 1 then exprToStaticInit t else exprToStaticInit f
+    if staticInitToInt (exprToStaticInit c) /= 0 then exprToStaticInit t else exprToStaticInit f
   _ -> undefined
 
 staticInitToInt :: StaticInit -> Integer
