@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/09 01:47:48 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/10 15:10:51 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -24,6 +24,7 @@ import Data.Either (isLeft, fromRight, fromLeft)
 import Data.Maybe
 import Data.List (sort)
 import Data.Int
+import Data.Word
 
 type CProgramAST = [Declaration]
 
@@ -33,7 +34,7 @@ type IdentifierName = String
 
 data JumpLabel =
   LoopLabel (String, String, String)
-  | SwitchLabel (Maybe String, String) (M.Map Int64 String)
+  | SwitchLabel (Maybe String, String) (M.Map Integer String)
   deriving (Show, Eq)
 
 data PrimType =
@@ -167,8 +168,12 @@ data StorageClass =
   deriving Eq
 
 data NumConst =
-  ConstInt Int32
-  | ConstLong Int64
+  ConstShort Integer
+  | ConstUShort Integer
+  | ConstInt Integer
+  | ConstUInt Integer
+  | ConstLong Integer
+  | ConstULong Integer
   deriving (Show, Eq)
 
 instance Show StorageClass where
@@ -566,8 +571,17 @@ dataTypeParser = do
 intParser :: ParsecT String u IO String
 intParser = spaces >> many1 digit
 
+uintParser :: ParsecT String u IO String
+uintParser = spaces >> many1 digit <* oneOf "uU" 
+
 longParser :: ParsecT String u IO String
 longParser = spaces >> many1 digit <* oneOf "lL"
+
+ulongParser :: ParsecT String u IO String
+ulongParser = spaces >> many1 digit <* (try (oneOf "uU" >> oneOf "lL") <|> (oneOf "lL" >> oneOf "uU"))
+
+integerParser :: ParsecT String u IO String
+integerParser = try ulongParser <|> try longParser <|> try uintParser <|> intParser
 
 fileParser :: ParsecT String ParseInfo IO (M.Map String IdentifierType, [Declaration])
 fileParser = do
@@ -647,20 +661,86 @@ unaryOpStringParser = foldl1 (<|>) $
     [incrementLex, decrementLex, plusLex, minusLex,
       exclaimLex, complementLex]
 
-exprToInt :: TypedExpr -> Int64
-exprToInt (TExpr expr _) = case expr of
-  Constant (ConstInt i) -> fromIntegral i
-  Constant (ConstLong i) -> i
+exprToInteger :: TypedExpr -> Integer
+exprToInteger (TExpr expr _) = case expr of
+  Constant (ConstInt i) -> i
+  Constant (ConstUInt ui) -> ui
+  Constant (ConstLong l) -> l
+  Constant (ConstULong ul) -> ul
   _ -> 0
 
 numConstToInt :: NumConst -> Int64
 numConstToInt n = case n of
+  ConstShort s -> fromIntegral s
+  ConstUShort us -> fromIntegral us
   ConstInt i -> fromIntegral i
-  ConstLong l -> l
+  ConstLong l -> fromIntegral l
+  ConstUInt ui -> fromIntegral ui
+  ConstULong ul -> fromIntegral ul
 
 isVariableExpr :: TypedExpr -> Bool
 isVariableExpr (TExpr (Variable {}) _) = True
 isVariableExpr _ = False
+
+isConstantTypedExpr :: TypedExpr -> Bool
+isConstantTypedExpr (TExpr expr _) = case expr of
+  Constant _ -> True
+  Variable {} -> False
+  Cast _ e -> isConstantTypedExpr e
+  FunctionCall {} -> False
+  Unary _ e -> isConstantTypedExpr e
+  Binary _ l r -> isConstantTypedExpr l && isConstantTypedExpr r
+  Assignment {} -> False
+  Conditional c t f -> isConstantTypedExpr c && isConstantTypedExpr t && isConstantTypedExpr f
+
+
+exprToConstantExpr :: TypedExpr -> TypedExpr
+exprToConstantExpr te@(TExpr e dt) =
+  let constructor = case dt of
+        DTInternal TInt -> Constant . ConstInt . toInteger . (fromInteger :: Integer -> Int32)
+        DTInternal TUInt -> Constant . ConstUInt . toInteger . (fromInteger :: Integer -> Word32) 
+        DTInternal TLong -> Constant . ConstLong . toInteger . (fromInteger :: Integer -> Int64)
+        DTInternal TULong -> Constant . ConstULong . toInteger . (fromInteger :: Integer -> Word64)
+        _ -> undefined
+        in
+  case e of
+  Constant _ -> te
+  Cast _ expr -> (`TExpr` dt) $ constructor $ exprToInteger $ exprToConstantExpr expr
+  Unary op expr -> (`TExpr` dt) $ constructor $ unaryOpToHaskellOperator op $ exprToInteger $ exprToConstantExpr expr
+  Binary op lExpr rExpr ->
+    (`TExpr` dt) $ constructor $ binaryOpToHaskellOperator op
+      (exprToInteger $ exprToConstantExpr lExpr)
+      (exprToInteger $ exprToConstantExpr rExpr)
+  Conditional c t f -> (`TExpr` dt) $ constructor $ 
+    if exprToInteger (exprToConstantExpr c) == 1 then
+      exprToInteger $ exprToConstantExpr t else exprToInteger $ exprToConstantExpr f
+  _ -> undefined
+
+foldToConstExpr :: TypedExpr -> TypedExpr
+foldToConstExpr te = if isConstantTypedExpr te then exprToConstantExpr te else te
+
+intLongUnsignedConstantParser :: ParsecT String ParseInfo IO TypedExpr
+intLongUnsignedConstantParser = do
+  maybeULong <- lookAhead $ optionMaybe $ try ulongParser
+  case maybeULong of
+    Just l -> do
+      void ulongParser
+      let lVal = read l :: Integer
+      if lVal <= fromIntegral (maxBound :: Word64)
+        then pure $ TExpr (Constant $ ConstULong $ fromInteger lVal) $ DTInternal TULong
+        else unexpected "large unsigned integer value"
+    _ -> do
+      maybeUInt <- lookAhead $ optionMaybe $ try uintParser
+      case maybeUInt of
+        Just ui -> do
+            void uintParser
+            let uiVal = read ui :: Integer
+            if uiVal <= fromIntegral (maxBound :: Word32)
+              then pure $ TExpr (Constant $ ConstUInt $ fromIntegral uiVal) $ DTInternal TUInt
+              else if uiVal <= fromIntegral (maxBound :: Word64)
+                then pure $ TExpr (Constant $ ConstULong $ fromIntegral uiVal) $ DTInternal TULong
+                else unexpected "large unsigned integer value"
+        _ -> intLongConstantParser
 
 intLongConstantParser :: ParsecT String ParseInfo IO TypedExpr
 intLongConstantParser = do
@@ -682,12 +762,9 @@ intLongConstantParser = do
           else unexpected "large integer value"
 
 cvtTypedExpr :: TypedExpr -> DT -> TypedExpr
-cvtTypedExpr te@(TExpr e dt) cDT
+cvtTypedExpr te@(TExpr _ dt) cDT
   | dt == cDT = te
-  | otherwise = case e of
-      Constant (ConstInt i) -> TExpr (Constant $ ConstInt $ fromIntegral i) cDT
-      Constant (ConstLong l) -> TExpr (Constant $ ConstLong $ fromIntegral l) cDT
-      _ -> TExpr (Cast cDT te) cDT
+  | otherwise = TExpr (Cast cDT te) cDT
 
 unaryExprParser :: ParsecT String ParseInfo IO TypedExpr
 unaryExprParser = do
@@ -701,11 +778,37 @@ unaryExprParser = do
   let dt = if uOp == NotRelation then DTInternal TInt else tDT expr
   TExpr (Unary uOp expr) dt <$ modifyState (setPrecedence p)
 
+getDTSize :: DT -> Int
+getDTSize dt = case dt of
+  DTInternal TChar -> 1
+  DTInternal TUChar -> 1
+  DTInternal TShort -> 2
+  DTInternal TUShort -> 2
+  DTInternal TInt -> 4
+  DTInternal TUInt -> 4
+  DTInternal TLong -> 8
+  DTInternal TULong -> 8
+  DTInternal TFloat -> 4
+  DTInternal TDouble -> 8
+  DTInternal TLDouble -> 16
+  _ -> undefined
+
+isSigned :: DT -> Bool
+isSigned dt = case dt of
+  DTInternal TChar -> True
+  DTInternal TShort -> True
+  DTInternal TInt -> True
+  DTInternal TLong -> True
+  _ -> False
+
 getExprsCommonType :: TypedExpr -> TypedExpr -> DT
-getExprsCommonType (TExpr _ lDT) (TExpr _ rDT) =
-  if lDT == rDT
-    then lDT
-    else DTInternal TLong
+getExprsCommonType (TExpr _ lDT) (TExpr _ rDT)
+  | lDT == rDT =lDT
+  | isSameSize lDT rDT && isSigned lDT = rDT
+  | isSameSize lDT rDT && isSigned rDT = lDT
+  | getDTSize lDT > getDTSize rDT = lDT
+  | otherwise = rDT
+  where isSameSize l r = getDTSize l == getDTSize r
 
 exprParser :: ParsecT String ParseInfo IO TypedExpr
 exprParser = factorParser >>= exprRightParser
@@ -782,10 +885,14 @@ exprRightParser l@(TExpr lExpr lDt) = do
                     modifyState $ setPrecedence $ getBinOpPrecedence binOp
                     e <- exprParser
                     let cType = getExprsCommonType l e
+                    let dt
+                          | op `elem` [Plus, Minus, Multiply, Division, Modulo, BitAnd, BitOr, BitXor] = cType
+                          | op `elem` [BitShiftLeft, BitShiftRight] = lDt
+                          | otherwise = DTInternal TInt
                     let te = case op of
                           None -> TExpr (Assignment l (cvtTypedExpr e lDt)) lDt
                           _ -> TExpr (Assignment l
-                            (cvtTypedExpr (TExpr (Binary op (cvtTypedExpr l cType) (cvtTypedExpr e cType)) cType) lDt)) lDt
+                            (cvtTypedExpr (TExpr (Binary op (cvtTypedExpr l dt) (cvtTypedExpr e dt)) dt) lDt)) lDt
                     exprRightParser te
                 _ -> unexpected "Invalid lvalue on the left side"
           else if binOp == "?"
@@ -810,8 +917,8 @@ exprRightParser l@(TExpr lExpr lDt) = do
                         | op `elem` [Plus, Minus, Multiply, Division, Modulo, BitAnd, BitOr, BitXor] = cType
                         | op `elem` [BitShiftLeft, BitShiftRight] = lDt
                         | otherwise = DTInternal TInt
-                  exprRightParser $ TExpr
-                    (Binary op (cvtTypedExpr l cType) (cvtTypedExpr rExpr cType)) dt
+                  exprRightParser $ (`cvtTypedExpr` dt) $ TExpr
+                    (Binary op (cvtTypedExpr l cType) (cvtTypedExpr rExpr cType)) cType
     else pure l
 
 intOperandParser :: ParsecT String u IO TypedExpr
@@ -904,17 +1011,19 @@ castParser = do
   void openPParser
   (_, cType) <- declarationSpecifierParser False ([], storageClassSpecifierStrList)
   void closePParser
+  p <- precedence <$> getState
+  modifyState $ setPrecedence 2
   e@(TExpr innerE _) <- exprParser
   when (isAssignmentExpr innerE) $
     unexpected "cast of assignment expression"
-  pure $ TExpr (Cast cType e) cType
+  TExpr (Cast cType e) cType <$ modifyState (setPrecedence p)
 
 factorParser :: ParsecT String ParseInfo IO TypedExpr
 factorParser = do
   c <- lookAhead $ try $ spaces >> anyChar
   next c where
     next c
-      | isDigit c = intLongConstantParser
+      | isDigit c = intLongUnsignedConstantParser
       | [c] `elem` allUnaryOp = unaryExprParser
       | c == '(' = do
         maybeDT <- lookAhead $ optionMaybe $ try $
@@ -1021,7 +1130,9 @@ topLevelVarDeclarationParser = do
     && (vdt (topIdentMap M.! vName) /= varType
       || not (topLevelVarStorageClassCheck (storeClass (topIdentMap M.! vName)) sc))) $
     unexpected $ vName ++ ". Type mismatch to previous declaration"
-  initialiser <- getInitialiser intLongConstantParser
+  initialiser <- fmap (`cvtTypedExpr` varType) <$> getInitialiser exprParser
+  unless (isNothing initialiser || isConstantTypedExpr (fromJust initialiser)) $
+    unexpected "non constant intialiser"
   if M.member vName topIdentMap
     then do
       VarIdentifier vType _ _ vDefine sClass <- pure $ topIdentMap M.! vName
@@ -1062,7 +1173,9 @@ localPlainVarHandle varType sc vName = do
 
 localStaticVarHandle :: DT -> Maybe StorageClass -> IdentifierName -> ParsecT String ParseInfo IO VariableDeclaration
 localStaticVarHandle varType sc vName = do
-  initialiser <- fmap (`cvtTypedExpr` varType) <$> getInitialiser intLongConstantParser
+  initialiser <- fmap (`cvtTypedExpr` varType) <$> getInitialiser exprParser
+  unless (isNothing initialiser || isConstantTypedExpr (fromJust initialiser)) $
+    unexpected "non constant intialiser"
   parseInfo <- getState
   let varId = globalVarId parseInfo
       newVarName = vName ++ "." ++ show varId
@@ -1229,6 +1342,16 @@ forLoopParser = do
   keepIdsJumpLabel parseInfo id $ drop 1
   pure $ For forInit condition postBody forBody $ (!! 0) jLabel
 
+dtCvtRead :: Num c => DT -> String -> c
+dtCvtRead dt = case dt of
+  DTInternal TChar -> fromIntegral . (read :: String -> Int8)
+  DTInternal TShort -> fromIntegral . (read :: String -> Int16)
+  DTInternal TInt -> fromIntegral . (read :: String -> Int32)
+  DTInternal TLong -> fromIntegral . (read :: String -> Int64)
+  DTInternal TUInt -> fromIntegral . (read :: String -> Word32)
+  DTInternal TULong -> fromIntegral . (read :: String -> Word64)
+  _ -> undefined
+
 caseParser :: ParsecT String ParseInfo IO Statement
 caseParser = do
   jL <- dropWhile isLoopLabel <$> getJumpLabel
@@ -1237,12 +1360,8 @@ caseParser = do
     SwitchLabel jLabel caseMap : lbs -> do
       void keyCaseParser
       sType <- switchValSize <$> getState
-      val <- case sType of
-        DTInternal TChar -> fromIntegral . (read :: String -> Int8) <$> (try longParser <|> intParser)
-        DTInternal TShort -> fromIntegral . (read :: String -> Int16) <$> (try longParser <|> intParser)
-        DTInternal TInt -> fromIntegral . (read :: String -> Int32) <$> (try longParser <|> intParser)
-        DTInternal TLong -> (read :: String -> Int64) <$> (try longParser <|> intParser)
-        _ -> undefined
+      let cvtRead = dtCvtRead sType
+      val <- cvtRead <$> integerParser
       if M.member val caseMap
         then unexpected $ show val ++ ": Already defined."
         else do
