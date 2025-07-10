@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/10 16:54:51 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/10 17:08:01 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -692,7 +692,7 @@ isConstantTypedExpr (TExpr expr _) = case expr of
   Cast _ e -> isConstantTypedExpr e
   FunctionCall {} -> False
   Unary op e -> (op `notElem` incrementDecrement) && isConstantTypedExpr e
-  Binary op l r -> op /= Division && isConstantTypedExpr l && isConstantTypedExpr r
+  Binary _ l r -> isConstantTypedExpr l && isConstantTypedExpr r
   Assignment {} -> False
   Conditional c t f -> isConstantTypedExpr c && isConstantTypedExpr t && isConstantTypedExpr f
 
@@ -711,8 +711,8 @@ exprToConstantExpr te@(TExpr e dt) =
   Cast _ expr -> (`TExpr` dt) $ constructor $ exprToInteger $ exprToConstantExpr expr
   Unary op expr -> (`TExpr` dt) $ constructor $ unaryOpToHaskellOperator op $ exprToInteger $ exprToConstantExpr expr
   Binary op lExpr rExpr ->
-    if op == Division then te
-    else
+    -- if op == Division then te
+    -- else
     (`TExpr` dt) $ constructor $ binaryOpToHaskellOperator op
       (exprToInteger $ exprToConstantExpr lExpr)
       (exprToInteger $ exprToConstantExpr rExpr)

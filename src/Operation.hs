@@ -6,14 +6,13 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:50:42 by mayeung           #+#    #+#             --
---   Updated: 2025/07/10 16:32:13 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/10 17:15:21 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
 module Operation where
 
 import Data.Bits
-import GHC.Float.RealFracMethods (roundDoubleInteger)
 
 data UnaryOp =
   Complement
@@ -61,8 +60,8 @@ binaryOpToHaskellOperator op = case op of
   Plus -> (+)
   Minus -> (-)
   Multiply -> (*)
-  Division -> div -- (\l r -> roundDoubleInteger (fromIntegral l / fromIntegral r))
-  Modulo -> mod
+  Division -> (\l r -> fst (quotRem l r))
+  Modulo -> (\l r -> snd (quotRem l r))
   BitOr -> (.|.)
   BitAnd -> (.&.)
   BitXor -> xor
