@@ -374,15 +374,15 @@ irInstructionToAsmInstruction instr m funcList gVarMap = case instr of
       op lVal rVal (dtToAsmType $ irValToDT lVal) $ irOperandToAsmOperand rVal m gVarMap,
       Mov (dtToAsmType $ irValToDT lVal) (Register DX) (irOperandToAsmOperand d m gVarMap)]
   IRBinary BitShiftLeft lVal rVal d -> let op = if isSigned $ irValToDT lVal then AsmShiftL else AsmUShiftL in
-    [Mov (dtToAsmType $ irValToDT lVal) (irOperandToAsmOperand lVal m gVarMap) (Register R12D),
-      AsmBinary op (dtToAsmType $ irValToDT lVal)
-        (irOperandToAsmOperand rVal m gVarMap) (Register R12D),
-      Mov (dtToAsmType $ irValToDT lVal) (Register R12D) (irOperandToAsmOperand d m gVarMap)]
+    [Mov (dtToAsmType $ irValToDT lVal) (irOperandToAsmOperand lVal m gVarMap) (Register R12),
+      Mov (dtToAsmType $ irValToDT rVal) (irOperandToAsmOperand rVal m gVarMap) (Register CX),
+      AsmBinary op (dtToAsmType $ irValToDT lVal) (Register CX) (Register R12),
+      Mov (dtToAsmType $ irValToDT lVal) (Register R12) (irOperandToAsmOperand d m gVarMap)]
   IRBinary BitShiftRight lVal rVal d -> let op = if isSigned $ irValToDT lVal then AsmShiftR else AsmUShiftR in
-    [Mov (dtToAsmType $ irValToDT lVal) (irOperandToAsmOperand lVal m gVarMap) (Register R12D),
-      AsmBinary op (dtToAsmType $ irValToDT lVal)
-        (irOperandToAsmOperand rVal m gVarMap) (Register R12D),
-      Mov (dtToAsmType $ irValToDT lVal) (Register R12D) (irOperandToAsmOperand d m gVarMap)]
+    [Mov (dtToAsmType $ irValToDT lVal) (irOperandToAsmOperand lVal m gVarMap) (Register R12),
+      Mov (dtToAsmType $ irValToDT rVal) (irOperandToAsmOperand rVal m gVarMap) (Register CX),
+      AsmBinary op (dtToAsmType $ irValToDT lVal) (Register CX) (Register R12),
+      Mov (dtToAsmType $ irValToDT lVal) (Register R12) (irOperandToAsmOperand d m gVarMap)]
   IRJumpIfZero valToCheck jmpTarget ->
     [Cmp (dtToAsmType $ irValToDT valToCheck) (Imm 0) (irOperandToAsmOperand valToCheck m gVarMap), JmpCC E jmpTarget]
   IRJumpIfNotZero valToCheck jmpTarget ->
@@ -425,7 +425,7 @@ buildAsmIntrsForIRRelationOp instr m gVarMap =
         IRBinary LessEqualRelation valL valR d -> (valL, valR, d, op (irValToDT valL) (irValToDT valR) LE BE)
         _ -> undefined in
   [Cmp (dtToAsmType $ irValToDT vL) (irOperandToAsmOperand vR m gVarMap) (irOperandToAsmOperand vL m gVarMap),
-    Mov LongWord (Imm 0) (irOperandToAsmOperand setDst m gVarMap),
+    Mov QuadWord (Imm 0) (irOperandToAsmOperand setDst m gVarMap),
     SetCC condCode (irOperandToAsmOperand setDst m gVarMap)]
 
 noExecutableStackString :: String
@@ -649,8 +649,11 @@ asmInstructionToStr instr = case instr of
     show (convertToNSizeOperand Byte s) ++ ", " ++ show (convertToNSizeOperand Byte d)]
   AsmUnary op t d -> pure $ tabulate [show op ++ asmTypeToAsmStrSuffix t, show (convertToNSizeOperand (asmTypeToMemSize t) d)]
   AsmBinary op t r l ->
+    let asmMemSize = if op `elem` [AsmShiftL, AsmShiftR, AsmUShiftL, AsmUShiftR]
+        then Byte
+        else asmTypeToMemSize t in
     pure $ tabulate [show op ++ asmTypeToAsmStrSuffix t,
-    show (convertToNSizeOperand (asmTypeToMemSize t) r) ++ ", " ++ show (convertToNSizeOperand (asmTypeToMemSize t) l)]
+    show (convertToNSizeOperand asmMemSize r) ++ ", " ++ show (convertToNSizeOperand (asmTypeToMemSize t) l)]
   Cdq t -> pure $ tabulate [if t == LongWord then "cdq" else "cqo"]
   AsmIdiv t operand -> pure $ tabulate ["idiv" ++ asmTypeToAsmStrSuffix t, show (convertToNSizeOperand (asmTypeToMemSize t) operand)]
   AsmDiv t operand -> pure $ tabulate ["div" ++ asmTypeToAsmStrSuffix t, show (convertToNSizeOperand (asmTypeToMemSize t) operand)]
