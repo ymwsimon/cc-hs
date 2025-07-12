@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/10 17:08:01 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/12 13:45:34 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -174,6 +174,7 @@ data NumConst =
   | ConstUInt Integer
   | ConstLong Integer
   | ConstULong Integer
+  | ConstDouble Double
   deriving (Show, Eq)
 
 instance Show StorageClass where
@@ -294,6 +295,12 @@ createSkipSpacesCharParser = (spaces >>) . char
 
 ucLex :: ParsecT String u IO Char
 ucLex = createSkipSpacesCharParser '_'
+
+dotLex :: ParsecT String u IO Char
+dotLex = char '.'
+
+eLex :: ParsecT String u IO Char
+eLex = oneOf "eE"
 
 minusLex :: ParsecT String u IO String
 minusLex = createSkipSpacesStringParser "-"
@@ -568,6 +575,34 @@ dataTypeParser = do
     then pure $ dtMap M.! [dtName]
     else unexpected dtName
 
+significandParser :: ParsecT String u IO String
+significandParser = do
+  spaces
+  withLeadingDigit <|> withoutLeadingDigit
+  where beforeDotDigit = many1 digit
+        aferDotDigit = do
+          ds <- many digit
+          if null ds
+            then pure "0"
+            else pure ds
+        dotAndDigit = ((++) <$> (pure <$> dotLex) <*> aferDotDigit) <|> pure ""
+        withLeadingDigit = (++) <$> beforeDotDigit <*> dotAndDigit
+        withoutLeadingDigit = (++) <$> (("0" ++) . pure <$> dotLex) <*> many1 digit
+
+exponentParser :: ParsecT String u IO String
+exponentParser = do
+  e <- pure <$> oneOf "eE"
+  sign <- pure <$> oneOf "+-" <|> pure ""
+  eVal <- many1 digit
+  pure $ e ++ sign ++ eVal
+
+doubleParser :: ParsecT String u IO String
+doubleParser = do
+  spaces
+  significandStr <- significandParser
+  exponentStr <- exponentParser <|> pure ""
+  pure $ significandStr ++ exponentStr
+
 intParser :: ParsecT String u IO String
 intParser = spaces >> many1 digit
 
@@ -582,6 +617,9 @@ ulongParser = spaces >> many1 digit <* (try (oneOf "uU" >> oneOf "lL") <|> (oneO
 
 integerParser :: ParsecT String u IO String
 integerParser = try ulongParser <|> try longParser <|> try uintParser <|> intParser
+
+numParser :: ParsecT String u IO String
+numParser = try doubleParser <|> integerParser
 
 fileParser :: ParsecT String ParseInfo IO (M.Map String IdentifierType, [Declaration])
 fileParser = do
@@ -672,6 +710,11 @@ exprToInteger (TExpr expr _) = case expr of
   Constant (ConstULong ul) -> ul
   _ -> 0
 
+exprToDouble :: TypedExpr -> Double
+exprToDouble (TExpr expr _) = case expr of
+  Constant (ConstDouble d) -> d
+  _ -> 0
+
 numConstToInt :: NumConst -> Int64
 numConstToInt n = case n of
   ConstShort s -> fromIntegral s
@@ -680,6 +723,12 @@ numConstToInt n = case n of
   ConstLong l -> fromIntegral l
   ConstUInt ui -> fromIntegral ui
   ConstULong ul -> fromIntegral ul
+  _ -> undefined
+
+numConstToDouble :: NumConst -> Double
+numConstToDouble n = case n of
+  ConstDouble d -> d
+  _ -> undefined
 
 isVariableExpr :: TypedExpr -> Bool
 isVariableExpr (TExpr (Variable {}) _) = True
@@ -687,6 +736,7 @@ isVariableExpr _ = False
 
 isConstantTypedExpr :: TypedExpr -> Bool
 isConstantTypedExpr (TExpr expr _) = case expr of
+  -- Constant (ConstDouble _) -> False
   Constant _ -> True
   Variable {} -> False
   Cast _ e -> isConstantTypedExpr e
@@ -696,6 +746,20 @@ isConstantTypedExpr (TExpr expr _) = case expr of
   Assignment {} -> False
   Conditional c t f -> isConstantTypedExpr c && isConstantTypedExpr t && isConstantTypedExpr f
 
+isIntegralConstant :: TypedExpr -> Bool
+isIntegralConstant (TExpr expr _) = case expr of
+  Constant (ConstShort _) -> True
+  Constant (ConstUShort _) -> True
+  Constant (ConstInt _) -> True
+  Constant (ConstUInt _) -> True
+  Constant (ConstLong _) -> True
+  Constant (ConstULong _) -> True
+  _ -> False
+
+isFloatConstant :: TypedExpr -> Bool
+isFloatConstant (TExpr expr _) = case expr of
+  Constant (ConstDouble _) -> True
+  _ -> False
 
 exprToConstantExpr :: TypedExpr -> TypedExpr
 exprToConstantExpr te@(TExpr e dt) =
@@ -711,8 +775,6 @@ exprToConstantExpr te@(TExpr e dt) =
   Cast _ expr -> (`TExpr` dt) $ constructor $ exprToInteger $ exprToConstantExpr expr
   Unary op expr -> (`TExpr` dt) $ constructor $ unaryOpToHaskellOperator op $ exprToInteger $ exprToConstantExpr expr
   Binary op lExpr rExpr ->
-    -- if op == Division then te
-    -- else
     (`TExpr` dt) $ constructor $ binaryOpToHaskellOperator op
       (exprToInteger $ exprToConstantExpr lExpr)
       (exprToInteger $ exprToConstantExpr rExpr)
@@ -722,7 +784,19 @@ exprToConstantExpr te@(TExpr e dt) =
   _ -> undefined
 
 foldToConstExpr :: TypedExpr -> TypedExpr
-foldToConstExpr te = if isConstantTypedExpr te then exprToConstantExpr te else te
+foldToConstExpr te = te
+-- foldToConstExpr te = if isConstantTypedExpr te then exprToConstantExpr te else te
+
+doubleIntegralParser :: ParsecT String ParseInfo IO TypedExpr
+doubleIntegralParser = do
+  maybeDotE <- lookAhead $ optionMaybe $ try $ spaces >> (dotLex <|> (many1 digit >> (dotLex <|> eLex)))
+  if isJust maybeDotE
+    then do
+      d <- doubleParser
+      let dVal = read d :: Double
+      pure $ TExpr (Constant (ConstDouble dVal)) $ DTInternal TDouble
+    else
+      intLongUnsignedConstantParser
 
 intLongUnsignedConstantParser :: ParsecT String ParseInfo IO TypedExpr
 intLongUnsignedConstantParser = do
@@ -1028,7 +1102,7 @@ factorParser = do
   c <- lookAhead $ try $ spaces >> anyChar
   next c where
     next c
-      | isDigit c = intLongUnsignedConstantParser
+      | isDigit c || c == '.' = doubleIntegralParser
       | [c] `elem` allUnaryOp = unaryExprParser
       | c == '(' = do
         maybeDT <- lookAhead $ optionMaybe $ try $
