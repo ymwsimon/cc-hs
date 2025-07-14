@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/12 13:45:34 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/13 19:24:21 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -639,6 +639,11 @@ binaryAssignmentOpParser = foldl1 (<|>) $
           Modulo, BitAnd, BitOr, BitXor,
           BitShiftLeft, BitShiftRight, None]
 
+unsupportedFloatOperation :: [BinaryOp]
+unsupportedFloatOperation =
+  [Modulo, BitAnd, BitOr, BitXor,
+    BitShiftLeft, BitShiftRight]
+
 binaryOpParser :: ParsecT String u IO BinaryOp
 binaryOpParser = foldl1 (<|>) $
   map try $
@@ -708,14 +713,14 @@ exprToInteger (TExpr expr _) = case expr of
   Constant (ConstUInt ui) -> ui
   Constant (ConstLong l) -> l
   Constant (ConstULong ul) -> ul
-  _ -> 0
+  _ -> undefined
 
 exprToDouble :: TypedExpr -> Double
 exprToDouble (TExpr expr _) = case expr of
   Constant (ConstDouble d) -> d
-  _ -> 0
+  _ -> undefined
 
-numConstToInt :: NumConst -> Int64
+numConstToInt :: Num b => NumConst -> b
 numConstToInt n = case n of
   ConstShort s -> fromIntegral s
   ConstUShort us -> fromIntegral us
@@ -729,6 +734,16 @@ numConstToDouble :: NumConst -> Double
 numConstToDouble n = case n of
   ConstDouble d -> d
   _ -> undefined
+
+numConstToStr :: NumConst -> String
+numConstToStr n = case n of
+  ConstShort s -> show s
+  ConstUShort us -> show us
+  ConstInt i -> show i
+  ConstLong l -> show l
+  ConstUInt ui -> show ui
+  ConstULong ul -> show ul
+  ConstDouble d -> show d
 
 isVariableExpr :: TypedExpr -> Bool
 isVariableExpr (TExpr (Variable {}) _) = True
@@ -759,6 +774,17 @@ isIntegralConstant (TExpr expr _) = case expr of
 isFloatConstant :: TypedExpr -> Bool
 isFloatConstant (TExpr expr _) = case expr of
   Constant (ConstDouble _) -> True
+  _ -> False
+
+isFloatTypedExpr :: TypedExpr -> Bool
+isFloatTypedExpr = (== DTInternal TDouble) . tDT
+
+isIntegralTypedExpr :: TypedExpr -> Bool
+isIntegralTypedExpr = isIntDT . tDT
+
+isFloatDT :: DT -> Bool
+isFloatDT dt = case dt of
+  DTInternal TDouble -> True
   _ -> False
 
 exprToConstantExpr :: TypedExpr -> TypedExpr
@@ -852,6 +878,8 @@ unaryExprParser = do
   p <- precedence <$> getState
   modifyState $ updatePrecedence $ getUnaryOpPrecedence uOpStr
   expr <- exprParser
+  when (uOp == Complement && isFloatTypedExpr expr) $
+    unexpected "Complement unary operation for floating point number"
   when (uOp `elem` [PreDecrement, PreIncrement] && not (isVariableExpr expr)) $
     unexpected "Need lvalue for prefix operation"
   let dt = if uOp == NotRelation then DTInternal TInt else tDT expr
@@ -883,6 +911,7 @@ isSigned dt = case dt of
 getExprsCommonType :: TypedExpr -> TypedExpr -> DT
 getExprsCommonType (TExpr _ lDT) (TExpr _ rDT)
   | lDT == rDT =lDT
+  | lDT == DTInternal TDouble || rDT == DTInternal TDouble = DTInternal TDouble
   | isSameSize lDT rDT && isSigned lDT = rDT
   | isSameSize lDT rDT && isSigned rDT = lDT
   | getDTSize lDT > getDTSize rDT = lDT
@@ -963,6 +992,8 @@ exprRightParser l@(TExpr lExpr lDt) = do
                     op <- binaryAssignmentOpParser
                     modifyState $ setPrecedence $ getBinOpPrecedence binOp
                     e <- exprParser
+                    when (op `elem` unsupportedFloatOperation && (isFloatTypedExpr l || isFloatTypedExpr e)) $
+                      unexpected "binary operation for floating point number"
                     let cType = getExprsCommonType l e
                     let dt
                           | op `elem` [Plus, Minus, Multiply, Division, Modulo, BitAnd, BitOr, BitXor] = cType
@@ -986,6 +1017,8 @@ exprRightParser l@(TExpr lExpr lDt) = do
               op <- binaryOpParser
               modifyState $ updatePrecedence $ getBinOpPrecedence binOp
               rExpr <- exprParser
+              when (op `elem` unsupportedFloatOperation && (isFloatTypedExpr l || isFloatTypedExpr rExpr)) $
+                unexpected "binary operation for floating point number"
               modifyState $ setPrecedence p
               case op of
                 LogicAnd -> exprRightParser $ TExpr (Binary op (foldToConstExpr l) (foldToConstExpr rExpr)) $ DTInternal TInt

@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/07/10 15:51:23 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/14 09:31:33 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -47,6 +47,10 @@ data IRInstruction =
   | IRSignExtend {signeExtendSrc :: IRVal, signExtendDst :: IRVal}
   | IRTruncate {truncateSrc :: IRVal, truncateDst :: IRVal}
   | IRZeroExtend {zeroExtendSrc :: IRVal, zeroExtenDst :: IRVal}
+  | IRDoubleToInt {dToISrc :: IRVal, dToIDst :: IRVal}
+  | IRDoubleToUInt {dToUISrc :: IRVal, dToUIDst :: IRVal}
+  | IRIntToDouble {iToDSrc :: IRVal, iToDDst :: IRVal}
+  | IRUIntToDouble {uiToDSrc :: IRVal, uiToDDst :: IRVal}
   | IRUnary {irUnaryOp :: UnaryOp, irUnarySrc :: IRVal, irUnaryDst :: IRVal}
   | IRBinary {irBinaryOp :: BinaryOp, irLOperand :: IRVal,
       irROperand :: IRVal, irBinaryDst :: IRVal}
@@ -70,6 +74,7 @@ data StaticInit =
   | UIntInit NumConst
   | LongInit NumConst
   | ULongInit NumConst
+  | DoubleInit NumConst
   deriving (Show, Eq)
 
 isIRFuncDefine :: IRTopLevel -> Bool
@@ -98,19 +103,24 @@ cStatmentToIRInstructions bi = case bi of
     concat <$> traverse cStatmentToIRInstructions bl
   S (Break l) -> pure [IRJump l]
   S (Continue l) -> pure [IRJump l]
-  S (DoWhile bl condition (LoopLabel jLabel)) -> doWhileToIRs bl condition jLabel
-  S (While condition bl (LoopLabel jLabel)) -> whileToIRs condition bl jLabel
-  S (For forInit condition post bl (LoopLabel jLabel)) ->
-    forToIRs forInit condition post bl jLabel
-  S (Switch condition bl (SwitchLabel jLabel caseMap)) ->
-    switchToIRs condition bl jLabel caseMap
+  S (DoWhile bl condition l) -> case l of
+    LoopLabel jLabel -> doWhileToIRs bl condition jLabel
+    _ -> undefined
+  S (While condition bl l) -> case l of
+    LoopLabel jLabel -> whileToIRs condition bl jLabel
+    _ -> undefined
+  S (For forInit condition post bl l) -> case l of
+    LoopLabel jLabel -> forToIRs forInit condition post bl jLabel
+    _ -> undefined
+  S (Switch condition bl l) -> case l of
+    SwitchLabel jLabel caseMap -> switchToIRs condition bl jLabel caseMap
+    _ -> undefined
   S (Case statement l) -> caseToIRs statement l
   S (Default statement l) -> defaultToIRs statement l
   D (VD ((VariableDeclaration dt var False (Just expr) Nothing))) ->
     cStatmentToIRInstructions (S (Expression
       (TExpr (Assignment (TExpr (Variable var False Nothing) dt) expr) dt)))
   D _ -> pure []
-  _ -> undefined
 
 initIRVarId :: a1 -> (a2, b) -> (a1, b)
 initIRVarId s (_, b) = (s, b)
@@ -169,6 +179,10 @@ staticInitToInt (UIntInit (ConstUInt ui)) = fromIntegral ui
 staticInitToInt (LongInit (ConstLong l)) = fromIntegral l
 staticInitToInt (ULongInit (ConstULong ul)) = fromIntegral ul
 staticInitToInt _ = undefined
+
+staticInitToDouble :: StaticInit -> Double
+staticInitToDouble (DoubleInit (ConstDouble d)) = d
+staticInitToDouble _ = undefined
 
 staticVarConvertion :: M.Map String IdentifierType -> [IRTopLevel]
 staticVarConvertion m = map IRStaticVar .
@@ -391,13 +405,17 @@ truncateIRVal irVal dt = case irVal of
   _ -> irVal
 
 castToIRs :: DT -> TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
-castToIRs dt te@(TExpr _ tdt) = if dt == tdt
-  then exprToIRs te
-  else do
+castToIRs dt te@(TExpr _ tdt)
+  | dt == tdt = exprToIRs te
+  | otherwise = do
     (teIRs, teIRVal) <- exprToIRs te
     varId <- gets (IRVar dt . show . fst) <* modify bumpOneToVarId
     let op
           | getDTSize dt == getDTSize tdt = IRCopy
+          | isFloatDT dt && isSigned tdt = IRIntToDouble
+          | isFloatDT dt && not (isSigned tdt) = IRUIntToDouble
+          | isSigned dt && isFloatDT tdt = IRDoubleToInt
+          | not (isSigned dt) && isFloatDT tdt = IRDoubleToUInt
           | getDTSize dt < getDTSize tdt = IRTruncate
           | isSigned tdt = IRSignExtend
           | otherwise = IRZeroExtend
@@ -411,6 +429,7 @@ exprToIRs (TExpr expr dt) = case expr of
   Constant (ConstUInt s) -> pure ([], IRConstant (DTInternal TUInt) $ ConstUInt s)
   Constant (ConstLong s) -> pure ([], IRConstant (DTInternal TLong) $ ConstLong s)
   Constant (ConstULong s) -> pure ([], IRConstant (DTInternal TULong) $ ConstULong s)
+  Constant (ConstDouble s) -> pure ([], IRConstant (DTInternal TDouble) $ ConstDouble s)
   Unary op uExpr -> unaryOperationToIRs op dt uExpr
   Binary op lExpr rExpr -> binaryOperationToIRs op dt lExpr rExpr
   Variable var _ _ -> pure ([], IRVar dt var)
