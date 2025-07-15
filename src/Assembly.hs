@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/07/15 20:34:36 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/16 00:30:51 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -343,7 +343,13 @@ extractFloatConstant = S.fromList . foldl' foldF [-0.0, 9223372036854775808.0]
           _ -> []
 
 parametersRegister :: [Operand]
-parametersRegister = map Register [EDI, ESI, EDX, ECX, R8D, R9D] ++ map Stack [16, 24..]
+parametersRegister = map Register [DI, SI, DX, CX, R8, R9] ++ map Stack [16, 24..]
+
+generalXmmRegister :: ([Reg], [Reg])
+generalXmmRegister = ([DI, SI, DX, CX, R8, R9], enumFromTo XMM0 XMM7)
+
+stackAddr :: [Int]
+stackAddr = [16, 24..]
 
 getPaddingSize :: [a] -> Int
 getPaddingSize args = if odd $ length args then 8 else 0
@@ -353,12 +359,15 @@ getFuncList = foldl' (\m fd -> M.insert (irFuncName $ irFuncD fd) (irFuncName $ 
 
 irFuncDefineToAsmFuncDefine :: M.Map String IdentifierType -> M.Map String String -> IRFunctionDefine -> AsmFunctionDefine
 irFuncDefineToAsmFuncDefine gVarMap funcList fd = do
-  let (m, instrs) = copyParametersToStack
+  let irVars = map (\ap -> IRVar (dataType ap) (varName ap)) $ irParameter fd
+      (regArg, stackArg) =
+        regStackArgSplit generalXmmRegister stackAddr irVars ([], [])
+      (m, instrs) = copyParametersToStack
           ((+ 1) . getMaxStackVarId $ irInstruction fd)
-          (M.empty, []) (zip parametersRegister (irParameter fd))
+          (M.empty, []) (regArg, stackArg)
   AsmFunctionDefine (irFuncName fd) (irFuncGlobal fd) $
     instrs ++
-    [AllocateStack (getPaddingSize (drop 6 $ irParameter fd))] ++
+    [AllocateStack (getPaddingSize stackArg)] ++
     concatMap (\irs -> irInstructionToAsmInstruction irs m funcList gVarMap) (irInstruction fd)
 
 irOperandToAsmOperand :: M.Map String Int -> M.Map String IdentifierType -> IRVal -> Operand
@@ -386,28 +395,45 @@ irBinaryOpToAsmOp BitShiftLeft = AsmShiftL
 irBinaryOpToAsmOp BitShiftRight = AsmShiftR
 irBinaryOpToAsmOp _ = undefined
 
+regStackArgSplit :: ([Reg], [Reg]) -> [Int] -> [IRVal] ->
+  ([(IRVal, Reg)], [(IRVal, Int)]) -> ([(IRVal, Reg)], [(IRVal, Int)])
+regStackArgSplit (genReg, xmmReg) addr irs (regArg, stackArg)
+  | (null genReg && null xmmReg) || null irs = (regArg, stackArg ++ zip irs addr)
+  | isFloatDT (irValToDT ((!! 0) irs)) && not (null xmmReg) =
+      regStackArgSplit (genReg, drop 1 xmmReg) addr (drop 1 irs)
+        (regArg ++ [((!! 0) irs, (!! 0) xmmReg)], stackArg)
+  | isIntDT (irValToDT ((!! 0) irs)) && not (null genReg) =
+      regStackArgSplit (drop 1 genReg, xmmReg) addr (drop 1 irs)
+        (regArg ++ [((!! 0) irs, (!! 0) genReg)], stackArg)
+  | otherwise =
+      regStackArgSplit (genReg, xmmReg) (drop 1 addr) (drop 1 irs)
+        (regArg, stackArg ++ [((!! 0) irs, (!! 0) addr)])
+
 irFuncCallToAsm :: String -> [IRVal] -> IRVal -> M.Map String String ->
   M.Map String Int -> M.Map String IdentifierType -> [AsmInstruction]
 irFuncCallToAsm name args dst funcList m gVarMap =
-  let (regArg, stackArg) = splitAt 6 args
+  let (regArg, stackArg) = regStackArgSplit generalXmmRegister stackAddr args ([], [])
       paddingSize = getPaddingSize stackArg
       paddingInstr = [AllocateStack paddingSize]
       copyRegArgsInstr =
-        zipWith (\pr a -> Mov (dtToAsmType $ irValToDT a) (cvtOperand a) pr)
-          parametersRegister regArg
-      copyStackArgsInstr = concatMap (\sa -> case sa of
-        IRConstant _ c ->
-              [Mov QuadWord (Imm c) (Register R10),
-                Push (Register R10)]
-        IRVar t _ ->
-          [Mov (dtToAsmType t)(cvtOperand sa) (Register RAX),
-            Push (Register RAX)]) (reverse stackArg)
+        map (\(v, r) -> Mov (dtToAsmType $ irValToDT v) (cvtOperand v) (Register r))
+          regArg
+      copyStackArgsInstr = concatMap (\v ->
+        let r = if isFloatDT (irValToDT v) then Register XMM0 else Register R10 in
+            case v of
+              IRConstant _ c ->
+                    [Mov QuadWord (Imm c) r,
+                      Push r]
+              IRVar t _ ->
+                [Mov (dtToAsmType t)(cvtOperand v) r,
+                  Push r]) (reverse $ map fst stackArg)
       callInstrs = if M.member name funcList
           then [Call name] else [Call $ name ++ "@PLT"] in
   paddingInstr ++ copyRegArgsInstr ++ copyStackArgsInstr ++ callInstrs ++
     [DeallocateStack (8 * length stackArg + paddingSize)] ++
-    [Mov (dtToAsmType $ irValToDT dst) (Register EAX) $ cvtOperand dst]
+    [Mov (dtToAsmType $ irValToDT dst) reg $ cvtOperand dst]
     where cvtOperand = irOperandToAsmOperand m gVarMap
+          reg = if isFloatDT $ irValToDT dst then Register XMM0 else Register AX
 
 irBinaryInstrToAsmInstr :: IRInstruction -> M.Map String Int ->
   M.Map String IdentifierType -> [AsmInstruction]
@@ -529,15 +555,28 @@ irInstructionToAsmInstruction instr m funcList gVarMap = case instr of
       AsmBinary AsmBitAnd QuadWord (Imm $ ConstInt 1) (Register R10),
       AsmBinary AsmBitOr QuadWord (Register R10) (Register R11),
       Cvtsi2sd QuadWord (Register R11) (cvtOperand d),
-      AsmBinary AsmPlus AsmDouble (cvtOperand d) (cvtOperand d),
+      Mov AsmDouble (cvtOperand d) (Register XMM0),
+      AsmBinary AsmPlus AsmDouble (cvtOperand d) (Register XMM0),
+      Mov AsmDouble (Register XMM0) (cvtOperand d),
       AsmLabel $ "castUToD2." ++ (!! 1) lbs]
   where cvtOperand = irOperandToAsmOperand m gVarMap
 
 copyParametersToStack :: Int -> (M.Map String Int, [AsmInstruction]) ->
-  [(Operand, String)] -> (M.Map String Int, [AsmInstruction])
-copyParametersToStack _ (m, instrs) [] = (m, instrs)
-copyParametersToStack n (m, instrs) ((src, var) : xs) = 
-  copyParametersToStack (n + 1) (M.insert var n m, instrs ++ [Mov QuadWord src (Pseudo (show n))]) xs
+  ([(IRVal, Reg)], [(IRVal, Int)]) -> (M.Map String Int, [AsmInstruction])
+copyParametersToStack n (m, instrs) (reg, stack)
+  | null reg && null stack = (m, instrs)
+  | not (null reg) = let var = irVName $ fst $ (!! 0) reg
+                         src = Register $ snd $ (!! 0) reg in
+      copyParametersToStack
+        (n + 1)
+        (M.insert var n m, instrs ++ [Mov QuadWord src (Pseudo (show n))])
+        (drop 1 reg, stack)
+  | otherwise = let var = irVName $ fst $ (!! 0) stack
+                    src = Stack $ snd $ (!! 0) stack in
+      copyParametersToStack
+        (n + 1)
+        (M.insert var n m, instrs ++ [Mov QuadWord src (Pseudo (show n))])
+        (reg, drop 1 stack)
 
 buildAsmIntrsForIRRelationOp :: IRInstruction -> M.Map String Int -> M.Map String IdentifierType -> [AsmInstruction]
 buildAsmIntrsForIRRelationOp instr m gVarMap =
@@ -636,6 +675,8 @@ replacePseudoRegAllocateStackFixDoubleStackOperand afd =
 isMemoryAddr :: Operand -> Bool
 isMemoryAddr (Stack _) = True
 isMemoryAddr (Data _) = True
+isMemoryAddr (Pseudo _) = True
+isMemoryAddr (Imm (ConstDouble _)) = True
 isMemoryAddr _ = False
 
 isImm :: Operand -> Bool
@@ -646,9 +687,9 @@ resolveDoubleStackOperand :: AsmInstruction -> [AsmInstruction]
 resolveDoubleStackOperand instr = case instr of
   instrs@(Mov t i j) -> movF
       where movF
-              | t == AsmDouble
+              | t == AsmDouble && isMemoryAddr i && isMemoryAddr j
                 = [Mov t i (Register XMM0), Mov t (Register XMM0) j]
-              | isMemoryAddr i && isMemoryAddr j || t == QuadWord && isMemoryAddr j
+              | t /= AsmDouble && (isMemoryAddr i && isMemoryAddr j || t == QuadWord && isMemoryAddr j)
                 = [Mov t i (Register R10), Mov t (Register R10) j]
               | otherwise = [instrs]
   instrs@(AsmBinary AsmMul t mulVal i) -> mulF
@@ -666,9 +707,11 @@ resolveDoubleStackOperand instr = case instr of
               | otherwise = [instrs]
   instrs@(AsmBinary op t i j) -> binF
       where binF
-              -- | t == AsmDouble
-              --   = [Mov t i (Register XMM0),
-              --     AsmBinary op t (Register XMM0) j]
+              | t == AsmDouble && isMemoryAddr i && isMemoryAddr j
+                = [Mov t j (Register XMM0),
+                    -- AsmBinary op t (Register XMM0) j]
+                  AsmBinary op t i (Register XMM0),
+                  Mov t (Register XMM0) j]
               | isMemoryAddr i && isMemoryAddr j || t == QuadWord && isMemoryAddr j
                 = [Mov t i (Register R10),
                   AsmBinary op t (Register R10) j]

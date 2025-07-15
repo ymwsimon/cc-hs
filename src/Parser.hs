@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/15 19:02:56 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/15 21:06:33 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -756,7 +756,6 @@ isVariableExpr _ = False
 
 isConstantTypedExpr :: TypedExpr -> Bool
 isConstantTypedExpr (TExpr expr _) = case expr of
-  -- Constant (ConstDouble _) -> False
   Constant _ -> True
   Variable {} -> False
   Cast _ e -> isConstantTypedExpr e

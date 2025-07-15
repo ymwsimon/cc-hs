@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/07/15 19:03:39 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/15 22:54:45 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -32,7 +32,7 @@ data IRFunctionDefine =
   {
     irFuncName :: String,
     irFuncGlobal :: Bool,
-    irParameter :: [String],
+    irParameter :: [InputArgPair],
     irInstruction :: [IRInstruction]
   }
   deriving (Show, Eq)
@@ -64,7 +64,7 @@ data IRInstruction =
 
 data IRVal =
   IRConstant DT NumConst
-  | IRVar DT String
+  | IRVar {irVarDT :: DT, irVName :: String}
   deriving (Show, Eq)
 
 data StaticInit =
@@ -131,7 +131,7 @@ hasFuncBody _ = False
 
 cFuncDefineToIRFuncDefine :: Declaration -> State (Int, Int) IRTopLevel
 cFuncDefineToIRFuncDefine fd@(FunctionDeclaration _ _ _ (Just bl) _ sc) =
-  IRFunc . IRFunctionDefine (funName fd) (sc /= Just Static) (map varName (inputArgs fd))
+  IRFunc . IRFunctionDefine (funName fd) (sc /= Just Static) (inputArgs fd)
     . (++ [IRReturn (IRConstant (DTInternal TInt) $ ConstInt 0)]) . concat
     <$> (modify (initIRVarId (nextVarId fd)) >>
       mapM cStatmentToIRInstructions (unBlock bl))
