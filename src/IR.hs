@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/07/14 09:31:33 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/15 19:03:39 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -48,9 +48,9 @@ data IRInstruction =
   | IRTruncate {truncateSrc :: IRVal, truncateDst :: IRVal}
   | IRZeroExtend {zeroExtendSrc :: IRVal, zeroExtenDst :: IRVal}
   | IRDoubleToInt {dToISrc :: IRVal, dToIDst :: IRVal}
-  | IRDoubleToUInt {dToUISrc :: IRVal, dToUIDst :: IRVal}
+  | IRDoubleToUInt {jmpLabels :: [String], dToUISrc :: IRVal, dToUIDst :: IRVal}
   | IRIntToDouble {iToDSrc :: IRVal, iToDDst :: IRVal}
-  | IRUIntToDouble {uiToDSrc :: IRVal, uiToDDst :: IRVal}
+  | IRUIntToDouble {jmpLabels :: [String], uiToDSrc :: IRVal, uiToDDst :: IRVal}
   | IRUnary {irUnaryOp :: UnaryOp, irUnarySrc :: IRVal, irUnaryDst :: IRVal}
   | IRBinary {irBinaryOp :: BinaryOp, irLOperand :: IRVal,
       irROperand :: IRVal, irBinaryDst :: IRVal}
@@ -140,47 +140,46 @@ cFuncDefineToIRFuncDefine  _ = undefined
 cASTToIrAST :: CProgramAST -> IRProgramAST
 cASTToIrAST = flip evalState (1, 1) . mapM cFuncDefineToIRFuncDefine . filter hasFuncBody
 
-constantExprToInt :: Expr -> Integer
+constantExprToInt :: TypedExpr -> Integer
 constantExprToInt e = case e of
-  Constant (ConstInt i) -> fromIntegral i
-  Constant (ConstLong l) -> fromIntegral l
-  Constant (ConstUInt ui) -> fromIntegral ui
-  Constant (ConstULong ul) -> fromIntegral ul
+  TExpr (Constant (ConstInt i)) _ -> fromIntegral i
+  TExpr (Constant (ConstLong l)) _ -> fromIntegral l
+  TExpr (Constant (ConstUInt ui)) _ -> fromIntegral ui
+  TExpr (Constant (ConstULong ul)) _ -> fromIntegral ul
+  TExpr (Constant (ConstDouble d)) _ -> truncate d
+  _ -> undefined
+
+constantExprToDouble :: TypedExpr -> Double
+constantExprToDouble e = case e of
+  TExpr (Constant (ConstDouble d)) _ -> d
+  TExpr (Constant (ConstInt i)) _ -> fromIntegral i
+  TExpr (Constant (ConstLong l)) _ -> fromIntegral l
+  TExpr (Constant (ConstUInt ui)) _ -> fromIntegral ui
+  TExpr (Constant (ConstULong ul)) _ -> fromIntegral ul
   _ -> undefined
 
 exprToStaticInit :: TypedExpr -> StaticInit
-exprToStaticInit (TExpr e dt) =
-  let constructor = case dt of
-        DTInternal TInt -> IntInit . ConstInt
-        DTInternal TUInt -> UIntInit . ConstUInt
-        DTInternal TLong -> LongInit . ConstLong
-        DTInternal TULong -> ULongInit . ConstULong
-        _ -> undefined
-        in
-  case e of
-  Constant (ConstInt i) -> constructor i
-  Constant (ConstLong l) -> constructor l
-  Constant (ConstUInt ui) -> constructor ui
-  Constant (ConstULong ul) -> constructor ul
-  Cast (DTInternal TInt) (TExpr expr _) -> constructor $ constantExprToInt expr
-  Cast (DTInternal TUInt) (TExpr expr _) -> constructor $ constantExprToInt expr
-  Cast (DTInternal TLong) (TExpr expr _) -> constructor $ constantExprToInt expr
-  Cast (DTInternal TULong) (TExpr expr _) -> constructor $ constantExprToInt expr
-  Unary op (TExpr expr _) -> constructor $ unaryOpToHaskellOperator op $ constantExprToInt expr
-  Binary op (TExpr lExpr _) (TExpr rExpr _) ->
-    constructor $ binaryOpToHaskellOperator op (constantExprToInt lExpr) (constantExprToInt rExpr) 
-  Conditional c t f ->
-    if staticInitToInt (exprToStaticInit c) /= 0 then exprToStaticInit t else exprToStaticInit f
+exprToStaticInit (TExpr e _) = case e of
+  Constant (ConstInt i) -> IntInit $ ConstInt i
+  Constant (ConstLong l) -> LongInit $ ConstLong l
+  Constant (ConstUInt ui) -> UIntInit $ ConstUInt ui
+  Constant (ConstULong ul) -> ULongInit $ ConstULong ul
+  Constant (ConstDouble d) -> DoubleInit $ ConstDouble d
   _ -> undefined
 
 staticInitToInt :: StaticInit -> Integer
-staticInitToInt (IntInit (ConstInt i)) = fromIntegral i
-staticInitToInt (UIntInit (ConstUInt ui)) = fromIntegral ui
-staticInitToInt (LongInit (ConstLong l)) = fromIntegral l
-staticInitToInt (ULongInit (ConstULong ul)) = fromIntegral ul
+staticInitToInt (IntInit (ConstInt i)) = i
+staticInitToInt (UIntInit (ConstUInt ui)) = ui
+staticInitToInt (LongInit (ConstLong l)) = l
+staticInitToInt (ULongInit (ConstULong ul)) = ul
+staticInitToInt (DoubleInit (ConstDouble d)) = truncate d
 staticInitToInt _ = undefined
 
 staticInitToDouble :: StaticInit -> Double
+staticInitToDouble (IntInit (ConstInt i)) = fromIntegral i
+staticInitToDouble (UIntInit (ConstUInt ui)) = fromIntegral ui
+staticInitToDouble (LongInit (ConstLong l)) = fromIntegral l
+staticInitToDouble (ULongInit (ConstULong ul)) = fromIntegral ul
 staticInitToDouble (DoubleInit (ConstDouble d)) = d
 staticInitToDouble _ = undefined
 
@@ -188,11 +187,15 @@ staticVarConvertion :: M.Map String IdentifierType -> [IRTopLevel]
 staticVarConvertion m = map IRStaticVar .
   concatMap (identToStaticVar . snd) $ M.toList $ M.filter isVarIdentifier m
   where identToStaticVar ident = case ident of
-          VarIdentifier dt vName _ expr (Just Static) ->
-            [IRStaticVarDefine vName False dt
+          VarIdentifier dt vName _ expr (Just Static) -> if dt == DTInternal TDouble
+            then [IRStaticVarDefine vName False dt
+              (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstDouble 0) (DTInternal TDouble)) expr)]
+            else [IRStaticVarDefine vName False dt
               (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstInt 0) (DTInternal TInt)) expr)]
-          VarIdentifier dt vName topLvl expr Nothing ->
-            [IRStaticVarDefine vName topLvl dt
+          VarIdentifier dt vName topLvl expr Nothing -> if dt == DTInternal TDouble
+            then [IRStaticVarDefine vName topLvl dt
+              (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstDouble 0) (DTInternal TDouble)) expr)]
+            else [IRStaticVarDefine vName topLvl dt
               (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstInt 0) (DTInternal TInt)) expr)]
           _ -> []
 
@@ -410,14 +413,20 @@ castToIRs dt te@(TExpr _ tdt)
   | otherwise = do
     (teIRs, teIRVal) <- exprToIRs te
     varId <- gets (IRVar dt . show . fst) <* modify bumpOneToVarId
+    lbsId <- if isFloatDT dt && isUnsigned tdt || isUnsigned dt && isFloatDT tdt
+      then do
+        l1 <- gets (show . snd) <* modify bumpOneToLabelId
+        l2 <- gets (show . snd) <* modify bumpOneToLabelId
+        pure [l1, l2]
+      else pure []
     let op
+          | isFloatDT dt && isSignedInteger tdt = IRIntToDouble
+          | isFloatDT dt && isUnsigned tdt = IRUIntToDouble lbsId
+          | isSignedInteger dt && isFloatDT tdt = IRDoubleToInt
+          | isUnsigned dt && isFloatDT tdt = IRDoubleToUInt lbsId
           | getDTSize dt == getDTSize tdt = IRCopy
-          | isFloatDT dt && isSigned tdt = IRIntToDouble
-          | isFloatDT dt && not (isSigned tdt) = IRUIntToDouble
-          | isSigned dt && isFloatDT tdt = IRDoubleToInt
-          | not (isSigned dt) && isFloatDT tdt = IRDoubleToUInt
           | getDTSize dt < getDTSize tdt = IRTruncate
-          | isSigned tdt = IRSignExtend
+          | isSignedInteger tdt = IRSignExtend
           | otherwise = IRZeroExtend
     pure (teIRs ++ [op teIRVal varId], varId)
 
@@ -453,6 +462,10 @@ extractVarId instr = case instr of
   IRSignExtend s d -> [getVarId s, getVarId d]
   IRTruncate s d -> [getVarId s, getVarId d]
   IRZeroExtend s d -> [getVarId s, getVarId d]
+  IRDoubleToInt s d -> [getVarId s, getVarId d]
+  IRDoubleToUInt _ s d -> [getVarId s, getVarId d]
+  IRIntToDouble s d -> [getVarId s, getVarId d]
+  IRUIntToDouble _ s d -> [getVarId s, getVarId d]
   where getVarId i = case i of
           IRConstant _ _ -> 0
           IRVar _ iv -> if all isDigit iv then read iv else 0

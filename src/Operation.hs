@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:50:42 by mayeung           #+#    #+#             --
---   Updated: 2025/07/10 17:18:26 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/15 13:57:42 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -55,6 +55,13 @@ unaryOpToHaskellOperator op = case op of
   NotRelation -> (\u -> if popCount u == 0 then 1 else 0)
   _ -> undefined
 
+unaryOpToHaskellOperatorDouble :: (Eq a, Fractional a) => UnaryOp -> a -> a
+unaryOpToHaskellOperatorDouble op = case op of
+  Negate -> negate
+  UPlus -> id
+  NotRelation -> (\u -> if u == 0.0 then 1.0 else 0.0)
+  _ -> undefined
+
 binaryOpToHaskellOperator :: (Integral a, Bits a) => BinaryOp -> a -> a -> a
 binaryOpToHaskellOperator op = case op of
   Plus -> (+)
@@ -69,6 +76,20 @@ binaryOpToHaskellOperator op = case op of
   BitShiftRight -> (\i n -> shiftR i (fromIntegral n))
   LogicAnd -> (\f s -> if popCount f == 0 || popCount s == 0 then 0 else 1)
   LogicOr -> (\f s -> if popCount f /= 0 || popCount s /= 0 then 1 else 0)
+  EqualRelation -> (\l r -> if l == r then 1 else 0)
+  NotEqualRelation -> (\l r -> if l /= r then 1 else 0)
+  LessThanRelation -> (\l r -> if l < r then 1 else 0)
+  LessEqualRelation -> (\l r -> if l <= r then 1 else 0)
+  GreaterThanRelation -> (\l r -> if l > r then 1 else 0)
+  GreaterEqualRelation -> (\l r -> if l >= r then 1 else 0)
+  _ -> undefined
+
+binaryOpToHaskellOperatorDouble :: (Fractional a, Ord a) => BinaryOp -> a -> a -> a
+binaryOpToHaskellOperatorDouble op = case op of
+  Plus -> (+)
+  Minus -> (-)
+  Multiply -> (*)
+  Division -> (/)
   EqualRelation -> (\l r -> if l == r then 1 else 0)
   NotEqualRelation -> (\l r -> if l /= r then 1 else 0)
   LessThanRelation -> (\l r -> if l < r then 1 else 0)

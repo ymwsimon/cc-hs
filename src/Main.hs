@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/07/07 22:48:40 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/15 18:42:27 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -25,6 +25,7 @@ import Assembly
 import System.Exit
 import System.Process
 import qualified Data.Map as M
+import Data.Either (isRight)
 
 data Args = Args
   {
@@ -65,17 +66,6 @@ outObjFileName fileName
 convertCASTToAsm :: M.Map String IdentifierType -> CProgramAST -> AsmProgramAST
 convertCASTToAsm m = irASTToAsmAST m . cASTToIrAST
 
-convertCASTToAsmStr :: M.Map String IdentifierType -> CProgramAST -> String
-convertCASTToAsmStr m =
-  concat
-    . (++ [noExecutableStackString])
-    . (++ (map (asmStaticVarDefineToStr . irStaticVarToAsmStaticVarDefine) $ staticVarConvertion m))
-    . map
-      (asmFunctionDefineToStr
-        . replacePseudoRegAllocateStackFixDoubleStackOperand . asmFuncD)
-    . irASTToAsmAST m
-    . cASTToIrAST
-
 parseOkAct :: Args -> String -> (M.Map String IdentifierType, [Declaration]) -> IO (Either ParseError [Declaration])
 parseOkAct args path (m, parseOk) = do
   print parseOk
@@ -89,10 +79,15 @@ parseOkAct args path (m, parseOk) = do
     case labelCheckRes of
       Left errs -> putStr (unlines errs) >> pure (parse (parserFail "") "" "")
       Right labelMap -> do
+        print "-----------------"
+        print $  M.filter isVarIdentifier m
+        print "-----------------"
         let updatedLabel = updateGotoLabel parseOk labelMap
             varOnlyGlobalMap = M.filter isVarIdentifier m
             converted = convertCASTToAsmStr varOnlyGlobalMap updatedLabel
+        print "m-----------------m"
         print m
+        print "m-----------------m"
         print $ convertCASTToAsm varOnlyGlobalMap $ updateGotoLabel parseOk labelMap
         writeFile (outAsmFileName path) converted
         (_, _, _, assemblerPid) <- if objOnly args
@@ -137,8 +132,7 @@ main = do
     (O.info (argsParser O.<**> O.helper)
     (O.fullDesc <> O.progDesc "desc" <> O.header "header"))
   res <- mapM (readNParse args) $ ifiles args
-  -- unless (all (either (const False) (const True)) res) exitFailure
-  (`unless` exitFailure) $ (`all` res) $ either (const False) (const True)
+  unless (all isRight res) exitFailure
 
 printArgs :: Args -> IO ()
 printArgs args = do

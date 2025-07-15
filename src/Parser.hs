@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/13 19:24:21 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/15 19:02:56 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -713,10 +713,15 @@ exprToInteger (TExpr expr _) = case expr of
   Constant (ConstUInt ui) -> ui
   Constant (ConstLong l) -> l
   Constant (ConstULong ul) -> ul
+  Constant (ConstDouble d) -> truncate d
   _ -> undefined
 
 exprToDouble :: TypedExpr -> Double
 exprToDouble (TExpr expr _) = case expr of
+  Constant (ConstInt i) -> fromIntegral i
+  Constant (ConstUInt ui) -> fromIntegral ui
+  Constant (ConstLong l) -> fromIntegral l
+  Constant (ConstULong ul) -> fromIntegral ul
   Constant (ConstDouble d) -> d
   _ -> undefined
 
@@ -761,8 +766,8 @@ isConstantTypedExpr (TExpr expr _) = case expr of
   Assignment {} -> False
   Conditional c t f -> isConstantTypedExpr c && isConstantTypedExpr t && isConstantTypedExpr f
 
-isIntegralConstant :: TypedExpr -> Bool
-isIntegralConstant (TExpr expr _) = case expr of
+isIntegralConstantTE :: TypedExpr -> Bool
+isIntegralConstantTE (TExpr expr _) = case expr of
   Constant (ConstShort _) -> True
   Constant (ConstUShort _) -> True
   Constant (ConstInt _) -> True
@@ -771,8 +776,8 @@ isIntegralConstant (TExpr expr _) = case expr of
   Constant (ConstULong _) -> True
   _ -> False
 
-isFloatConstant :: TypedExpr -> Bool
-isFloatConstant (TExpr expr _) = case expr of
+isFloatConstantTE :: TypedExpr -> Bool
+isFloatConstantTE (TExpr expr _) = case expr of
   Constant (ConstDouble _) -> True
   _ -> False
 
@@ -798,20 +803,34 @@ exprToConstantExpr te@(TExpr e dt) =
         in
   case e of
   Constant _ -> te
-  Cast _ expr -> (`TExpr` dt) $ constructor $ exprToInteger $ exprToConstantExpr expr
-  Unary op expr -> (`TExpr` dt) $ constructor $ unaryOpToHaskellOperator op $ exprToInteger $ exprToConstantExpr expr
-  Binary op lExpr rExpr ->
-    (`TExpr` dt) $ constructor $ binaryOpToHaskellOperator op
-      (exprToInteger $ exprToConstantExpr lExpr)
-      (exprToInteger $ exprToConstantExpr rExpr)
-  Conditional c t f -> (`TExpr` dt) $ constructor $ 
-    if exprToInteger (exprToConstantExpr c) /= 0 then
-      exprToInteger $ exprToConstantExpr t else exprToInteger $ exprToConstantExpr f
+  Cast cDt expr -> if cDt == DTInternal TDouble
+    then (`TExpr` dt) $ Constant $ ConstDouble $ exprToDouble $ exprToConstantExpr expr
+    else (`TExpr` dt) $ constructor $ exprToInteger $ exprToConstantExpr expr
+  Unary op expr -> if isFloatDT $ tDT expr
+    then (`TExpr` dt) $ Constant $ ConstDouble $ unaryOpToHaskellOperatorDouble op $ exprToDouble $ exprToConstantExpr expr
+    else (`TExpr` dt) $ constructor $ unaryOpToHaskellOperator op $ exprToInteger $ exprToConstantExpr expr
+  Binary op lExpr rExpr -> if isFloatDT $ tDT lExpr
+    then (`TExpr` dt) $ Constant $ ConstDouble $ binaryOpToHaskellOperatorDouble op
+          (exprToDouble $ exprToConstantExpr lExpr)
+          (exprToDouble $ exprToConstantExpr rExpr)
+    else (`TExpr` dt) $ constructor $ binaryOpToHaskellOperator op
+          (exprToInteger $ exprToConstantExpr lExpr)
+          (exprToInteger $ exprToConstantExpr rExpr)
+  Conditional c t f -> if isFloatDT $ tDT t
+    then (`TExpr` dt) $ Constant $ ConstDouble $
+      if isFloatDT $ tDT c
+        then if exprToDouble (exprToConstantExpr c) /= 0.0 then
+                  exprToDouble $ exprToConstantExpr t else exprToDouble $ exprToConstantExpr f
+        else if exprToInteger (exprToConstantExpr c) /= 0 then
+                  exprToDouble $ exprToConstantExpr t else exprToDouble $ exprToConstantExpr f
+    else (`TExpr` dt) $ constructor $ 
+      if exprToInteger (exprToConstantExpr c) /= 0 then
+          exprToInteger $ exprToConstantExpr t else exprToInteger $ exprToConstantExpr f
   _ -> undefined
 
 foldToConstExpr :: TypedExpr -> TypedExpr
-foldToConstExpr te = te
--- foldToConstExpr te = if isConstantTypedExpr te then exprToConstantExpr te else te
+-- foldToConstExpr te = te
+foldToConstExpr te = if isConstantTypedExpr te then exprToConstantExpr te else te
 
 doubleIntegralParser :: ParsecT String ParseInfo IO TypedExpr
 doubleIntegralParser = do
@@ -900,20 +919,43 @@ getDTSize dt = case dt of
   DTInternal TLDouble -> 16
   _ -> undefined
 
-isSigned :: DT -> Bool
-isSigned dt = case dt of
+isSignedInteger :: DT -> Bool
+isSignedInteger dt = case dt of
   DTInternal TChar -> True
   DTInternal TShort -> True
   DTInternal TInt -> True
   DTInternal TLong -> True
   _ -> False
 
+isUnsigned :: DT -> Bool
+isUnsigned dt = case dt of
+  DTInternal TUChar -> True
+  DTInternal TUShort -> True
+  DTInternal TUInt -> True
+  DTInternal TULong -> True
+  _ -> False
+
+isFloatConstNumConst :: NumConst -> Bool
+isFloatConstNumConst c = case c of
+  ConstDouble _ -> True
+  _ -> False
+
+isIntegralConstantNumConst :: NumConst -> Bool
+isIntegralConstantNumConst c = case c of
+  ConstShort _ -> True
+  ConstUShort _ -> True
+  ConstInt _ -> True
+  ConstUInt _ -> True
+  ConstLong _ -> True
+  ConstULong _ -> True
+  ConstDouble _ -> False
+
 getExprsCommonType :: TypedExpr -> TypedExpr -> DT
 getExprsCommonType (TExpr _ lDT) (TExpr _ rDT)
   | lDT == rDT =lDT
   | lDT == DTInternal TDouble || rDT == DTInternal TDouble = DTInternal TDouble
-  | isSameSize lDT rDT && isSigned lDT = rDT
-  | isSameSize lDT rDT && isSigned rDT = lDT
+  | isSameSize lDT rDT && isSignedInteger lDT = rDT
+  | isSameSize lDT rDT && isSignedInteger rDT = lDT
   | getDTSize lDT > getDTSize rDT = lDT
   | otherwise = rDT
   where isSameSize l r = getDTSize l == getDTSize r
@@ -1030,7 +1072,7 @@ exprRightParser l@(TExpr lExpr lDt) = do
                         | op `elem` [BitShiftLeft, BitShiftRight] = lDt
                         | otherwise = DTInternal TInt
                   exprRightParser $ (`cvtTypedExpr` dt) $ TExpr
-                    (Binary op (foldToConstExpr (cvtTypedExpr l cType)) (foldToConstExpr (cvtTypedExpr rExpr cType))) cType
+                    (Binary op (foldToConstExpr (cvtTypedExpr l cType)) (foldToConstExpr (cvtTypedExpr rExpr cType))) dt
     else pure l
 
 intOperandParser :: ParsecT String u IO TypedExpr
