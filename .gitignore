@@ -5,3 +5,4 @@ dist-newstyle/*
 test.c
 src/b.c
 *.c
+.hiefiles/*
