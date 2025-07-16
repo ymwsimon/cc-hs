@@ -808,13 +808,21 @@ exprToConstantExpr te@(TExpr e dt) =
   Unary op expr -> if isFloatDT $ tDT expr
     then (`TExpr` dt) $ Constant $ ConstDouble $ unaryOpToHaskellOperatorDouble op $ exprToDouble $ exprToConstantExpr expr
     else (`TExpr` dt) $ constructor $ unaryOpToHaskellOperator op $ exprToInteger $ exprToConstantExpr expr
-  Binary op lExpr rExpr -> if isFloatDT $ tDT lExpr
-    then (`TExpr` dt) $ Constant $ ConstDouble $ binaryOpToHaskellOperatorDouble op
-          (exprToDouble $ exprToConstantExpr lExpr)
-          (exprToDouble $ exprToConstantExpr rExpr)
-    else (`TExpr` dt) $ constructor $ binaryOpToHaskellOperator op
-          (exprToInteger $ exprToConstantExpr lExpr)
-          (exprToInteger $ exprToConstantExpr rExpr)
+  Binary op lExpr rExpr -> case op of
+    LogicAnd -> let lVal = if isFloatDT $ tDT lExpr then (/= 0.0) $ exprToDouble lExpr else (/= 0) $ exprToInteger lExpr
+                    rVal = if isFloatDT $ tDT rExpr then (/= 0.0) $ exprToDouble rExpr else (/= 0) $ exprToInteger rExpr in
+                if lVal && rVal then makeConstantTEIntWithDT 1 $ DTInternal TInt else makeConstantTEIntWithDT 0 $ DTInternal TInt
+    LogicOr -> let lVal = if isFloatDT $ tDT lExpr then (/= 0.0) $ exprToDouble lExpr else (/= 0) $ exprToInteger lExpr
+                   rVal = if isFloatDT $ tDT rExpr then (/= 0.0) $ exprToDouble rExpr else (/= 0) $ exprToInteger rExpr in
+                if lVal || rVal then makeConstantTEIntWithDT 1 $ DTInternal TInt else makeConstantTEIntWithDT 0 $ DTInternal TInt
+    _ ->
+      if isFloatDT $ tDT lExpr
+        then (`TExpr` dt) $ Constant $ ConstDouble $ binaryOpToHaskellOperatorDouble op
+              (exprToDouble $ exprToConstantExpr lExpr)
+              (exprToDouble $ exprToConstantExpr rExpr)
+        else (`TExpr` dt) $ constructor $ binaryOpToHaskellOperator op
+              (exprToInteger $ exprToConstantExpr lExpr)
+              (exprToInteger $ exprToConstantExpr rExpr)
   Conditional c t f -> if isFloatDT $ tDT t
     then (`TExpr` dt) $ Constant $ ConstDouble $
       if isFloatDT $ tDT c

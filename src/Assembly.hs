@@ -19,6 +19,7 @@ import qualified Data.Map.Strict as M
 import qualified Data.Set as S
 import Parser
 import GHC.Float
+import Data.Word (Word64)
 
 type AsmProgramAST = [AsmTopLevel]
 
@@ -336,10 +337,10 @@ irASTToAsmAST m irAst = map
   (AsmFunc . irFuncDefineToAsmFuncDefine m (getFuncList (filter isIRFuncDefine irAst)). irFuncD)
   (filter isIRFuncDefine irAst)
 
-extractFloatConstant :: [AsmTopLevel] -> S.Set Double
-extractFloatConstant = S.fromList . foldl' foldF [-0.0, 9223372036854775808.0]
+extractFloatConstant :: [AsmTopLevel] -> S.Set Word64
+extractFloatConstant = S.fromList . foldl' foldF (map castDoubleToWord64 [-0.0, 9223372036854775808.0])
   where foldF x y = x ++ case y of
-          AsmFunc (AsmFunctionDefine _ _ instrs) -> getFloatConst instrs
+          AsmFunc (AsmFunctionDefine _ _ instrs) -> map castDoubleToWord64 $ getFloatConst instrs
           _ -> []
 
 parametersRegister :: [Operand]
@@ -424,8 +425,8 @@ irFuncCallToAsm name args dst funcList m gVarMap =
               IRConstant _ c ->
                     [Mov QuadWord (Imm c) r,
                       Push r]
-              IRVar _ _ ->
-                [Mov QuadWord(cvtOperand v) r,
+              IRVar dt _ -> let pushSize = if isFloatDT dt then QuadWord else dtToAsmType dt in
+                [Mov pushSize (cvtOperand v) r,
                   Push r]) (reverse $ map fst stackArg)
       callInstrs = if M.member name funcList
           then [Call name] else [Call $ name ++ "@PLT"] in
@@ -773,33 +774,6 @@ fixCmpConstant instr@(Cmp t r (Imm l))
   | otherwise = [Mov t (Imm l) (Register R11), Cmp t r $ Register R11]
 fixCmpConstant instr = [instr]
 
--- fixFloatConstOperand :: AsmInstruction -> [AsmInstruction]
--- fixFloatConstOperand instr = case instr of
---   Mov AsmDouble 
---   _ -> []
-
-  -- Mov {asmMovType :: AsmType, asmMovSrc :: Operand, asmMovDst :: Operand}
-  -- | Movsx {asmMovsxSrc :: Operand, asmMovsxDst :: Operand}
-  -- | MovZeroExtend {asmMovZESrc :: Operand, asmMovZEDst :: Operand}
-  -- | Ret
-  -- | AsmUnary AsmUnaryOp AsmType Operand
-  -- | AsmBinary AsmBinaryOp AsmType Operand Operand
-  -- | AsmIdiv AsmType Operand
-  -- | AsmDiv AsmType Operand
-  -- | Cdq AsmType
-  -- | AllocateStack Int
-  -- | Cmp AsmType Operand Operand
-  -- | AsmJmp {jumpIdentifier :: String}
-  -- | JmpCC {cond :: CondCode, jumpCCIdentifier :: String}
-  -- | SetCC {cond :: CondCode, setCCDst :: Operand}
-  -- | AsmLabel {labelIdentifier :: String}
-  -- | DeallocateStack Int
-  -- | Push Operand
-  -- | Call String
-  -- | Cvttsd2si AsmType Operand Operand
-  -- | Cvtsi2sd AsmType Operand Operand
-
-
 regQWordMap :: M.Map Reg Reg
 regQWordMap = M.fromList $ zip (enumFromTo AL R12)
   [RAX, RAX, RAX, RAX,
@@ -980,6 +954,6 @@ asmStaticConstDefineToStr (AsmStaticConstantDefine name constAlign initVal) =
     ".L_" ++ name ++ ":",
     tabulate [".quad " ++ doubleValToLabel (staticInitToDouble initVal) ++ " #" ++ show (staticInitToDouble initVal)]]
 
-floatConstantSetToAsmConst :: S.Set Double -> [AsmStaticConstantDefine]
-floatConstantSetToAsmConst sd = map cvt $ S.toList sd
-  where cvt d = AsmStaticConstantDefine (doubleValToLabel d) 8 $ DoubleInit $ ConstDouble d
+floatConstantSetToAsmConst :: S.Set Word64 -> [AsmStaticConstantDefine]
+floatConstantSetToAsmConst sw = map cvt $ S.toList sw
+  where cvt w = AsmStaticConstantDefine (show w) 8 $ DoubleInit $ ConstDouble $ castWord64ToDouble w

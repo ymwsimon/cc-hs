@@ -33,7 +33,8 @@ data Args = Args
     doLex :: Bool,
     doParse :: Bool,
     codegen :: Bool,
-    objOnly :: Bool
+    objOnly :: Bool,
+    library :: [String]
   }
   deriving (Show, Eq)
 
@@ -44,6 +45,7 @@ argsParser = Args
   <*> O.switch (O.long "parse")
   <*> O.switch (O.long "codegen")
   <*> O.switch (O.short 'c')
+  <*> O.many (O.strOption (O.short 'l'))
 
 outAsmFileName :: String -> String
 outAsmFileName fileName
@@ -90,9 +92,10 @@ parseOkAct args path (m, parseOk) = do
         print "m-----------------m"
         print $ convertCASTToAsm varOnlyGlobalMap $ updateGotoLabel parseOk labelMap
         writeFile (outAsmFileName path) converted
-        (_, _, _, assemblerPid) <- if objOnly args
-          then createProcess $ proc "cc" [outAsmFileName path, "-c", "-o", outObjFileName path]
-          else createProcess $ proc "cc" [outAsmFileName path, "-o", outExeFileName path]
+        (_, _, _, assemblerPid) <- let libs = map ("-l" ++) $ library args in
+          if objOnly args
+            then createProcess $ proc "cc" $ [outAsmFileName path, "-c", "-o", outObjFileName path] ++ libs
+            else createProcess $ proc "cc" $ [outAsmFileName path, "-o", outExeFileName path] ++ libs
         assemblerEC <- waitForProcess assemblerPid
         if assemblerEC == ExitSuccess
           then putStrLn converted >> pure (Right updatedLabel)
@@ -140,3 +143,5 @@ printArgs args = do
   print $ doLex args
   print $ doParse args
   print $ codegen args
+  print $ objOnly args
+  print $ library args
