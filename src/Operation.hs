@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:50:42 by mayeung           #+#    #+#             --
---   Updated: 2025/07/15 13:57:42 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/16 12:31:49 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -74,8 +74,8 @@ binaryOpToHaskellOperator op = case op of
   BitXor -> xor
   BitShiftLeft -> (\i n -> shiftL i (fromIntegral n))
   BitShiftRight -> (\i n -> shiftR i (fromIntegral n))
-  LogicAnd -> (\f s -> if popCount f == 0 || popCount s == 0 then 0 else 1)
-  LogicOr -> (\f s -> if popCount f /= 0 || popCount s /= 0 then 1 else 0)
+  LogicAnd -> (\f s -> if f == 0 || s == 0 then 0 else 1)
+  LogicOr -> (\f s -> if f /= 0 || s /= 0 then 1 else 0)
   EqualRelation -> (\l r -> if l == r then 1 else 0)
   NotEqualRelation -> (\l r -> if l /= r then 1 else 0)
   LessThanRelation -> (\l r -> if l < r then 1 else 0)
@@ -90,6 +90,8 @@ binaryOpToHaskellOperatorDouble op = case op of
   Minus -> (-)
   Multiply -> (*)
   Division -> (/)
+  LogicAnd -> (\f s -> if f == 0 || s == 0 then 0 else 1)
+  LogicOr -> (\f s -> if f /= 0 || s /= 0 then 1 else 0)
   EqualRelation -> (\l r -> if l == r then 1 else 0)
   NotEqualRelation -> (\l r -> if l /= r then 1 else 0)
   LessThanRelation -> (\l r -> if l < r then 1 else 0)

@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/07/16 00:30:51 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/16 13:04:35 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -419,13 +419,13 @@ irFuncCallToAsm name args dst funcList m gVarMap =
         map (\(v, r) -> Mov (dtToAsmType $ irValToDT v) (cvtOperand v) (Register r))
           regArg
       copyStackArgsInstr = concatMap (\v ->
-        let r = if isFloatDT (irValToDT v) then Register XMM0 else Register R10 in
+        let r = Register R10 in
             case v of
               IRConstant _ c ->
                     [Mov QuadWord (Imm c) r,
                       Push r]
-              IRVar t _ ->
-                [Mov (dtToAsmType t)(cvtOperand v) r,
+              IRVar _ _ ->
+                [Mov QuadWord(cvtOperand v) r,
                   Push r]) (reverse $ map fst stackArg)
       callInstrs = if M.member name funcList
           then [Call name] else [Call $ name ++ "@PLT"] in
@@ -515,7 +515,7 @@ irInstructionToAsmInstruction instr m funcList gVarMap = case instr of
     else [Cmp (dtToAsmType $ irValToDT valToCheck) (Imm $ ConstInt 0) (cvtOperand valToCheck), JmpCC E jmpTarget]
   IRJumpIfNotZero valToCheck jmpTarget -> if irValToDT valToCheck == DTInternal TDouble
     then [AsmBinary AsmBitXor AsmDouble (Register XMM0) (Register XMM0),
-      Cmp AsmDouble (cvtOperand valToCheck) (Register XMM0), JmpCC E jmpTarget]
+      Cmp AsmDouble (cvtOperand valToCheck) (Register XMM0), JmpCC NE jmpTarget]
     else [Cmp (dtToAsmType $ irValToDT valToCheck) (Imm $ ConstInt 0) (cvtOperand valToCheck), JmpCC NE jmpTarget]
   IRBinary {} -> irBinaryInstrToAsmInstr instr m gVarMap
   IRJump target -> [AsmJmp target]
@@ -709,7 +709,6 @@ resolveDoubleStackOperand instr = case instr of
       where binF
               | t == AsmDouble && isMemoryAddr i && isMemoryAddr j
                 = [Mov t j (Register XMM0),
-                    -- AsmBinary op t (Register XMM0) j]
                   AsmBinary op t i (Register XMM0),
                   Mov t (Register XMM0) j]
               | isMemoryAddr i && isMemoryAddr j || t == QuadWord && isMemoryAddr j
@@ -718,7 +717,7 @@ resolveDoubleStackOperand instr = case instr of
               | otherwise = [instrs]
   instrs@(Cmp t i j) -> cmpF
       where cmpF
-              | t == AsmDouble
+              | t == AsmDouble && isMemoryAddr i && isMemoryAddr j
                 = [Mov t i (Register XMM0),
                     Mov t j (Register XMM1),
                     Cmp t (Register XMM0) (Register XMM1)]

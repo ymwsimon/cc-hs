@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/07/15 22:54:45 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/16 10:47:14 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -238,13 +238,16 @@ unaryOperationToIRs op dt uExpr
   | op `elem` [PostDecrement, PostIncrement] = do
     varId <- gets $ IRVar dt . show . fst
     modify bumpOneToVarId
-    (oldIRs, irVal) <- exprToIRs $ TExpr
-      (Binary (postPrefixToBin op) uExpr (TExpr (Constant $ ConstInt 1) (DTInternal TInt))) $ tDT uExpr
+    (oldIRs, irVal) <-
+      let c = if isFloatDT dt then makeConstantTEFloatWithDT 1.0 dt else makeConstantTEIntWithDT 1 dt in
+      exprToIRs $ TExpr
+        (Binary (postPrefixToBin op) uExpr c) $ tDT uExpr
     (varIRs, irVar) <- exprToIRs uExpr
     pure (concat [[IRCopy irVar varId], oldIRs, varIRs, [IRCopy irVal irVar]], varId)
   | op `elem` [PreDecrement, PreIncrement] = do
-    (oldIRs, irVal) <- exprToIRs $ TExpr 
-      (Binary (postPrefixToBin op) uExpr (TExpr (Constant $ ConstInt 1) (DTInternal TInt))) $ tDT uExpr
+    (oldIRs, irVal) <- let c = if isFloatDT dt then makeConstantTEFloatWithDT 1.0 dt else makeConstantTEIntWithDT 1 dt in
+      exprToIRs $ TExpr 
+        (Binary (postPrefixToBin op) uExpr c) $ tDT uExpr
     (varIRs, irVar) <- exprToIRs uExpr
     pure (oldIRs ++ varIRs ++ [IRCopy irVal irVar], irVal)
   | otherwise = do

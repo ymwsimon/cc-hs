@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/15 21:06:33 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/16 12:50:40 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -902,6 +902,21 @@ unaryExprParser = do
     unexpected "Need lvalue for prefix operation"
   let dt = if uOp == NotRelation then DTInternal TInt else tDT expr
   foldToConstExpr (TExpr (Unary uOp expr) dt) <$ modifyState (setPrecedence p)
+
+makeConstantTEIntWithDT :: Integer -> DT -> TypedExpr
+makeConstantTEIntWithDT n dt = case dt of
+  DTInternal TShort -> TExpr (Constant $ ConstShort n) dt
+  DTInternal TUShort -> TExpr (Constant $ ConstUShort n) dt
+  DTInternal TInt -> TExpr (Constant $ ConstInt n) dt
+  DTInternal TUInt -> TExpr (Constant $ ConstUInt n) dt
+  DTInternal TLong -> TExpr (Constant $ ConstLong n) dt
+  DTInternal TULong -> TExpr (Constant $ ConstULong n) dt
+  _ -> undefined
+
+makeConstantTEFloatWithDT :: Double -> DT -> TypedExpr
+makeConstantTEFloatWithDT n dt = case dt of
+  DTInternal TDouble -> TExpr (Constant $ ConstDouble n) dt
+  _ -> undefined
 
 getDTSize :: DT -> Int
 getDTSize dt = case dt of
