@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/17 15:32:12 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/17 15:46:32 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -585,9 +585,9 @@ significandParser = do
           if null ds
             then pure "0"
             else pure ds
-        dotAndDigit = ((++) <$> (pure <$> dotLex) <*> aferDotDigit) <|> pure ""
+        dotAndDigit = (++) . pure <$> dotLex <*> aferDotDigit <|> pure ""
         withLeadingDigit = (++) <$> beforeDotDigit <*> dotAndDigit
-        withoutLeadingDigit = (++) <$> (("0" ++) . pure <$> dotLex) <*> many1 digit
+        withoutLeadingDigit = (++) . ("0" ++) . pure <$> dotLex <*> many1 digit
 
 exponentParser :: ParsecT String u IO String
 exponentParser = do
