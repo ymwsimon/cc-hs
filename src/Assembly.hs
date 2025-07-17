@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/07/16 13:04:35 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/17 13:39:22 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -100,6 +100,7 @@ data CondCode =
   | E | NE
   | G | GE
   | L | LE
+  | P | NP
   deriving Eq
 
 data Reg =
@@ -184,6 +185,8 @@ instance Show CondCode where
   show GE = "ge"
   show L = "l"
   show LE = "le"
+  show P = "p"
+  show NP = "np"
 
 instance Show Reg where
   show AL = "al"
@@ -323,8 +326,6 @@ asmTypeToMemSize t = case t of
 
 doubleValToLabel :: Double -> String
 doubleValToLabel = show . castDoubleToWord64
-  -- | d < 0 || isNegativeZero d = "dm" ++ showEFloat Nothing (negate d) ""
-  -- | otherwise = "d" ++ showEFloat Nothing d ""
 
 irStaticVarToAsmStaticVarDefine :: IRTopLevel -> AsmStaticVarDefine
 irStaticVarToAsmStaticVarDefine irD = case irD of
@@ -502,7 +503,10 @@ irInstructionToAsmInstruction instr m funcList gVarMap = case instr of
               [AsmBinary AsmBitXor AsmDouble (Register XMM0) (Register XMM0),
                 Cmp AsmDouble (cvtOperand s) (Register XMM0),
                 Mov (dtToAsmType $ irValToDT d) (Imm $ ConstInt 0) (cvtOperand d),
-                SetCC E $ cvtOperand d]
+                SetCC E $ cvtOperand d,
+                Mov (dtToAsmType $ irValToDT d) (Imm $ ConstInt 0) (Register R11),
+                SetCC NP $ Register R11B,
+                AsmBinary AsmBitAnd (dtToAsmType $ irValToDT d) (Register R11) (cvtOperand d)]
             | op == NotRelation =
               [Cmp (dtToAsmType $ irValToDT s) (Imm $ ConstInt 0) (cvtOperand s),
                 Mov (dtToAsmType $ irValToDT d) (Imm $ ConstInt 0) (cvtOperand d),
@@ -510,14 +514,18 @@ irInstructionToAsmInstruction instr m funcList gVarMap = case instr of
             | otherwise =
               [Mov (dtToAsmType $ irValToDT s) (cvtOperand s) (cvtOperand d),
                 AsmUnary (irUnaryOpToAsmOp op) (dtToAsmType $ irValToDT s) (cvtOperand d)]
-  IRJumpIfZero valToCheck jmpTarget -> if irValToDT valToCheck == DTInternal TDouble
+  IRJumpIfZero valToCheck jmpTarget notZero -> if irValToDT valToCheck == DTInternal TDouble
     then [AsmBinary AsmBitXor AsmDouble (Register XMM0) (Register XMM0),
-      Cmp AsmDouble (cvtOperand valToCheck) (Register XMM0), JmpCC E jmpTarget]
+      Cmp AsmDouble (cvtOperand valToCheck) (Register XMM0),
+      JmpCC P notZero,
+      JmpCC E jmpTarget]
     else [Cmp (dtToAsmType $ irValToDT valToCheck) (Imm $ ConstInt 0) (cvtOperand valToCheck), JmpCC E jmpTarget]
   IRJumpIfNotZero valToCheck jmpTarget -> if irValToDT valToCheck == DTInternal TDouble
     then [AsmBinary AsmBitXor AsmDouble (Register XMM0) (Register XMM0),
       Cmp AsmDouble (cvtOperand valToCheck) (Register XMM0), JmpCC NE jmpTarget]
     else [Cmp (dtToAsmType $ irValToDT valToCheck) (Imm $ ConstInt 0) (cvtOperand valToCheck), JmpCC NE jmpTarget]
+  IRJumpIfP jmpTarget -> [JmpCC P jmpTarget]
+  IRJumpIfNP jmpTarget -> [JmpCC NP jmpTarget]
   IRBinary {} -> irBinaryInstrToAsmInstr instr m gVarMap
   IRJump target -> [AsmJmp target]
   IRLabel target -> [AsmLabel target]
@@ -592,9 +600,18 @@ buildAsmIntrsForIRRelationOp instr m gVarMap =
         IRBinary LessThanRelation valL valR d -> (valL, valR, d, op (irValToDT valL) (irValToDT valR) L B)
         IRBinary LessEqualRelation valL valR d -> (valL, valR, d, op (irValToDT valL) (irValToDT valR) LE BE)
         _ -> undefined in
-  [Cmp (dtToAsmType $ irValToDT vL) (cvtOperand vR) (cvtOperand vL),
-    Mov QuadWord (Imm $ ConstInt 0) $ cvtOperand setDst,
-    SetCC condCode $ cvtOperand setDst]
+  if isFloatDT $ irValToDT vL
+    then
+      [Cmp (dtToAsmType $ irValToDT vL) (cvtOperand vR) (cvtOperand vL),
+        Mov QuadWord (Imm $ ConstInt 0) (Register R11),
+        SetCC (if condCode == NE then P else NP) (Register R11B),
+        Mov QuadWord (Imm $ ConstInt 0) $ cvtOperand setDst,
+        SetCC condCode $ cvtOperand setDst,
+        AsmBinary (if condCode == NE then AsmBitOr else AsmBitAnd) QuadWord (Register R11) (cvtOperand setDst)]
+    else
+      [Cmp (dtToAsmType $ irValToDT vL) (cvtOperand vR) (cvtOperand vL),
+        Mov QuadWord (Imm $ ConstInt 0) $ cvtOperand setDst,
+        SetCC condCode $ cvtOperand setDst]
   where cvtOperand = irOperandToAsmOperand m gVarMap
 
 noExecutableStackString :: String
@@ -605,8 +622,8 @@ convertAsmTempVarToStackAddr :: [AsmInstruction] -> [AsmInstruction]
 convertAsmTempVarToStackAddr = map convertInstr
   where convertInstr instr = case instr of
           Mov t s d -> Mov t (convertOperand s) (convertOperand d)
-          AsmUnary t op d -> AsmUnary t op $ convertOperand d
-          AsmBinary t op r l -> AsmBinary t op (convertOperand r) (convertOperand l)
+          AsmUnary op t d -> AsmUnary op t $ convertOperand d
+          AsmBinary op t r l -> AsmBinary op t (convertOperand r) (convertOperand l)
           AsmIdiv t operand -> AsmIdiv t $ convertOperand operand
           AsmDiv t operand -> AsmDiv t $ convertOperand operand
           Cmp t r l -> Cmp t (convertOperand r) (convertOperand l)

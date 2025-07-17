@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/16 12:50:40 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/17 15:32:12 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -809,12 +809,26 @@ exprToConstantExpr te@(TExpr e dt) =
     then (`TExpr` dt) $ Constant $ ConstDouble $ unaryOpToHaskellOperatorDouble op $ exprToDouble $ exprToConstantExpr expr
     else (`TExpr` dt) $ constructor $ unaryOpToHaskellOperator op $ exprToInteger $ exprToConstantExpr expr
   Binary op lExpr rExpr -> case op of
-    LogicAnd -> let lVal = if isFloatDT $ tDT lExpr then (/= 0.0) $ exprToDouble lExpr else (/= 0) $ exprToInteger lExpr
-                    rVal = if isFloatDT $ tDT rExpr then (/= 0.0) $ exprToDouble rExpr else (/= 0) $ exprToInteger rExpr in
-                if lVal && rVal then makeConstantTEIntWithDT 1 $ DTInternal TInt else makeConstantTEIntWithDT 0 $ DTInternal TInt
-    LogicOr -> let lVal = if isFloatDT $ tDT lExpr then (/= 0.0) $ exprToDouble lExpr else (/= 0) $ exprToInteger lExpr
-                   rVal = if isFloatDT $ tDT rExpr then (/= 0.0) $ exprToDouble rExpr else (/= 0) $ exprToInteger rExpr in
-                if lVal || rVal then makeConstantTEIntWithDT 1 $ DTInternal TInt else makeConstantTEIntWithDT 0 $ DTInternal TInt
+    LogicAnd -> relationToIntConst (&&) lExpr rExpr
+    LogicOr -> relationToIntConst (||) lExpr rExpr
+    EqualRelation -> if isFloatDT $ tDT lExpr
+      then floatComparsionToIntConst (==) lExpr rExpr
+      else intComparsionToIntConst (==) lExpr rExpr
+    NotEqualRelation -> if isFloatDT $ tDT lExpr
+      then floatComparsionToIntConst (/=) lExpr rExpr
+      else intComparsionToIntConst (/=) lExpr rExpr
+    GreaterEqualRelation -> if isFloatDT $ tDT lExpr
+      then floatComparsionToIntConst (>=) lExpr rExpr
+      else intComparsionToIntConst (>=) lExpr rExpr
+    GreaterThanRelation ->  if isFloatDT $ tDT lExpr
+      then floatComparsionToIntConst (>) lExpr rExpr
+      else intComparsionToIntConst (>) lExpr rExpr
+    LessEqualRelation -> if isFloatDT $ tDT lExpr
+      then floatComparsionToIntConst (<=) lExpr rExpr
+      else intComparsionToIntConst (<=) lExpr rExpr
+    LessThanRelation -> if isFloatDT $ tDT lExpr
+      then floatComparsionToIntConst (<) lExpr rExpr
+      else intComparsionToIntConst (<) lExpr rExpr
     _ ->
       if isFloatDT $ tDT lExpr
         then (`TExpr` dt) $ Constant $ ConstDouble $ binaryOpToHaskellOperatorDouble op
@@ -834,6 +848,21 @@ exprToConstantExpr te@(TExpr e dt) =
       if exprToInteger (exprToConstantExpr c) /= 0 then
           exprToInteger $ exprToConstantExpr t else exprToInteger $ exprToConstantExpr f
   _ -> undefined
+  where relationToIntConst op lE rE =
+          let lVal = if isFloatDT $ tDT lE then (/= 0.0) $ exprToDouble lE else (/= 0) $ exprToInteger lE
+              rVal = if isFloatDT $ tDT rE then (/= 0.0) $ exprToDouble rE else (/= 0) $ exprToInteger rE in
+          if lVal `op` rVal
+            then makeConstantTEIntWithDT 1 $ DTInternal TInt
+            else makeConstantTEIntWithDT 0 $ DTInternal TInt
+        intComparsionToIntConst op lE rE =
+          if exprToInteger lE `op` exprToInteger rE
+            then makeConstantTEIntWithDT 1 $ DTInternal TInt
+            else makeConstantTEIntWithDT 0 $ DTInternal TInt
+        floatComparsionToIntConst op lE rE =
+          if exprToDouble lE `op` exprToDouble rE
+            then makeConstantTEIntWithDT 1 $ DTInternal TInt
+            else makeConstantTEIntWithDT 0 $ DTInternal TInt
+
 
 foldToConstExpr :: TypedExpr -> TypedExpr
 -- foldToConstExpr te = te

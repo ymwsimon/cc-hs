@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/07/16 10:47:14 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/17 15:35:46 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -55,9 +55,11 @@ data IRInstruction =
   | IRBinary {irBinaryOp :: BinaryOp, irLOperand :: IRVal,
       irROperand :: IRVal, irBinaryDst :: IRVal}
   | IRCopy {irCopySrc :: IRVal, irCopyDst :: IRVal}
-  | IRJump {irJumpTarget :: String}
-  | IRJumpIfZero {irJumpZVal :: IRVal, irJumpZeroTarget :: String}
-  | IRJumpIfNotZero {irJumpNZVal :: IRVal, irJumpNotZeroTarget :: String}
+  | IRJump String
+  | IRJumpIfZero IRVal String String
+  | IRJumpIfNotZero IRVal String
+  | IRJumpIfP String
+  | IRJumpIfNP String
   | IRLabel {labelName :: String}
   | IRFuncCall {irFName :: String, arg :: [IRVal], irFCallDst :: IRVal}
   deriving (Show, Eq)
@@ -217,16 +219,22 @@ exprToIfIRs :: TypedExpr -> Statement -> Maybe Statement -> State (Int, Int) [IR
 exprToIfIRs condition tStat fStat = do
   (cIRs, cValIR) <- exprToIRs condition
   tStatIRs <- cStatmentToIRInstructions $ S tStat
+  tLabel <- if isFloatDT $ tDT condition
+    then gets (("ifTrue" ++) . show . snd) <* modify bumpOneToLabelId
+    else pure ""
   (fStatIRs, fLabel) <- do
     lId <- gets (show . snd) <* modify bumpOneToLabelId
     case fStat of
-      Just fs -> do 
+      Just fs -> do
         fsIRs <- cStatmentToIRInstructions $ S fs
         dLabelId <- gets (show . snd) <* modify bumpOneToLabelId
         pure ([IRJump $ "ifSkip" ++ dLabelId, IRLabel ("ifFalse" ++ lId)] ++
           fsIRs ++ [IRLabel $ "ifSkip" ++ dLabelId], "ifFalse" ++ lId)
       _ -> pure ([IRLabel ("ifSkip" ++ lId)], "ifSkip" ++ lId)
-  pure $ cIRs ++ [IRJumpIfZero cValIR fLabel] ++ tStatIRs ++ fStatIRs
+  pure $ cIRs ++
+    [IRJumpIfZero cValIR fLabel tLabel] ++
+    [IRLabel tLabel | tLabel /= ""] ++
+    tStatIRs ++ fStatIRs
 
 postPrefixToBin :: UnaryOp -> BinaryOp
 postPrefixToBin op
@@ -256,38 +264,40 @@ unaryOperationToIRs op dt uExpr
       modify bumpOneToVarId
       pure (oldIRs ++ [IRUnary op irVal $ IRVar dt $ show varId], IRVar dt $ show varId)
 
-genJumpIRsIfNeeded :: BinaryOp -> (Int, Int) -> IRVal -> State (Int, Int) [IRInstruction]
-genJumpIRsIfNeeded op lId irVal = case op of
+genJumpIRsIfNeeded :: BinaryOp -> (Int, Int, Int) -> IRVal -> State (Int, Int) [IRInstruction]
+genJumpIRsIfNeeded op (fId, tId, _) irVal = case op of
     LogicAnd ->
-      pure [IRJumpIfZero irVal $ "false_label" ++ show (fst lId)]
+      pure [IRJumpIfZero irVal ("false_label" ++ show fId) ("true_label" ++ show tId)]
     LogicOr ->
-      pure [IRJumpIfNotZero irVal $ "false_label" ++ show (fst lId)]
+      pure [IRJumpIfNotZero irVal $ "false_label" ++ show fId]
     _ -> pure []
 
-genJumpIRsAndLabel :: Int -> (Int, Int) -> IRVal -> IRVal -> State (Int, Int) [IRInstruction]
-genJumpIRsAndLabel varId ids fstVal sndVal = do
+genJumpIRsAndLabel :: Int -> (Int, Int, Int) -> IRVal -> IRVal -> State (Int, Int) [IRInstruction]
+genJumpIRsAndLabel varId (fId, _, eId) fstVal sndVal = do
   pure [IRCopy fstVal $ IRVar (DTInternal TInt) $ show varId,
-    IRJump $ "end_label" ++ show (snd ids),
-    IRLabel $ "false_label" ++ show (fst ids),
+    IRJump $ "end_label" ++ show eId,
+    IRLabel $ "false_label" ++ show fId,
     IRCopy sndVal $ IRVar (DTInternal TInt) $ show varId,
-    IRLabel $ "end_label" ++ show (snd ids)]
+    IRLabel $ "end_label" ++ show eId]
 
-genLabelIfNeeded :: BinaryOp -> State (Int, Int) (Int, Int)
+genLabelIfNeeded :: BinaryOp -> State (Int, Int) (Int, Int, Int)
 genLabelIfNeeded op =
   let getLabels = do
-          lId <- gets snd
+          fId <- gets snd
+          modify bumpOneToLabelId
+          tId <- gets snd
           modify bumpOneToLabelId
           endLabelId <- gets snd
           modify bumpOneToLabelId
-          pure (lId, endLabelId) in
+          pure (fId, tId, endLabelId) in
   case op of
     LogicAnd -> getLabels
     LogicOr -> getLabels
-    _ -> pure (-1, -1)
+    _ -> pure (-1, -1, -1)
 
 binaryOperationToIRs :: BinaryOp -> DT -> TypedExpr -> TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
 binaryOperationToIRs op dt lExpr rExpr = do
-  ids <- genLabelIfNeeded op
+  ids@(_, tId, _) <- genLabelIfNeeded op
   (irsFromLExpr, irValFromLExpr) <- exprToIRs lExpr
   lExprCondJumpIRs <- genJumpIRsIfNeeded op ids irValFromLExpr
   (irsFromRExpr, irValFromRExpr) <- exprToIRs rExpr
@@ -298,8 +308,8 @@ binaryOperationToIRs op dt lExpr rExpr = do
     let trueVal = IRConstant (DTInternal TInt) $ ConstInt 1
         falseVal = IRConstant (DTInternal TInt) $ ConstInt 0 in
       case op of
-        LogicAnd -> genJumpIRsAndLabel varId ids trueVal falseVal
-        LogicOr -> genJumpIRsAndLabel varId ids falseVal trueVal
+        LogicAnd -> (IRLabel ("true_label" ++ show tId) :) <$> genJumpIRsAndLabel varId ids trueVal falseVal
+        LogicOr -> (IRLabel ("true_label" ++ show tId) :) <$> genJumpIRsAndLabel varId ids falseVal trueVal
         _ -> pure [IRBinary op irValFromLExpr irValFromRExpr $ IRVar dt $ show varId]
   pure (concat
     [irsFromLExpr, lExprCondJumpIRs, irsFromRExpr, rExprCondJumpIRs, resultIRVal],
@@ -320,25 +330,39 @@ conditionToIRs dt condition tExpr fExpr = do
   (tIRs, tValIR) <- exprToIRs tExpr
   (fIRs, fValIR) <- exprToIRs fExpr
   resValIR <- gets (IRVar dt . show . fst) <* modify bumpOneToVarId
+  tLabel <- if isFloatDT $ tDT condition
+    then gets (("condT" ++) . show . snd) <* modify bumpOneToLabelId
+    else pure ""
   fLabel <- gets (show . snd) <* modify bumpOneToLabelId
   dLabel <- gets (show . snd) <* modify bumpOneToLabelId
-  pure (cIRs ++ [IRJumpIfZero cValIR ("condF" ++ fLabel)]
-    ++ tIRs ++ [IRCopy tValIR resValIR, IRJump $ "condD" ++ dLabel , IRLabel $ "condF" ++ fLabel]
-    ++ fIRs ++ [IRCopy fValIR resValIR, IRLabel $ "condD" ++ dLabel], resValIR)
+  pure (cIRs ++
+    [IRJumpIfZero cValIR ("condF" ++ fLabel) tLabel] ++
+    [IRLabel tLabel | tLabel /= ""] ++
+    tIRs ++ [IRCopy tValIR resValIR, IRJump $ "condD" ++ dLabel , IRLabel $ "condF" ++ fLabel] ++
+    fIRs ++ [IRCopy fValIR resValIR, IRLabel $ "condD" ++ dLabel], resValIR)
 
 doWhileToIRs :: Statement -> TypedExpr -> (String, String, String) -> State (Int, Int) [IRInstruction]
 doWhileToIRs bl condition (sLabel, cLabel, dLabel) = do
   blIRs <- cStatmentToIRInstructions $ S bl
   (exprIRs, exprIRVal) <- exprToIRs condition
-  pure $ IRLabel sLabel : blIRs ++ [IRLabel cLabel] ++
-    exprIRs ++ [IRJumpIfNotZero exprIRVal sLabel, IRLabel dLabel]
+  tLabel <- if isFloatDT $ tDT condition
+    then gets (pure . show . snd) <* modify bumpOneToLabelId
+    else pure []
+  pure $ IRLabel sLabel : [IRLabel $ "ifTrue" ++ (!! 0) tLabel | not (null tLabel)] ++
+    blIRs ++ [IRLabel cLabel] ++
+    exprIRs ++ [IRJumpIfP $ "ifTrue" ++ (!! 0) tLabel | not (null tLabel)] ++
+    [IRJumpIfNotZero exprIRVal sLabel, IRLabel dLabel]
 
 whileToIRs :: TypedExpr -> Statement -> (String, String, String) -> State (Int, Int) [IRInstruction]
 whileToIRs condition bl (_, cLabel, dLabel) = do
   (exprIRs, exprIRVal) <- exprToIRs condition
+  tLabel <- if isFloatDT $ tDT condition
+    then gets (("whileTrue" ++) . show . snd) <* modify bumpOneToLabelId
+    else pure ""
   blIRs <- cStatmentToIRInstructions $ S bl
   pure $ IRLabel cLabel : exprIRs ++
-    [IRJumpIfZero exprIRVal dLabel] ++
+    [IRJumpIfZero exprIRVal dLabel tLabel] ++
+    [IRLabel tLabel | tLabel /= ""] ++
     blIRs ++ [IRJump cLabel, IRLabel dLabel]
 
 forInitToIRs :: ForInit -> State (Int, Int) [IRInstruction]
@@ -354,7 +378,12 @@ forToIRs forInit condition post bl (sLabel, cLabel, dLabel) = do
   conditionIRs <- case condition of
     Just c -> do
       (exprIRs, exprIRVal) <- exprToIRs c
-      pure $ IRLabel sLabel : exprIRs ++ [IRJumpIfZero exprIRVal dLabel]
+      tLabel <- if isFloatDT $ tDT c
+        then gets (("forTrue" ++) . show . snd) <* modify bumpOneToLabelId
+        else pure ""
+      pure $ IRLabel sLabel : exprIRs ++
+        [IRJumpIfZero exprIRVal dLabel tLabel] ++
+        [IRLabel tLabel | tLabel /= ""]
     _ -> pure [IRLabel sLabel]
   postIRs <- case post of
     Just p -> do
@@ -458,8 +487,10 @@ extractVarId instr = case instr of
   IRBinary _ l r d -> [getVarId l, getVarId r, getVarId d]
   IRCopy s d -> [getVarId s, getVarId d]
   IRJump _ -> []
-  IRJumpIfZero v _ -> [getVarId v]
+  IRJumpIfZero v _ _ -> [getVarId v]
   IRJumpIfNotZero v _ -> [getVarId v]
+  IRJumpIfP _ -> []
+  IRJumpIfNP _ -> []
   IRLabel _ -> []
   IRFuncCall _ args d -> map getVarId (d : args)
   IRSignExtend s d -> [getVarId s, getVarId d]
