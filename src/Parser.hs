@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/17 15:46:32 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/17 19:57:09 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -55,6 +55,7 @@ data PrimType =
 data DT =
   DTInternal PrimType
   | DTFuncType {argList :: [DT], retType :: DT}
+  | DTPointer DT
   | DTUserDefined String [DT]
   deriving (Show, Eq)
 
@@ -160,6 +161,8 @@ data Expr =
   | Binary BinaryOp TypedExpr TypedExpr
   | Assignment TypedExpr TypedExpr
   | Conditional TypedExpr TypedExpr TypedExpr
+  | Dereference TypedExpr
+  | AddrOf TypedExpr
   deriving (Show, Eq)
 
 data StorageClass =
