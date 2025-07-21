@@ -1741,8 +1741,8 @@ updateVarMapForFuncBlockScope = do
   modifyState (\p -> p {outerScopeIdent = M.union (outerScopeIdent p) (currentScopeIdent p),
     currentScopeIdent = M.empty, currentVarId = if toplvl then 1 else currentVarId p})
 
-addFuncDelclarationIfNeed :: FunTypeInfo -> ParsecT String ParseInfo IO ()
-addFuncDelclarationIfNeed newTypeInfo@(FunTypeInfo _ name _ _) = do
+addFuncDeclarationIfNeed :: FunTypeInfo -> ParsecT String ParseInfo IO ()
+addFuncDeclarationIfNeed newTypeInfo@(FunTypeInfo _ name _ _) = do
   parseInfo <- getState
   unless (M.member name (outerScopeIdent parseInfo) || M.member name (topLevelScopeIdent parseInfo)) $
     modifyState (\p -> p {outerScopeIdent = M.insert name (FuncIdentifier newTypeInfo) (outerScopeIdent p),
@@ -1781,7 +1781,7 @@ functionDeclareParser = do
   aList <- between openPParser closePParser (try argListParser)
   checkForFuncTypeConflict parseInfo $
       FunctionDeclaration name aList (DTFuncType aList rType) Nothing 1 sc
-  addFuncDelclarationIfNeed $ FunTypeInfo (DTFuncType aList rType) name Nothing sc
+  addFuncDeclarationIfNeed $ FunTypeInfo (DTFuncType aList rType) name Nothing sc
   maybeSemiColon <- lookAhead (try semiColParser <|> try openCurParser)
   modifyState (\p -> p {funcReturnType = rType})
   block <- case maybeSemiColon of
