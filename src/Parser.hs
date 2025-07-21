@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/17 19:57:09 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/20 22:08:43 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -54,15 +54,42 @@ data PrimType =
 
 data DT =
   DTInternal PrimType
-  | DTFuncType {argList :: [DT], retType :: DT}
+  | DTFuncType {argList :: [InputArgPair], retType :: DT}
   | DTPointer DT
   | DTUserDefined String [DT]
-  deriving (Show, Eq)
+  deriving Show
 
 data IdentifierType =
   VarIdentifier {vdt :: DT, vn :: IdentifierName, topLv :: Bool,
     varDefine :: Maybe TypedExpr, storeClass :: Maybe StorageClass}
   | FuncIdentifier {fti :: FunTypeInfo}
+  deriving (Show, Eq)
+
+data Declaration =
+  VD VariableDeclaration
+  | FunctionDeclaration
+    {
+      funName :: String,
+      inputArgs :: [InputArgPair],
+      funcType :: DT,
+      funDefine :: Maybe Block,
+      nextVarId :: Int,
+      storageClass :: Maybe StorageClass
+    }
+  deriving (Show, Eq)
+
+data VariableDeclaration =
+  VariableDeclaration DT IdentifierName Bool (Maybe TypedExpr) (Maybe StorageClass)
+  deriving (Show, Eq)
+
+data FunTypeInfo =
+  FunTypeInfo
+  {
+    funType :: DT,
+    fName :: IdentifierName,
+    funBody :: Maybe Block,
+    funcStorageClass :: Maybe StorageClass
+  }
   deriving (Show, Eq)
 
 data ParseInfo = 
@@ -114,33 +141,6 @@ data Statement =
   | Null
   deriving (Show, Eq)
 
-data Declaration =
-  VD VariableDeclaration
-  | FunctionDeclaration
-    {
-      funName :: String,
-      inputArgs :: [InputArgPair],
-      funcType :: DT,
-      funDefine :: Maybe Block,
-      nextVarId :: Int,
-      storageClass :: Maybe StorageClass
-    }
-  deriving (Show, Eq)
-
-data VariableDeclaration =
-  VariableDeclaration DT IdentifierName Bool (Maybe TypedExpr) (Maybe StorageClass)
-  deriving (Show, Eq)
-
-data FunTypeInfo =
-  FunTypeInfo
-  {
-    funType :: DT,
-    fName :: IdentifierName,
-    funBody :: Maybe Block,
-    funcStorageClass :: Maybe StorageClass
-  }
-  deriving (Show, Eq)
-
 data BlockItem =
   S Statement
   | D Declaration
@@ -179,6 +179,14 @@ data NumConst =
   | ConstULong Integer
   | ConstDouble Double
   deriving (Show, Eq)
+
+instance Eq DT where
+ (DTInternal l) == (DTInternal r) = l == r
+ (DTFuncType lArgList lRetType) == (DTFuncType rArgList rRetType) = map dataType lArgList == map dataType rArgList && lRetType == rRetType
+ (DTPointer l) == (DTPointer r) = l == r
+ (DTUserDefined lName lDT) == (DTUserDefined rName rDT) = lName == rName && lDT == rDT
+ _ == _ = False
+
 
 instance Show StorageClass where
   show Static = "static"
@@ -1204,7 +1212,7 @@ functionCallParser = do
   let funcInfo = getFunTypeInfoFromVarMap functionName current outer
   unless (length paraList == length (argList $ funType funcInfo)) $
     unexpected "Function call. Incorrect number of parameters"
-  let convertedParaList = zipWith cvtTypedExpr paraList (argList $ funType funcInfo)
+  let convertedParaList = zipWith cvtTypedExpr paraList (map dataType $ argList $ funType funcInfo)
   pure $ TExpr
     (FunctionCall functionName (map foldToConstExpr convertedParaList))
     (retType $ funType $ fti $ outer M.! functionName)
@@ -1772,8 +1780,8 @@ functionDeclareParser = do
   toplvl <- topLevel <$> getState
   aList <- between openPParser closePParser (try argListParser)
   checkForFuncTypeConflict parseInfo $
-      FunctionDeclaration name aList (DTFuncType (map dataType aList) rType) Nothing 1 sc
-  addFuncDelclarationIfNeed $ FunTypeInfo (DTFuncType (map dataType aList) rType) name Nothing sc
+      FunctionDeclaration name aList (DTFuncType aList rType) Nothing 1 sc
+  addFuncDelclarationIfNeed $ FunTypeInfo (DTFuncType aList rType) name Nothing sc
   maybeSemiColon <- lookAhead (try semiColParser <|> try openCurParser)
   modifyState (\p -> p {funcReturnType = rType})
   block <- case maybeSemiColon of
@@ -1792,8 +1800,8 @@ functionDeclareParser = do
                 funcStorageClass (fti (topScope M.! name)) /= Just Extern
       then funcStorageClass $ fti $ topScope M.! name
       else sc
-  updateFuncInfoIfNeed name $ FuncIdentifier $ FunTypeInfo (DTFuncType (map dataType aList) rType) name block newSc
-  pure $ FunctionDeclaration name aList (DTFuncType (map dataType aList) rType) block nVarId newSc
+  updateFuncInfoIfNeed name $ FuncIdentifier $ FunTypeInfo (DTFuncType aList rType) name block newSc
+  pure $ FunctionDeclaration name aList (DTFuncType aList rType) block nVarId newSc
 
 declareParser :: ParsecT String ParseInfo IO Declaration
 declareParser = do
