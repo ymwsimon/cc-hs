@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/22 11:06:24 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/22 20:38:06 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -497,7 +497,7 @@ declarationSpecifierStrList = typeSpecifierStrList ++ storageClassSpecifierStrLi
 
 declarationSpecifierParser :: Bool -> ([String], [String]) -> ParsecT String ParseInfo IO (Maybe StorageClass, DT)
 declarationSpecifierParser isFunc (toks, prohibitedList) = do
-  specifier <- lookAhead $ optionMaybe symbolExtract
+  specifier <- lookAhead $ optionMaybe $ try symbolExtract
   when (isJust specifier && fromJust specifier `elem` declarationSpecifierStrList
     && fromJust specifier `elem` prohibitedList) $
     unexpected $ fromJust specifier
@@ -1272,11 +1272,14 @@ argPairParser = do
 
 argListParser :: ParsecT String ParseInfo IO [(DT, IdentifierName)]
 argListParser = do
+  void openPParser
   res <- lookAhead (try closePParser <|> try symbolExtract) <|> pure ""
-  case res of
+  r <- case res of
     "void" -> keyVoidParser >> pure []
     ")" -> pure []
     _ -> sepBy argPairParser $ try commaParser
+  void closePParser
+  pure r
 
 topLevelVarStorageClassCheck :: Maybe StorageClass -> Maybe StorageClass -> Bool
 topLevelVarStorageClassCheck (Just Static) (Just Static) = True
@@ -1317,8 +1320,9 @@ getInitialiser parser = do
 
 topLevelVarDeclarationParser :: ParsecT String ParseInfo IO VarTypeInfo
 topLevelVarDeclarationParser = do
-  (sc, varType) <- declarationSpecifierParser False ([], [])
-  vName <- identifierParser <?> "Valid identifier"
+  (sc, baseType) <- declarationSpecifierParser False ([], [])
+  (vName, declarator) <- declaratorParser ""
+  let varType = declarator baseType
   topIdentMap <- topLevelScopeIdent <$> getState
   when (M.member vName topIdentMap && isFuncIdentifier (topIdentMap M.! vName)) $
     unexpected $ vName ++ ". Already defined"
@@ -1385,10 +1389,56 @@ localStaticVarHandle varType sc vName = do
     currentScopeIdent = newLocalVarMap, topLevelScopeIdent = newGlobalVarMap}
   pure $ VarTypeInfo newVarName varType initialiser sc $ topLevel parseInfo
 
+funcDeclaratorArgListParser :: ParsecT String ParseInfo IO (DT -> DT)
+funcDeclaratorArgListParser = DTFuncType <$> argListParser
+
+declaratorParser :: IdentifierName -> ParsecT String ParseInfo IO (IdentifierName, DT -> DT)
+declaratorParser identiferName = do
+  nextChar <- lookAhead $ try (spaces >> anyChar)
+  case nextChar of
+    '(' -> do
+      void openPParser
+      (newIdentName, innerType) <- declaratorParser identiferName
+      void closePParser
+      afterClosePChar <- lookAhead $ try (spaces >> anyChar)
+      maybeFuncType <- case afterClosePChar of
+        '(' -> do
+          parseInfo <- getState
+          funcDeclaratorArgListParser <* putState parseInfo
+        _ -> pure id
+      pure (newIdentName, innerType . maybeFuncType)
+    '*' -> do
+      void mulLex
+      (newIdentName, newType) <- declaratorParser identiferName
+      upcomingChar <- lookAhead $ try (spaces >> anyChar)
+      maybeFuncType <- case upcomingChar of
+        '(' -> do
+          parseInfo <- getState
+          funcDeclaratorArgListParser <* putState parseInfo
+        _ -> pure id
+      pure (newIdentName, newType . maybeFuncType . DTPointer)
+    _ -> do
+      newIdentName <- lookAhead (try closePParser <|> try identifierParser) <|> pure ""
+      case newIdentName of
+        "" -> anyChar >>= unexpected . pure
+        ")" -> pure (identiferName, id)
+        _ -> do
+          void identifierParser
+          afterIdentChar <- lookAhead $ try (spaces >> anyChar)
+          maybeFuncType <- case afterIdentChar of
+            '(' -> do
+              parseInfo <- getState
+              funcDeclaratorArgListParser <* putState parseInfo
+            _ -> pure id
+          pure (newIdentName, maybeFuncType)
+
 varDeclarationParser :: ParsecT String ParseInfo IO VarTypeInfo
 varDeclarationParser = do
-  (sc, varType) <- declarationSpecifierParser False ([], [])
-  vName <- identifierParser <?> "Valid identifier"
+  (sc, baseType) <- declarationSpecifierParser False ([], [])
+  (vName, declarator) <- declaratorParser ""
+  let varType = declarator baseType
+  when (isFuncDT varType) $
+    unexpected "function declaration"
   current <- currentScopeIdent <$> getState
   topIdentMap <- topLevelScopeIdent <$> getState
   when (M.member vName current
@@ -1681,6 +1731,10 @@ isVarIdentifier :: IdentifierType -> Bool
 isVarIdentifier (VarIdentifier {}) = True
 isVarIdentifier _ = False
 
+isFuncDT :: DT -> Bool
+isFuncDT (DTFuncType {}) = True
+isFuncDT _ = False
+
 funcNotYetDefined :: String -> ParseInfo -> Bool
 funcNotYetDefined name parseInfo =
   let current = currentScopeIdent parseInfo in
@@ -1752,23 +1806,24 @@ updateFuncInfoIfNeed name newFuncTypeInfo  = do
 
 functionDeclareParser :: ParsecT String ParseInfo IO Declaration
 functionDeclareParser = do
-  (sc, rType) <- declarationSpecifierParser True ([], [])
-  name <- identifierParser >>= checkForFuncNameConflict
-  checkFuncStorageClass name sc
+  (sc, baseType) <- declarationSpecifierParser True ([], [])
   parseInfo <- getState
   updateVarMapForFuncBlockScope
   toplvl <- topLevel <$> getState
-  aList <- between openPParser closePParser (try argListParser)
+  (name, declarator) <- declaratorParser ""
+  let fType = declarator baseType
+  void $ checkForFuncNameConflict name
+  checkFuncStorageClass name sc
   checkForFuncTypeConflict parseInfo $
-      FunctionDeclaration $ FuncTypeInfo name (DTFuncType aList rType) Nothing sc 1
-  addFuncDeclarationIfNeed $ FuncTypeInfo name (DTFuncType aList rType) Nothing sc 1
+      FunctionDeclaration $ FuncTypeInfo name fType  Nothing sc 1
+  addFuncDeclarationIfNeed $ FuncTypeInfo name fType Nothing sc 1
   maybeSemiColon <- lookAhead (try semiColParser <|> try openCurParser)
-  modifyState (\p -> p {funcReturnType = rType})
+  modifyState (\p -> p {funcReturnType = retType fType})
   block <- case maybeSemiColon of
     ";" -> semiColParser >> pure Nothing
     "{" -> checkFuncDefinition name parseInfo >>
       Just <$> blockParser (M.fromList (map (\(dt, vName) ->
-        (vName, VarIdentifier (VarTypeInfo vName dt Nothing sc toplvl))) aList))
+        (vName, VarIdentifier (VarTypeInfo vName dt Nothing sc toplvl))) (argList fType)))
     _ -> unexpected maybeSemiColon
   nVarId <- currentVarId <$> getState
   current <- currentScopeIdent <$> getState
@@ -1780,19 +1835,30 @@ functionDeclareParser = do
                 funcStorageClass (fti (topScope M.! name)) /= Just Extern
       then funcStorageClass $ fti $ topScope M.! name
       else sc
-  updateFuncInfoIfNeed name $ FuncIdentifier $ FuncTypeInfo name (DTFuncType aList rType) block newSc nVarId
-  pure $ FunctionDeclaration $ FuncTypeInfo name (DTFuncType aList rType) block newSc nVarId
+  updateFuncInfoIfNeed name $ FuncIdentifier $ FuncTypeInfo name fType block newSc nVarId
+  pure $ FunctionDeclaration $ FuncTypeInfo name fType block newSc nVarId
 
 declareParser :: ParsecT String ParseInfo IO Declaration
 declareParser = do
-  maybeParen <-
-    lookAhead (try $ many1 (try symbolExtract) >> openPParser) <|> pure ""
-  toplvl <- topLevel <$> getState
-  if maybeParen == "("
-    then functionDeclareParser
-    else if toplvl
-      then VariableDeclaration <$> topLevelVarDeclarationParser
-      else VariableDeclaration <$> varDeclarationParser
+  maybeSpecifier <- lookAhead $ optionMaybe $ try $ declarationSpecifierParser False ([], [])
+  case maybeSpecifier of
+    Just (_, rType) -> do
+      maybeDeclarator <- do
+        parseInfo <- getState
+        updateVarMapForFuncBlockScope
+        lookAhead (optionMaybe $ try $ declarationSpecifierParser False ([], []) >> declaratorParser "") <* putState parseInfo
+      case maybeDeclarator of
+        Just (_, d) -> do
+          case d rType of
+            DTFuncType _ _ -> functionDeclareParser
+            _ -> do
+              toplvl <- topLevel <$> getState
+              if toplvl
+                then VariableDeclaration <$> topLevelVarDeclarationParser
+                else VariableDeclaration <$> varDeclarationParser
+        _ ->
+          declarationSpecifierParser False ([], []) >> declaratorParser "" >> unexpected "declarator error"
+    _ -> declarationSpecifierParser False ([], []) >> unexpected "specifier error"
 
 getLabelList :: [BlockItem] -> M.Map String String -> Either String (M.Map String String)
 getLabelList [] m = Right m
