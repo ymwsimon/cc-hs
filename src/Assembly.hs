@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/07/17 13:39:22 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/22 10:27:20 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -361,7 +361,7 @@ getFuncList = foldl' (\m fd -> M.insert (irFuncName $ irFuncD fd) (irFuncName $ 
 
 irFuncDefineToAsmFuncDefine :: M.Map String IdentifierType -> M.Map String String -> IRFunctionDefine -> AsmFunctionDefine
 irFuncDefineToAsmFuncDefine gVarMap funcList fd = do
-  let irVars = map (\ap -> IRVar (dataType ap) (varName ap)) $ irParameter fd
+  let irVars = map (uncurry IRVar) $ irParameter fd
       (regArg, stackArg) =
         regStackArgSplit generalXmmRegister stackAddr irVars ([], [])
       (m, instrs) = copyParametersToStack

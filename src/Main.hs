@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/07/15 18:42:27 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/22 10:25:12 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -75,7 +75,7 @@ parseOkAct args path (m, parseOk) = do
   print $ cASTToIrAST parseOk
   putStrLn ""
   let fdsBlock = map (\case
-          FunctionDeclaration _ _ _ (Just bl) _ _ -> unBlock bl
+          FunctionDeclaration (FuncTypeInfo _ _ (Just bl) _ _) -> unBlock bl
           _ -> []) parseOk
       labelCheckRes = labelCheck fdsBlock in
     case labelCheckRes of

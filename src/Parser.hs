@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/20 22:08:43 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/22 11:06:24 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -54,42 +54,29 @@ data PrimType =
 
 data DT =
   DTInternal PrimType
-  | DTFuncType {argList :: [InputArgPair], retType :: DT}
+  | DTFuncType {argList :: [(DT, IdentifierName)], retType :: DT}
   | DTPointer DT
   | DTUserDefined String [DT]
   deriving Show
 
 data IdentifierType =
-  VarIdentifier {vdt :: DT, vn :: IdentifierName, topLv :: Bool,
-    varDefine :: Maybe TypedExpr, storeClass :: Maybe StorageClass}
-  | FuncIdentifier {fti :: FunTypeInfo}
+  VarIdentifier {vti :: VarTypeInfo}
+  | FuncIdentifier {fti :: FuncTypeInfo}
   deriving (Show, Eq)
 
 data Declaration =
-  VD VariableDeclaration
-  | FunctionDeclaration
-    {
-      funName :: String,
-      inputArgs :: [InputArgPair],
-      funcType :: DT,
-      funDefine :: Maybe Block,
-      nextVarId :: Int,
-      storageClass :: Maybe StorageClass
-    }
+  VariableDeclaration VarTypeInfo
+  | FunctionDeclaration FuncTypeInfo
   deriving (Show, Eq)
 
-data VariableDeclaration =
-  VariableDeclaration DT IdentifierName Bool (Maybe TypedExpr) (Maybe StorageClass)
+data VarTypeInfo =
+  VarTypeInfo {varName :: IdentifierName, variableType :: DT,
+    varDefine :: Maybe TypedExpr, varStoreClass :: Maybe StorageClass, topLv :: Bool}
   deriving (Show, Eq)
 
-data FunTypeInfo =
-  FunTypeInfo
-  {
-    funType :: DT,
-    fName :: IdentifierName,
-    funBody :: Maybe Block,
-    funcStorageClass :: Maybe StorageClass
-  }
+data FuncTypeInfo =
+  FuncTypeInfo {funcName :: IdentifierName, funcType :: DT,
+    funcDefine :: Maybe Block, funcStorageClass :: Maybe StorageClass, nextVarId :: Int}
   deriving (Show, Eq)
 
 data ParseInfo = 
@@ -110,16 +97,8 @@ data ParseInfo =
   }
   deriving (Show, Eq)
 
-data InputArgPair =
-  ArgPair
-  {
-    dataType :: DT,
-    varName :: String
-  }
-  deriving (Show, Eq)
-
 data ForInit =
-  InitDecl VariableDeclaration
+  InitDecl VarTypeInfo
   | InitExpr (Maybe TypedExpr)
   deriving (Show, Eq)
 
@@ -182,7 +161,8 @@ data NumConst =
 
 instance Eq DT where
  (DTInternal l) == (DTInternal r) = l == r
- (DTFuncType lArgList lRetType) == (DTFuncType rArgList rRetType) = map dataType lArgList == map dataType rArgList && lRetType == rRetType
+ (DTFuncType lArgList lRetType) == (DTFuncType rArgList rRetType) =
+    map fst lArgList == map fst rArgList && lRetType == rRetType
  (DTPointer l) == (DTPointer r) = l == r
  (DTUserDefined lName lDT) == (DTUserDefined rName rDT) = lName == rName && lDT == rDT
  _ == _ = False
@@ -1174,17 +1154,17 @@ variableParser = do
         isFuncIdentifier (outer M.! vName))) $
     unexpected "Function identifier"
   if M.member vName current
-    then let var = current M.! vName in
-        postfixOp $ TExpr (Variable (vn var) (topLv var) (storeClass var)) (vdt var)
-    else let var = outer M.! vName in
-        postfixOp $ TExpr  (Variable (vn var) (topLv var) (storeClass var)) (vdt var)
+    then let var = vti $ current M.! vName in
+        postfixOp $ TExpr (Variable (varName var) (topLv var) (varStoreClass var)) (variableType var)
+    else let var = vti $ outer M.! vName in
+        postfixOp $ TExpr  (Variable (varName var) (topLv var) (varStoreClass var)) (variableType var)
 
 isFuncIdentiferInVarMap :: String -> M.Map String IdentifierType -> M.Map String IdentifierType -> Bool
 isFuncIdentiferInVarMap fIdentifier current outer =
   (M.member fIdentifier current && isFuncIdentifier (current M.! fIdentifier))
     || (M.member fIdentifier outer && isFuncIdentifier (outer M.! fIdentifier))
 
-getFunTypeInfoFromVarMap :: String -> M.Map String IdentifierType -> M.Map String IdentifierType -> FunTypeInfo
+getFunTypeInfoFromVarMap :: String -> M.Map String IdentifierType -> M.Map String IdentifierType -> FuncTypeInfo
 getFunTypeInfoFromVarMap fIdentifier current outer =
   if M.member fIdentifier current && isFuncIdentifier (current M.! fIdentifier)
     then fti $ current M.! fIdentifier
@@ -1210,12 +1190,12 @@ functionCallParser = do
       void closePParser
       pure exprs
   let funcInfo = getFunTypeInfoFromVarMap functionName current outer
-  unless (length paraList == length (argList $ funType funcInfo)) $
+  unless (length paraList == length (argList $ funcType funcInfo)) $
     unexpected "Function call. Incorrect number of parameters"
-  let convertedParaList = zipWith cvtTypedExpr paraList (map dataType $ argList $ funType funcInfo)
+  let convertedParaList = zipWith cvtTypedExpr paraList (map fst $ argList $ funcType funcInfo)
   pure $ TExpr
     (FunctionCall functionName (map foldToConstExpr convertedParaList))
-    (retType $ funType $ fti $ outer M.! functionName)
+    (retType $ funcType $ fti $ outer M.! functionName)
 
 isAssignmentExpr :: Expr -> Bool
 isAssignmentExpr e = case e of
@@ -1274,7 +1254,7 @@ ifStatParser = do
     _ -> pure Nothing
   pure $ If (foldToConstExpr cond) tStat fStat
 
-argPairParser :: ParsecT String ParseInfo IO InputArgPair
+argPairParser :: ParsecT String ParseInfo IO (DT, IdentifierName)
 argPairParser = do
   (_, dt) <- declarationSpecifierParser False ([], "void" : storageClassSpecifierStrList)
   maybeIdent <- lookAhead $ optionMaybe $ try identifierParser
@@ -1286,11 +1266,11 @@ argPairParser = do
         then unexpected $ vName ++ ". Already defined"
         else do
           modifyState (\p -> p {currentScopeIdent =
-            M.insert vName (VarIdentifier dt vName False Nothing Nothing) (currentScopeIdent p)})
-          pure $ ArgPair dt vName
-    _ -> pure $ ArgPair dt ""
+            M.insert vName (VarIdentifier (VarTypeInfo vName dt Nothing Nothing False)) (currentScopeIdent p)})
+          pure (dt, vName)
+    _ -> pure (dt, "")
 
-argListParser :: ParsecT String ParseInfo IO [InputArgPair]
+argListParser :: ParsecT String ParseInfo IO [(DT, IdentifierName)]
 argListParser = do
   res <- lookAhead (try closePParser <|> try symbolExtract) <|> pure ""
   case res of
@@ -1317,12 +1297,12 @@ updateTopLevelVarCurrentVar :: DT -> IdentifierName -> Maybe TypedExpr ->
 updateTopLevelVarCurrentVar dt vName vDf sClass = do
   topMap <- topLevelScopeIdent <$> getState
   let typeInfo = if M.member vName topMap
-      then case storeClass $ topMap M.! vName of
-        Just Extern -> VarIdentifier dt vName True vDf sClass
-        ogSClass -> case varDefine $ topMap M.! vName of
-          og@(Just _) -> VarIdentifier dt vName True og ogSClass
-          _ -> VarIdentifier dt vName True vDf ogSClass
-      else VarIdentifier dt vName True vDf sClass
+      then case varStoreClass $ vti $ topMap M.! vName of
+        Just Extern -> VarIdentifier (VarTypeInfo vName dt vDf sClass True)
+        ogSClass -> case varDefine $ vti $ topMap M.! vName of
+          og@(Just _) -> VarIdentifier (VarTypeInfo vName dt og ogSClass True)
+          _ -> VarIdentifier (VarTypeInfo vName dt vDf ogSClass True)
+      else VarIdentifier (VarTypeInfo vName dt vDf sClass True)
   modifyState (\p -> p {topLevelScopeIdent = M.insert vName typeInfo (topLevelScopeIdent p)})
   modifyState (\p -> p {currentScopeIdent = M.insert vName typeInfo (currentScopeIdent p)})
 
@@ -1335,7 +1315,7 @@ getInitialiser parser = do
   void semiColParser
   pure $ foldToConstExpr <$> initialiser
 
-topLevelVarDeclarationParser :: ParsecT String ParseInfo IO VariableDeclaration
+topLevelVarDeclarationParser :: ParsecT String ParseInfo IO VarTypeInfo
 topLevelVarDeclarationParser = do
   (sc, varType) <- declarationSpecifierParser False ([], [])
   vName <- identifierParser <?> "Valid identifier"
@@ -1343,51 +1323,51 @@ topLevelVarDeclarationParser = do
   when (M.member vName topIdentMap && isFuncIdentifier (topIdentMap M.! vName)) $
     unexpected $ vName ++ ". Already defined"
   when (M.member vName topIdentMap && isVarIdentifier (topIdentMap M.! vName)
-    && (vdt (topIdentMap M.! vName) /= varType
-      || not (topLevelVarStorageClassCheck (storeClass (topIdentMap M.! vName)) sc))) $
+    && (variableType (vti (topIdentMap M.! vName)) /= varType
+      || not (topLevelVarStorageClassCheck (varStoreClass (vti (topIdentMap M.! vName))) sc))) $
     unexpected $ vName ++ ". Type mismatch to previous declaration"
   initialiser <- fmap (foldToConstExpr . (`cvtTypedExpr` varType)) <$> getInitialiser exprParser
   unless (isNothing initialiser || isConstantTypedExpr (fromJust initialiser)) $
     unexpected "non constant intialiser"
   if M.member vName topIdentMap
     then do
-      VarIdentifier vType _ _ vDefine sClass <- pure $ topIdentMap M.! vName
+      VarIdentifier (VarTypeInfo _ vType vDefine sClass _) <- pure $ topIdentMap M.! vName
       when (isJust vDefine && isJust initialiser) $
         unexpected "variable redefine"
       let newSClass = if sc == Just Extern then sClass else sc
       let define = if isJust vDefine then vDefine else initialiser
       updateTopLevelVarCurrentVar vType vName initialiser sc
-      pure $ VariableDeclaration vType vName True define newSClass
+      pure $ VarTypeInfo vName vType define newSClass True
     else do
       updateTopLevelVarCurrentVar varType vName initialiser sc
-      pure $ VariableDeclaration varType vName True initialiser sc
+      pure $ VarTypeInfo vName varType initialiser sc True
 
-localExternVarHandle :: DT -> Maybe StorageClass -> IdentifierName -> ParsecT String ParseInfo IO VariableDeclaration
+localExternVarHandle :: DT -> Maybe StorageClass -> IdentifierName -> ParsecT String ParseInfo IO VarTypeInfo
 localExternVarHandle varType sc vName  = do
   void semiColParser
   parseInfo <- getState
   top <- topLevelScopeIdent <$> getState
-  when (M.member vName top && vdt (top M.! vName) /= varType) $
+  when (M.member vName top && variableType (vti (top M.! vName)) /= varType) $
     unexpected "different data type"
   unless (M.member vName $ topLevelScopeIdent parseInfo)
       $ updateTopLevelVarCurrentVar varType vName Nothing sc
   modifyState (\p -> p {currentScopeIdent = M.insert vName
-    (VarIdentifier varType vName (topLevel p) Nothing sc) $ currentScopeIdent p})
-  pure $ VariableDeclaration varType vName (topLevel parseInfo) Nothing sc
+    (VarIdentifier (VarTypeInfo vName varType Nothing sc (topLevel p))) $ currentScopeIdent p})
+  pure $ VarTypeInfo vName varType Nothing sc (topLevel parseInfo)
 
-localPlainVarHandle :: DT -> Maybe StorageClass -> IdentifierName -> ParsecT String ParseInfo IO VariableDeclaration
+localPlainVarHandle :: DT -> Maybe StorageClass -> IdentifierName -> ParsecT String ParseInfo IO VarTypeInfo
 localPlainVarHandle varType sc vName = do
   parseInfo <- getState
   let varId = currentVarId parseInfo
       newVarName = vName ++ "#" ++ show varId
       newVarMap = M.insert vName
-        (VarIdentifier varType newVarName (topLevel parseInfo) Nothing sc) $
+        (VarIdentifier (VarTypeInfo newVarName varType Nothing sc (topLevel parseInfo))) $
         currentScopeIdent parseInfo
   putState $ parseInfo {currentVarId = varId + 1, currentScopeIdent = newVarMap}
   initialiser <- fmap (foldToConstExpr . (`cvtTypedExpr` varType)) <$> getInitialiser exprParser
-  pure $ VariableDeclaration varType newVarName (topLevel parseInfo) initialiser sc
+  pure $ VarTypeInfo newVarName varType initialiser sc (topLevel parseInfo)
 
-localStaticVarHandle :: DT -> Maybe StorageClass -> IdentifierName -> ParsecT String ParseInfo IO VariableDeclaration
+localStaticVarHandle :: DT -> Maybe StorageClass -> IdentifierName -> ParsecT String ParseInfo IO VarTypeInfo
 localStaticVarHandle varType sc vName = do
   initialiser <- fmap (foldToConstExpr . (`cvtTypedExpr` varType)) <$> getInitialiser exprParser
   unless (isNothing initialiser || isConstantTypedExpr (fromJust initialiser)) $
@@ -1396,16 +1376,16 @@ localStaticVarHandle varType sc vName = do
   let varId = globalVarId parseInfo
       newVarName = vName ++ "." ++ show varId
       newLocalVarMap = M.insert vName
-        (VarIdentifier varType newVarName (topLevel parseInfo) Nothing sc) $
+        (VarIdentifier (VarTypeInfo newVarName varType Nothing sc (topLevel parseInfo))) $
         currentScopeIdent parseInfo
       newGlobalVarMap = M.insert newVarName
-        (VarIdentifier varType newVarName (topLevel parseInfo) initialiser sc) $
+        (VarIdentifier (VarTypeInfo newVarName varType initialiser sc (topLevel parseInfo))) $
         topLevelScopeIdent parseInfo
   putState $ parseInfo {globalVarId = varId + 1,
     currentScopeIdent = newLocalVarMap, topLevelScopeIdent = newGlobalVarMap}
-  pure $ VariableDeclaration varType newVarName (topLevel parseInfo) initialiser sc
+  pure $ VarTypeInfo newVarName varType initialiser sc $ topLevel parseInfo
 
-varDeclarationParser :: ParsecT String ParseInfo IO VariableDeclaration
+varDeclarationParser :: ParsecT String ParseInfo IO VarTypeInfo
 varDeclarationParser = do
   (sc, varType) <- declarationSpecifierParser False ([], [])
   vName <- identifierParser <?> "Valid identifier"
@@ -1413,7 +1393,7 @@ varDeclarationParser = do
   topIdentMap <- topLevelScopeIdent <$> getState
   when (M.member vName current
     && (isFuncIdentifier (current M.! vName)
-      || (storeClass (current M.! vName) /= Just Extern) || sc /= Just Extern)) $
+      || (varStoreClass (vti (current M.! vName)) /= Just Extern) || sc /= Just Extern)) $
     unexpected $ "Variable redeclare: " ++ vName
   when (sc == Just Extern && M.member vName topIdentMap && isFuncIdentifier (topIdentMap M.! vName)) $
     unexpected $ vName ++ ". Already defined"
@@ -1671,17 +1651,17 @@ checkForFuncNameConflict iName = do
     unexpected "Identifier redeclared"
   pure iName
 
-compareFunTypeDeclare :: FunTypeInfo -> FunTypeInfo -> Bool
-compareFunTypeDeclare (FunTypeInfo lFt lFName _ _) (FunTypeInfo rFt rFName _ _) =
+compareFunTypeDeclare :: FuncTypeInfo -> FuncTypeInfo -> Bool
+compareFunTypeDeclare (FuncTypeInfo lFName lFt _ _ _) (FuncTypeInfo rFName rFt _ _ _) =
   lFt == rFt && lFName == rFName
 
 checkForFuncTypeConflict :: ParseInfo -> Declaration -> ParsecT String ParseInfo IO ()
 checkForFuncTypeConflict parseInfo declare = case declare of
-  FunctionDeclaration fn _ fType _ _ sc -> do
+  FunctionDeclaration (FuncTypeInfo fn fType _ sc _) -> do
     let current = currentScopeIdent parseInfo
     let outer = outerScopeIdent parseInfo
     let top = topLevelScopeIdent parseInfo
-    let newFuncType = FunTypeInfo fType fn Nothing sc
+    let newFuncType = FuncTypeInfo fn fType Nothing sc 0
     let checkForPrevTypeConflict m = M.member fn m
           && isFuncIdentifier (m M.! fn)
           && (not . compareFunTypeDeclare newFuncType . fti) (m M.! fn)  
@@ -1706,7 +1686,7 @@ funcNotYetDefined name parseInfo =
   let current = currentScopeIdent parseInfo in
     M.member name current
       && isFuncIdentifier (current M.! name)
-      && isNothing (funBody (fti (current M.! name)))
+      && isNothing (funcDefine (fti (current M.! name)))
 
 storageClassStrParser :: ParsecT String ParseInfo IO String
 storageClassStrParser = try keyStaticParser <|> keyExternParser
@@ -1741,8 +1721,8 @@ updateVarMapForFuncBlockScope = do
   modifyState (\p -> p {outerScopeIdent = M.union (outerScopeIdent p) (currentScopeIdent p),
     currentScopeIdent = M.empty, currentVarId = if toplvl then 1 else currentVarId p})
 
-addFuncDeclarationIfNeed :: FunTypeInfo -> ParsecT String ParseInfo IO ()
-addFuncDeclarationIfNeed newTypeInfo@(FunTypeInfo _ name _ _) = do
+addFuncDeclarationIfNeed :: FuncTypeInfo -> ParsecT String ParseInfo IO ()
+addFuncDeclarationIfNeed newTypeInfo@(FuncTypeInfo name _ _ _ _) = do
   parseInfo <- getState
   unless (M.member name (outerScopeIdent parseInfo) || M.member name (topLevelScopeIdent parseInfo)) $
     modifyState (\p -> p {outerScopeIdent = M.insert name (FuncIdentifier newTypeInfo) (outerScopeIdent p),
@@ -1750,7 +1730,7 @@ addFuncDeclarationIfNeed newTypeInfo@(FunTypeInfo _ name _ _) = do
 
 withFunctionBody :: IdentifierType -> Bool
 withFunctionBody typeIdentifier = case typeIdentifier of
-  FuncIdentifier (FunTypeInfo _ _ (Just _) _) -> True
+  FuncIdentifier (FuncTypeInfo _ _ (Just _) _ _) -> True
   _ -> False
 
 checkFuncDefinition :: IdentifierName -> ParseInfo -> ParsecT String ParseInfo IO ()
@@ -1780,15 +1760,15 @@ functionDeclareParser = do
   toplvl <- topLevel <$> getState
   aList <- between openPParser closePParser (try argListParser)
   checkForFuncTypeConflict parseInfo $
-      FunctionDeclaration name aList (DTFuncType aList rType) Nothing 1 sc
-  addFuncDeclarationIfNeed $ FunTypeInfo (DTFuncType aList rType) name Nothing sc
+      FunctionDeclaration $ FuncTypeInfo name (DTFuncType aList rType) Nothing sc 1
+  addFuncDeclarationIfNeed $ FuncTypeInfo name (DTFuncType aList rType) Nothing sc 1
   maybeSemiColon <- lookAhead (try semiColParser <|> try openCurParser)
   modifyState (\p -> p {funcReturnType = rType})
   block <- case maybeSemiColon of
     ";" -> semiColParser >> pure Nothing
     "{" -> checkFuncDefinition name parseInfo >>
-      Just <$> blockParser (M.fromList (map (\(ArgPair dt vName) ->
-        (vName, VarIdentifier dt vName toplvl Nothing sc)) aList))
+      Just <$> blockParser (M.fromList (map (\(dt, vName) ->
+        (vName, VarIdentifier (VarTypeInfo vName dt Nothing sc toplvl))) aList))
     _ -> unexpected maybeSemiColon
   nVarId <- currentVarId <$> getState
   current <- currentScopeIdent <$> getState
@@ -1800,8 +1780,8 @@ functionDeclareParser = do
                 funcStorageClass (fti (topScope M.! name)) /= Just Extern
       then funcStorageClass $ fti $ topScope M.! name
       else sc
-  updateFuncInfoIfNeed name $ FuncIdentifier $ FunTypeInfo (DTFuncType aList rType) name block newSc
-  pure $ FunctionDeclaration name aList (DTFuncType aList rType) block nVarId newSc
+  updateFuncInfoIfNeed name $ FuncIdentifier $ FuncTypeInfo name (DTFuncType aList rType) block newSc nVarId
+  pure $ FunctionDeclaration $ FuncTypeInfo name (DTFuncType aList rType) block newSc nVarId
 
 declareParser :: ParsecT String ParseInfo IO Declaration
 declareParser = do
@@ -1811,8 +1791,8 @@ declareParser = do
   if maybeParen == "("
     then functionDeclareParser
     else if toplvl
-      then VD <$> topLevelVarDeclarationParser
-      else VD <$> varDeclarationParser
+      then VariableDeclaration <$> topLevelVarDeclarationParser
+      else VariableDeclaration <$> varDeclarationParser
 
 getLabelList :: [BlockItem] -> M.Map String String -> Either String (M.Map String String)
 getLabelList [] m = Right m
@@ -1880,10 +1860,10 @@ updateLabelBlockItem bi m = case bi of
   _ -> bi
 
 updateLabelSingle :: Declaration -> M.Map String String -> Declaration
-updateLabelSingle vd@(VD _) _ = vd
-updateLabelSingle fd@(FunctionDeclaration _ _ _ Nothing _ _) _ = fd
-updateLabelSingle (FunctionDeclaration n args ft (Just (Block bls)) lid sc) m =
-  FunctionDeclaration n args ft (Just (Block (map (`updateLabelBlockItem` m) bls))) lid sc
+updateLabelSingle vd@(VariableDeclaration _) _ = vd
+updateLabelSingle fd@(FunctionDeclaration (FuncTypeInfo _ _ Nothing _ _)) _ = fd
+updateLabelSingle (FunctionDeclaration (FuncTypeInfo n ft (Just (Block bls)) lid sc)) m =
+  FunctionDeclaration $ FuncTypeInfo n ft (Just (Block (map (`updateLabelBlockItem` m) bls))) lid sc
 
 updateGotoLabel :: [Declaration] -> [M.Map String String] -> [Declaration]
 updateGotoLabel = zipWith updateLabelSingle

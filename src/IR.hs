@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/07/17 15:35:46 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/22 11:02:52 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -32,7 +32,7 @@ data IRFunctionDefine =
   {
     irFuncName :: String,
     irFuncGlobal :: Bool,
-    irParameter :: [InputArgPair],
+    irParameter :: [(DT, String)],
     irInstruction :: [IRInstruction]
   }
   deriving (Show, Eq)
@@ -119,7 +119,7 @@ cStatmentToIRInstructions bi = case bi of
     _ -> undefined
   S (Case statement l) -> caseToIRs statement l
   S (Default statement l) -> defaultToIRs statement l
-  D (VD ((VariableDeclaration dt var False (Just expr) Nothing))) ->
+  D (VariableDeclaration (VarTypeInfo var dt (Just expr) Nothing False)) ->
     cStatmentToIRInstructions (S (Expression
       (TExpr (Assignment (TExpr (Variable var False Nothing) dt) expr) dt)))
   D _ -> pure []
@@ -128,12 +128,12 @@ initIRVarId :: a1 -> (a2, b) -> (a1, b)
 initIRVarId s (_, b) = (s, b)
 
 hasFuncBody :: Declaration -> Bool
-hasFuncBody (FunctionDeclaration _ _ _ (Just _) _ _) = True
+hasFuncBody (FunctionDeclaration (FuncTypeInfo _ _ (Just _) _ _)) = True
 hasFuncBody _ = False
 
 cFuncDefineToIRFuncDefine :: Declaration -> State (Int, Int) IRTopLevel
-cFuncDefineToIRFuncDefine fd@(FunctionDeclaration _ _ _ (Just bl) _ sc) =
-  IRFunc . IRFunctionDefine (funName fd) (sc /= Just Static) (inputArgs fd)
+cFuncDefineToIRFuncDefine (FunctionDeclaration fd@(FuncTypeInfo _ _ (Just bl) sc _)) =
+  IRFunc . IRFunctionDefine (funcName fd) (sc /= Just Static) (argList $ funcType fd)
     . (++ [IRReturn (IRConstant (DTInternal TInt) $ ConstInt 0)]) . concat
     <$> (modify (initIRVarId (nextVarId fd)) >>
       mapM cStatmentToIRInstructions (unBlock bl))
@@ -189,12 +189,12 @@ staticVarConvertion :: M.Map String IdentifierType -> [IRTopLevel]
 staticVarConvertion m = map IRStaticVar .
   concatMap (identToStaticVar . snd) $ M.toList $ M.filter isVarIdentifier m
   where identToStaticVar ident = case ident of
-          VarIdentifier dt vName _ expr (Just Static) -> if dt == DTInternal TDouble
+          VarIdentifier (VarTypeInfo vName dt expr (Just Static) _) -> if dt == DTInternal TDouble
             then [IRStaticVarDefine vName False dt
               (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstDouble 0) (DTInternal TDouble)) expr)]
             else [IRStaticVarDefine vName False dt
               (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstInt 0) (DTInternal TInt)) expr)]
-          VarIdentifier dt vName topLvl expr Nothing -> if dt == DTInternal TDouble
+          VarIdentifier (VarTypeInfo vName dt expr Nothing topLvl) -> if dt == DTInternal TDouble
             then [IRStaticVarDefine vName topLvl dt
               (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstDouble 0) (DTInternal TDouble)) expr)]
             else [IRStaticVarDefine vName topLvl dt
@@ -367,7 +367,7 @@ whileToIRs condition bl (_, cLabel, dLabel) = do
 
 forInitToIRs :: ForInit -> State (Int, Int) [IRInstruction]
 forInitToIRs fi = case fi of
-  InitDecl d -> cStatmentToIRInstructions $ D $ VD d
+  InitDecl d -> cStatmentToIRInstructions $ D $ VariableDeclaration d
   InitExpr (Just expr) -> cStatmentToIRInstructions $ S $ Expression expr
   _ -> pure []
 
