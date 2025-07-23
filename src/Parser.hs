@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/22 20:38:06 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/23 11:13:42 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -50,14 +50,13 @@ data PrimType =
   | TFloat
   | TDouble
   | TLDouble
-  deriving (Show, Eq)
+  deriving Eq
 
 data DT =
   DTInternal PrimType
   | DTFuncType {argList :: [(DT, IdentifierName)], retType :: DT}
   | DTPointer DT
   | DTUserDefined String [DT]
-  deriving Show
 
 data IdentifierType =
   VarIdentifier {vti :: VarTypeInfo}
@@ -167,6 +166,25 @@ instance Eq DT where
  (DTUserDefined lName lDT) == (DTUserDefined rName rDT) = lName == rName && lDT == rDT
  _ == _ = False
 
+instance Show PrimType where
+  show TVoid = "void"
+  show TChar = "char"
+  show TUChar = "unsigned char"
+  show TShort = "short"
+  show TUShort = "unsigned short"
+  show TInt = "int"
+  show TUInt = "unsigned int"
+  show TLong = "long"
+  show TULong = "unsigned long"
+  show TFloat = "float"
+  show TDouble = "double"
+  show TLDouble = "long double"
+
+instance Show DT where
+  show (DTInternal pt) = show pt
+  show (DTPointer t) = show t ++ " *"
+  show (DTFuncType aList rType) = show rType ++ " " ++ "(" ++ show aList ++ ")"
+  show (DTUserDefined name dts) = name ++ " " ++ show dts
 
 instance Show StorageClass where
   show Static = "static"
@@ -513,7 +531,8 @@ declarationSpecifierParser isFunc (toks, prohibitedList) = do
             ["static"] -> Just Static
             ["extern"] -> Just Extern
             _ -> undefined
-      pure (sc, primDataTypeMap M.! sort (filter (`notElem` storageClassSpecifierStrList) toks))
+      let varType = primDataTypeMap M.! sort (filter (`notElem` storageClassSpecifierStrList) toks)
+      pure (sc, varType)
     else
       let newPBList =
            (if (== 2) $ length $ filter (== "long") (fromJust specifier : toks)
@@ -755,6 +774,8 @@ isConstantTypedExpr (TExpr expr _) = case expr of
   Binary _ l r -> isConstantTypedExpr l && isConstantTypedExpr r
   Assignment {} -> False
   Conditional c t f -> isConstantTypedExpr c && isConstantTypedExpr t && isConstantTypedExpr f
+  AddrOf {} -> False
+  Dereference {} -> False
 
 isIntegralConstantTE :: TypedExpr -> Bool
 isIntegralConstantTE (TExpr expr _) = case expr of
@@ -959,6 +980,7 @@ getDTSize dt = case dt of
   DTInternal TFloat -> 4
   DTInternal TDouble -> 8
   DTInternal TLDouble -> 16
+  DTPointer _ -> 8
   _ -> undefined
 
 isSignedInteger :: DT -> Bool
@@ -1205,13 +1227,17 @@ isAssignmentExpr e = case e of
 castParser :: ParsecT String ParseInfo IO TypedExpr
 castParser = do
   void openPParser
-  (_, cType) <- declarationSpecifierParser False ([], storageClassSpecifierStrList)
+  (_, baseType) <- declarationSpecifierParser False ([], storageClassSpecifierStrList)
+  (_, declarator) <- declaratorParser ""
   void closePParser
   p <- precedence <$> getState
   modifyState $ setPrecedence 2
   e@(TExpr innerE _) <- exprParser
   when (isAssignmentExpr innerE) $
     unexpected "cast of assignment expression"
+  let cType = declarator baseType
+  when (isFuncDT cType) $
+    unexpected "cast to function"
   foldToConstExpr (TExpr (Cast cType e) cType) <$ modifyState (setPrecedence p)
 
 factorParser :: ParsecT String ParseInfo IO TypedExpr
@@ -1256,19 +1282,21 @@ ifStatParser = do
 
 argPairParser :: ParsecT String ParseInfo IO (DT, IdentifierName)
 argPairParser = do
-  (_, dt) <- declarationSpecifierParser False ([], "void" : storageClassSpecifierStrList)
-  maybeIdent <- lookAhead $ optionMaybe $ try identifierParser
-  case maybeIdent of
-    Just _ -> do
-      vName <- identifierParser
-      current <- currentScopeIdent <$> getState
-      if M.member vName current
-        then unexpected $ vName ++ ". Already defined"
-        else do
-          modifyState (\p -> p {currentScopeIdent =
-            M.insert vName (VarIdentifier (VarTypeInfo vName dt Nothing Nothing False)) (currentScopeIdent p)})
-          pure (dt, vName)
-    _ -> pure (dt, "")
+  (_, baseType) <- declarationSpecifierParser False ([], "void" : storageClassSpecifierStrList)
+  (vName, declarator) <- declaratorParser ""
+  let varType = declarator baseType
+  -- maybeIdent <- lookAhead $ optionMaybe $ try identifierParser
+  -- case maybeIdent of
+  --   Just _ -> do
+  --     vName <- identifierParser
+  current <- currentScopeIdent <$> getState
+  when (M.member vName current) $
+    unexpected $ vName ++ ". Already defined"
+  unless (null vName) $
+    modifyState (\p -> p {currentScopeIdent =
+      M.insert vName (VarIdentifier (VarTypeInfo vName varType Nothing Nothing False)) (currentScopeIdent p)})
+  pure (varType, vName)
+    -- _ -> pure (dt, "")
 
 argListParser :: ParsecT String ParseInfo IO [(DT, IdentifierName)]
 argListParser = do
