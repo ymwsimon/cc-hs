@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/23 13:59:50 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/23 22:33:56 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -206,7 +206,7 @@ allBinaryOp =
 
 allUnaryOp :: [String]
 allUnaryOp =
-  ["!", "~", "--", "++", "-", "+"]
+  ["!", "~", "--", "++", "-", "+", "*", "&"]
 
 allPostUnaryOp :: [String]
 allPostUnaryOp =
@@ -715,7 +715,7 @@ unaryOpStringParser :: ParsecT String u IO String
 unaryOpStringParser = foldl1 (<|>) $
   map try
     [incrementLex, decrementLex, plusLex, minusLex,
-      exclaimLex, complementLex]
+      exclaimLex, complementLex, bitAndLex <* notFollowedBy (char '&'), mulLex <* notFollowedBy (char '*')]
 
 exprToInteger :: TypedExpr -> Integer
 exprToInteger (TExpr expr _) = case expr of
@@ -877,7 +877,7 @@ exprToConstantExpr te@(TExpr e dt) =
 
 
 foldToConstExpr :: TypedExpr -> TypedExpr
--- foldToConstExpr te = te
+-- foldToConstExpr = id
 foldToConstExpr te = if isConstantTypedExpr te then exprToConstantExpr te else te
 
 doubleIntegralParser :: ParsecT String ParseInfo IO TypedExpr
@@ -938,19 +938,51 @@ cvtTypedExpr te@(TExpr _ dt) cDT
   | dt == cDT = te
   | otherwise = TExpr (Cast cDT te) cDT
 
+getPointingType :: DT -> DT
+getPointingType dt = case dt of
+  DTPointer pDT -> pDT
+  _ -> dt
+
+derefParser :: ParsecT String ParseInfo IO TypedExpr
+derefParser = do
+  void mulLex
+  p <- precedence <$> getState
+  modifyState $ updatePrecedence $ getUnaryOpPrecedence "*"
+  expr <- exprParser
+  liftIO $ print expr
+  unless (isPointerDT $ tDT expr) $
+    unexpected "dereference of non pointer type"
+  modifyState (setPrecedence p)
+  pure $ TExpr (Dereference expr) $ getPointingType $ tDT expr
+
+addrOfParser :: ParsecT String ParseInfo IO TypedExpr
+addrOfParser = do
+  void bitAndLex
+  p <- precedence <$> getState
+  modifyState $ updatePrecedence $ getUnaryOpPrecedence "&"
+  expr <- exprParser
+  unless (isVariableExpr expr) $
+    unexpected ""
+  modifyState (setPrecedence p)
+  pure $ TExpr (AddrOf expr) $ DTPointer $ tDT expr
+
 unaryExprParser :: ParsecT String ParseInfo IO TypedExpr
 unaryExprParser = do
   uOpStr <- lookAhead unaryOpStringParser
-  uOp <- unaryOpParser
-  p <- precedence <$> getState
-  modifyState $ updatePrecedence $ getUnaryOpPrecedence uOpStr
-  expr <- exprParser
-  when (uOp == Complement && isFloatTypedExpr expr) $
-    unexpected "Complement unary operation for floating point number"
-  when (uOp `elem` [PreDecrement, PreIncrement] && not (isVariableExpr expr)) $
-    unexpected "Need lvalue for prefix operation"
-  let dt = if uOp == NotRelation then DTInternal TInt else tDT expr
-  foldToConstExpr (TExpr (Unary uOp expr) dt) <$ modifyState (setPrecedence p)
+  case uOpStr of
+    "*" -> derefParser
+    "&" -> addrOfParser
+    _ -> do
+      uOp <- unaryOpParser
+      p <- precedence <$> getState
+      modifyState $ updatePrecedence $ getUnaryOpPrecedence uOpStr
+      expr <- exprParser
+      when (uOp == Complement && isFloatTypedExpr expr) $
+        unexpected "Complement unary operation for floating point number"
+      when (uOp `elem` [PreDecrement, PreIncrement] && not (isVariableExpr expr)) $
+        unexpected "Need lvalue for prefix operation"
+      let dt = if uOp == NotRelation then DTInternal TInt else tDT expr
+      foldToConstExpr (TExpr (Unary uOp expr) dt) <$ modifyState (setPrecedence p)
 
 makeConstantTEIntWithDT :: Integer -> DT -> TypedExpr
 makeConstantTEIntWithDT n dt = case dt of
@@ -1762,8 +1794,14 @@ isVarIdentifier (VarIdentifier {}) = True
 isVarIdentifier _ = False
 
 isFuncDT :: DT -> Bool
-isFuncDT (DTFuncType {}) = True
-isFuncDT _ = False
+isFuncDT dt = case dt of 
+  DTFuncType {} -> True
+  _ -> False
+
+isPointerDT :: DT -> Bool
+isPointerDT dt = case dt of
+  DTPointer {} -> True
+  _ -> False
 
 funcNotYetDefined :: String -> ParseInfo -> Bool
 funcNotYetDefined name parseInfo =
