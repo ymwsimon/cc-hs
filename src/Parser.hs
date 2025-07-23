@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/23 11:13:42 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/23 13:59:50 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -1228,7 +1228,9 @@ castParser :: ParsecT String ParseInfo IO TypedExpr
 castParser = do
   void openPParser
   (_, baseType) <- declarationSpecifierParser False ([], storageClassSpecifierStrList)
-  (_, declarator) <- declaratorParser ""
+  (name, declarator) <- declaratorParser (show baseType) ""
+  unless (null name) $
+    unexpected "declarator"
   void closePParser
   p <- precedence <$> getState
   modifyState $ setPrecedence 2
@@ -1283,12 +1285,8 @@ ifStatParser = do
 argPairParser :: ParsecT String ParseInfo IO (DT, IdentifierName)
 argPairParser = do
   (_, baseType) <- declarationSpecifierParser False ([], "void" : storageClassSpecifierStrList)
-  (vName, declarator) <- declaratorParser ""
+  (vName, declarator) <- declaratorParser (show baseType) ""
   let varType = declarator baseType
-  -- maybeIdent <- lookAhead $ optionMaybe $ try identifierParser
-  -- case maybeIdent of
-  --   Just _ -> do
-  --     vName <- identifierParser
   current <- currentScopeIdent <$> getState
   when (M.member vName current) $
     unexpected $ vName ++ ". Already defined"
@@ -1296,7 +1294,6 @@ argPairParser = do
     modifyState (\p -> p {currentScopeIdent =
       M.insert vName (VarIdentifier (VarTypeInfo vName varType Nothing Nothing False)) (currentScopeIdent p)})
   pure (varType, vName)
-    -- _ -> pure (dt, "")
 
 argListParser :: ParsecT String ParseInfo IO [(DT, IdentifierName)]
 argListParser = do
@@ -1349,7 +1346,7 @@ getInitialiser parser = do
 topLevelVarDeclarationParser :: ParsecT String ParseInfo IO VarTypeInfo
 topLevelVarDeclarationParser = do
   (sc, baseType) <- declarationSpecifierParser False ([], [])
-  (vName, declarator) <- declaratorParser ""
+  (vName, declarator) <- declaratorParser (show baseType) ""
   let varType = declarator baseType
   topIdentMap <- topLevelScopeIdent <$> getState
   when (M.member vName topIdentMap && isFuncIdentifier (topIdentMap M.! vName)) $
@@ -1360,7 +1357,7 @@ topLevelVarDeclarationParser = do
     unexpected $ vName ++ ". Type mismatch to previous declaration"
   initialiser <- fmap (foldToConstExpr . (`cvtTypedExpr` varType)) <$> getInitialiser exprParser
   unless (isNothing initialiser || isConstantTypedExpr (fromJust initialiser)) $
-    unexpected "non constant intialiser"
+    unexpected "non constant initialiser"
   if M.member vName topIdentMap
     then do
       VarIdentifier (VarTypeInfo _ vType vDefine sClass _) <- pure $ topIdentMap M.! vName
@@ -1403,7 +1400,7 @@ localStaticVarHandle :: DT -> Maybe StorageClass -> IdentifierName -> ParsecT St
 localStaticVarHandle varType sc vName = do
   initialiser <- fmap (foldToConstExpr . (`cvtTypedExpr` varType)) <$> getInitialiser exprParser
   unless (isNothing initialiser || isConstantTypedExpr (fromJust initialiser)) $
-    unexpected "non constant intialiser"
+    unexpected "non constant initialiser"
   parseInfo <- getState
   let varId = globalVarId parseInfo
       newVarName = vName ++ "." ++ show varId
@@ -1420,13 +1417,13 @@ localStaticVarHandle varType sc vName = do
 funcDeclaratorArgListParser :: ParsecT String ParseInfo IO (DT -> DT)
 funcDeclaratorArgListParser = DTFuncType <$> argListParser
 
-declaratorParser :: IdentifierName -> ParsecT String ParseInfo IO (IdentifierName, DT -> DT)
-declaratorParser identiferName = do
+declaratorParser :: String -> IdentifierName -> ParsecT String ParseInfo IO (IdentifierName, DT -> DT)
+declaratorParser preTok identiferName = do
   nextChar <- lookAhead $ try (spaces >> anyChar)
   case nextChar of
     '(' -> do
       void openPParser
-      (newIdentName, innerType) <- declaratorParser identiferName
+      (newIdentName, innerType) <- declaratorParser "(" identiferName
       void closePParser
       afterClosePChar <- lookAhead $ try (spaces >> anyChar)
       maybeFuncType <- case afterClosePChar of
@@ -1437,7 +1434,7 @@ declaratorParser identiferName = do
       pure (newIdentName, innerType . maybeFuncType)
     '*' -> do
       void mulLex
-      (newIdentName, newType) <- declaratorParser identiferName
+      (newIdentName, newType) <- declaratorParser "*" identiferName
       upcomingChar <- lookAhead $ try (spaces >> anyChar)
       maybeFuncType <- case upcomingChar of
         '(' -> do
@@ -1445,6 +1442,11 @@ declaratorParser identiferName = do
           funcDeclaratorArgListParser <* putState parseInfo
         _ -> pure id
       pure (newIdentName, newType . maybeFuncType . DTPointer)
+    ')' -> do
+      case preTok of
+        "(" -> pure (identiferName, DTFuncType [])
+        "*" -> pure (identiferName, id)
+        _ -> pure (identiferName, id)
     _ -> do
       newIdentName <- lookAhead (try closePParser <|> try identifierParser) <|> pure ""
       case newIdentName of
@@ -1463,7 +1465,7 @@ declaratorParser identiferName = do
 varDeclarationParser :: ParsecT String ParseInfo IO VarTypeInfo
 varDeclarationParser = do
   (sc, baseType) <- declarationSpecifierParser False ([], [])
-  (vName, declarator) <- declaratorParser ""
+  (vName, declarator) <- declaratorParser (show baseType) ""
   let varType = declarator baseType
   when (isFuncDT varType) $
     unexpected "function declaration"
@@ -1838,7 +1840,7 @@ functionDeclareParser = do
   parseInfo <- getState
   updateVarMapForFuncBlockScope
   toplvl <- topLevel <$> getState
-  (name, declarator) <- declaratorParser ""
+  (name, declarator) <- declaratorParser (show baseType) ""
   let fType = declarator baseType
   void $ checkForFuncNameConflict name
   checkFuncStorageClass name sc
@@ -1874,7 +1876,8 @@ declareParser = do
       maybeDeclarator <- do
         parseInfo <- getState
         updateVarMapForFuncBlockScope
-        lookAhead (optionMaybe $ try $ declarationSpecifierParser False ([], []) >> declaratorParser "") <* putState parseInfo
+        lookAhead (optionMaybe $ try $ declarationSpecifierParser False ([], []) >>
+          declaratorParser (show rType) "") <* putState parseInfo
       case maybeDeclarator of
         Just (_, d) -> do
           case d rType of
@@ -1885,7 +1888,8 @@ declareParser = do
                 then VariableDeclaration <$> topLevelVarDeclarationParser
                 else VariableDeclaration <$> varDeclarationParser
         _ ->
-          declarationSpecifierParser False ([], []) >> declaratorParser "" >> unexpected "declarator error"
+          declarationSpecifierParser False ([], []) >> declaratorParser (show rType) "" >>
+            unexpected "declarator error"
     _ -> declarationSpecifierParser False ([], []) >> unexpected "specifier error"
 
 getLabelList :: [BlockItem] -> M.Map String String -> Either String (M.Map String String)
