@@ -715,7 +715,7 @@ unaryOpStringParser :: ParsecT String u IO String
 unaryOpStringParser = foldl1 (<|>) $
   map try
     [incrementLex, decrementLex, plusLex, minusLex,
-      exclaimLex, complementLex, bitAndLex <* notFollowedBy (char '&'), mulLex <* notFollowedBy (char '*')]
+      exclaimLex, complementLex, bitAndLex, mulLex]
 
 exprToInteger :: TypedExpr -> Integer
 exprToInteger (TExpr expr _) = case expr of
@@ -949,7 +949,6 @@ derefParser = do
   p <- precedence <$> getState
   modifyState $ updatePrecedence $ getUnaryOpPrecedence "*"
   expr <- exprParser
-  liftIO $ print expr
   unless (isPointerDT $ tDT expr) $
     unexpected "dereference of non pointer type"
   modifyState (setPrecedence p)
@@ -1125,8 +1124,8 @@ exprRightParser l@(TExpr lExpr lDt) = do
   p <- precedence <$> getState
   if isBinaryOpChar binOp && isEqOrHigherPrecedence binOp p
     then if binOp `elem` binaryAssignmentOp
-          then case lExpr of
-                Variable {} -> do
+          then do
+            let varDerefPtr = do
                     op <- binaryAssignmentOpParser
                     modifyState $ setPrecedence $ getBinOpPrecedence binOp
                     e <- exprParser
@@ -1142,7 +1141,10 @@ exprRightParser l@(TExpr lExpr lDt) = do
                           _ -> TExpr (Assignment l
                             (cvtTypedExpr (TExpr (Binary op (cvtTypedExpr l dt) (foldToConstExpr (cvtTypedExpr e dt))) dt) lDt)) lDt
                     exprRightParser te
-                _ -> unexpected "Invalid lvalue on the left side"
+            case lExpr of
+                  Variable {} -> varDerefPtr
+                  Dereference {} -> varDerefPtr
+                  _ -> unexpected "Invalid lvalue on the left side"
           else if binOp == "?"
             then do
               tCond <- condtionalTrueParser

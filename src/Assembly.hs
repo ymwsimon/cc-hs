@@ -45,6 +45,7 @@ data AsmInstruction =
   Mov {asmMovType :: AsmType, asmMovSrc :: Operand, asmMovDst :: Operand}
   | Movsx {asmMovsxSrc :: Operand, asmMovsxDst :: Operand}
   | MovZeroExtend {asmMovZESrc :: Operand, asmMovZEDst :: Operand}
+  | Lea {asmLeaSrc :: Operand, asmLeaDst :: Operand}
   | Ret
   | AsmUnary AsmUnaryOp AsmType Operand
   | AsmBinary AsmBinaryOp AsmType Operand Operand
@@ -134,7 +135,7 @@ data Operand =
   Imm NumConst
   | Register Reg
   | Pseudo {identifier :: String}
-  | Stack Int
+  | Memory Reg Int
   | Data String
   deriving Eq
 
@@ -151,7 +152,7 @@ instance Show Operand where
     _ -> "$" ++ numConstToStr n
   show (Register s) = "%" ++ show s
   show (Pseudo ident) = "tmpVar." ++ show ident
-  show (Stack i) = show i ++ "(%rbp)"
+  show (Memory reg i) = show i ++ "(%" ++ show reg ++ ")"
   show (Data s) = s ++ "(%rip)"
 
 instance Show AsmUnaryOp where
@@ -305,6 +306,7 @@ dtToAsmSize dt = case dt of
   DTInternal TLong -> 8
   DTInternal TULong -> 8
   DTInternal TDouble -> 8
+  DTPointer _ -> 8
   _ -> undefined
 
 dtToAsmType :: DT -> AsmType
@@ -314,6 +316,7 @@ dtToAsmType dt = case dt of
   DTInternal TLong -> QuadWord
   DTInternal TULong -> QuadWord
   DTInternal TDouble -> AsmDouble
+  DTPointer _ -> QuadWord
   _ -> undefined
 
 asmTypeToMemSize :: AsmType -> MemorySize
@@ -345,7 +348,7 @@ extractFloatConstant = S.fromList . foldl' foldF (map castDoubleToWord64 [-0.0, 
           _ -> []
 
 parametersRegister :: [Operand]
-parametersRegister = map Register [DI, SI, DX, CX, R8, R9] ++ map Stack [16, 24..]
+parametersRegister = map Register [DI, SI, DX, CX, R8, R9] ++ map (Memory RBP) [16, 24..]
 
 generalXmmRegister :: ([Reg], [Reg])
 generalXmmRegister = ([DI, SI, DX, CX, R8, R9], enumFromTo XMM0 XMM7)
@@ -530,6 +533,11 @@ irInstructionToAsmInstruction instr m funcList gVarMap = case instr of
   IRJump target -> [AsmJmp target]
   IRLabel target -> [AsmLabel target]
   IRCopy s d -> [Mov (dtToAsmType $ irValToDT s) (cvtOperand s) (cvtOperand d)]
+  IRGetAddress s d -> [Lea (cvtOperand s) (cvtOperand d)]
+  IRLoad s d -> [Mov QuadWord (cvtOperand s) (Register AX),
+    Mov (dtToAsmType $ irValToDT d) (Memory AX 0) (cvtOperand d)]
+  IRStore s d -> [Mov QuadWord (cvtOperand d) (Register AX),
+    Mov (dtToAsmType $ irValToDT s) (cvtOperand s) (Memory AX 0)]
   IRFuncCall name args dst -> irFuncCallToAsm name args dst funcList m gVarMap
   IRSignExtend s d -> [Movsx (cvtOperand s) (cvtOperand d)]
   IRTruncate s d -> [Mov LongWord (cvtOperand s) (cvtOperand d)]
@@ -581,7 +589,7 @@ copyParametersToStack n (m, instrs) (reg, stack)
         (M.insert var n m, instrs ++ [Mov QuadWord src (Pseudo (show n))])
         (drop 1 reg, stack)
   | otherwise = let var = irVName $ fst $ (!! 0) stack
-                    src = Stack $ snd $ (!! 0) stack in
+                    src = Memory RBP $ snd $ (!! 0) stack in
       copyParametersToStack
         (n + 1)
         (M.insert var n m, instrs ++ [Mov QuadWord src (Pseudo (show n))])
@@ -632,9 +640,10 @@ convertAsmTempVarToStackAddr = map convertInstr
           MovZeroExtend s d -> MovZeroExtend (convertOperand s) (convertOperand d)
           Cvtsi2sd t s d -> Cvtsi2sd t (convertOperand s) (convertOperand d)
           Cvttsd2si t s d -> Cvttsd2si t (convertOperand s) (convertOperand d)
+          Lea s d -> Lea (convertOperand s) (convertOperand d)
           _ -> instr
         convertOperand operand = case operand of
-          Pseudo ident -> Stack $ (-8) * read ident
+          Pseudo ident -> Memory RBP $ (-8) * read ident
           _ -> operand
 
 addAllocateStackToFunc :: [AsmInstruction] -> [AsmInstruction]
@@ -657,7 +666,7 @@ getStackSize = foldl' getMinSize 0
           SetCC _ d -> takeValFromOperand d
           _ -> 0
         takeValFromOperand operand = case operand of
-          Stack i -> i
+          Memory _ i -> i
           _ -> 0
 
 getFloatConst :: [AsmInstruction] -> [Double]
@@ -691,7 +700,7 @@ replacePseudoRegAllocateStackFixDoubleStackOperand afd =
                       $ instructions afd }
 
 isMemoryAddr :: Operand -> Bool
-isMemoryAddr (Stack _) = True
+isMemoryAddr (Memory {}) = True
 isMemoryAddr (Data _) = True
 isMemoryAddr (Pseudo _) = True
 isMemoryAddr (Imm (ConstDouble _)) = True
@@ -712,11 +721,6 @@ resolveDoubleStackOperand instr = case instr of
               | otherwise = [instrs]
   instrs@(AsmBinary AsmMul t mulVal i) -> mulF
       where mulF
-              -- | t == AsmDouble
-              --   = [Mov t mulVal (Register XMM0),
-              --     Mov t i (Register XMM1),
-              --     AsmBinary AsmMul t (Register XMM0) $ Register XMM1,
-              --     Mov t (Register XMM11) i]
               | isMemoryAddr i || t == QuadWord && isMemoryAddr i
                 = [Mov t mulVal (Register R10),
                 Mov t i (Register R11),
@@ -759,30 +763,34 @@ resolveDoubleStackOperand instr = case instr of
   Cvttsd2si t s d ->
     [Cvttsd2si t s (Register AX),
       Mov t (Register AX) d]
+  instrs@(Lea s d) -> if isMemoryAddr s && isMemoryAddr d
+    then
+      [Lea s (Register RAX), Mov QuadWord (Register RAX) d]
+    else [instrs]
   _ -> [instr]
 
 fixDivConstant :: AsmInstruction -> [AsmInstruction]
 fixDivConstant instr@(AsmIdiv t (Imm i))
   | isFloatConstNumConst i = [instr]
   | otherwise = [Mov t (Imm i) (Register R10), AsmIdiv t $ Register R10]
-fixDivConstant (AsmIdiv t (Stack i)) =
-  [Mov t (Stack i) (Register R10), AsmIdiv t $ Register R10]
+fixDivConstant (AsmIdiv t (Memory RBP i)) =
+  [Mov t (Memory RBP i) (Register R10), AsmIdiv t $ Register R10]
 fixDivConstant instr@(AsmDiv t (Imm i))
   | isFloatConstNumConst i = [instr]
   | otherwise = [Mov t (Imm i) (Register R10), AsmDiv t $ Register R10]
-fixDivConstant (AsmDiv t (Stack i)) =
-  [Mov t (Stack i) (Register R10), AsmDiv t $ Register R10]
+fixDivConstant (AsmDiv t (Memory RBP i)) =
+  [Mov t (Memory RBP i) (Register R10), AsmDiv t $ Register R10]
 fixDivConstant instr = [instr]
 
 fixBitShiftNonImm :: AsmInstruction -> [AsmInstruction]
-fixBitShiftNonImm (AsmBinary AsmShiftL t (Stack i) d) =
-  [Mov AsmByte  (Stack i) (Register CL), AsmBinary AsmShiftL t (Register CL) d]
-fixBitShiftNonImm (AsmBinary AsmUShiftL t (Stack i) d) =
-  [Mov AsmByte  (Stack i) (Register CL), AsmBinary AsmUShiftL t (Register CL) d]
-fixBitShiftNonImm (AsmBinary AsmShiftR t (Stack i) d) =
-  [Mov AsmByte (Stack i) (Register CL), AsmBinary AsmShiftR t (Register CL) d]
-fixBitShiftNonImm (AsmBinary AsmUShiftR t (Stack i) d) =
-  [Mov AsmByte (Stack i) (Register CL), AsmBinary AsmUShiftR t (Register CL) d]
+fixBitShiftNonImm (AsmBinary AsmShiftL t (Memory RBP i) d) =
+  [Mov AsmByte  (Memory RBP i) (Register CL), AsmBinary AsmShiftL t (Register CL) d]
+fixBitShiftNonImm (AsmBinary AsmUShiftL t (Memory RBP i) d) =
+  [Mov AsmByte  (Memory RBP i) (Register CL), AsmBinary AsmUShiftL t (Register CL) d]
+fixBitShiftNonImm (AsmBinary AsmShiftR t (Memory RBP i) d) =
+  [Mov AsmByte (Memory RBP i) (Register CL), AsmBinary AsmShiftR t (Register CL) d]
+fixBitShiftNonImm (AsmBinary AsmUShiftR t (Memory RBP i) d) =
+  [Mov AsmByte (Memory RBP i) (Register CL), AsmBinary AsmUShiftR t (Register CL) d]
 fixBitShiftNonImm instr = [instr]
 
 fixCmpConstant :: AsmInstruction -> [AsmInstruction]
@@ -931,6 +939,9 @@ asmInstructionToStr instr = case instr of
   Cvttsd2si t s d ->
     pure $ tabulate ["cvttsd2si" ++ asmTypeToAsmStrSuffix t,
       show (convertToNSizeOperand (asmTypeToMemSize t) s) ++ ", " ++ show (convertToNSizeOperand (asmTypeToMemSize t) d)]
+  Lea s d ->
+    pure $ tabulate ["lea" ++ asmTypeToAsmStrSuffix QuadWord,
+      show (convertToNSizeOperand (asmTypeToMemSize QuadWord) s) ++ ", " ++ show (convertToNSizeOperand (asmTypeToMemSize QuadWord) d)]
 
 asmFixUp :: AsmTopLevel -> AsmFunctionDefine
 asmFixUp = replacePseudoRegAllocateStackFixDoubleStackOperand . asmFuncD
