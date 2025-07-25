@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/07/22 11:02:52 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/25 11:41:24 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -55,6 +55,9 @@ data IRInstruction =
   | IRBinary {irBinaryOp :: BinaryOp, irLOperand :: IRVal,
       irROperand :: IRVal, irBinaryDst :: IRVal}
   | IRCopy {irCopySrc :: IRVal, irCopyDst :: IRVal}
+  | IRGetAddress {irAddrSrc :: IRVal, irAddrDst :: IRVal}
+  | IRLoad {irLoadSrcPtr :: IRVal, irLoadDst :: IRVal}
+  | IRStore {irStoreSrc :: IRVal, irStorePtrDst :: IRVal}
   | IRJump String
   | IRJumpIfZero IRVal String String
   | IRJumpIfNotZero IRVal String
@@ -321,8 +324,13 @@ dropVarName v = if '#' `elem` v then drop 1 $ dropWhile (/= '#') v else v
 assignmentToIRs :: TypedExpr -> TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
 assignmentToIRs var rExpr = do
   (rIRs, rVal) <- exprToIRs rExpr
-  (varIRs, irVar) <- exprToIRs var
-  pure (rIRs ++ varIRs ++ [IRCopy rVal irVar], irVar)
+  case var of
+    TExpr (Dereference ptr) _ -> do
+      (varIRs, irVar) <- derefAssignmentToIRs ptr
+      pure (rIRs ++ varIRs ++ [IRStore rVal irVar], rVal)
+    _ -> do
+      (varIRs, irVar) <- exprToIRs var
+      pure (rIRs ++ varIRs ++ [IRCopy rVal irVar], irVar)
 
 conditionToIRs :: DT -> TypedExpr -> TypedExpr -> TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
 conditionToIRs dt condition tExpr fExpr = do
@@ -462,6 +470,26 @@ castToIRs dt te@(TExpr _ tdt)
           | otherwise = IRZeroExtend
     pure (teIRs ++ [op teIRVal varId], varId)
 
+derefToIRs :: TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
+derefToIRs ptr = do
+  (ptrIRs, ptrIRVal) <- exprToIRs ptr
+  resIRVal <- gets (IRVar (tDT ptr) . show . fst) <* modify bumpOneToVarId
+  pure (ptrIRs ++ [IRLoad ptrIRVal resIRVal], resIRVal)
+
+derefAssignmentToIRs :: TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
+derefAssignmentToIRs ptr = do
+  (ptrIRs, ptrIRVal) <- exprToIRs ptr
+  pure (ptrIRs, ptrIRVal)
+
+addrOfToIRs :: TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
+addrOfToIRs v@(TExpr var dt) = case var of
+  Variable {} -> do
+    (varIRs, varIRVal) <- exprToIRs v
+    resIRVal <- gets (IRVar dt . show . fst) <* modify bumpOneToVarId
+    pure (varIRs ++ [IRGetAddress varIRVal resIRVal], resIRVal)
+  Dereference ptr -> exprToIRs ptr
+  _ -> undefined
+
 exprToIRs :: TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
 exprToIRs (TExpr expr dt) = case expr of
   Constant (ConstShort s) -> pure ([], IRConstant (DTInternal TShort) $ ConstShort s)
@@ -479,6 +507,8 @@ exprToIRs (TExpr expr dt) = case expr of
   Conditional condition tCond fCond -> conditionToIRs dt condition tCond fCond
   FunctionCall name exprs -> funcCallToIRs name dt exprs
   Cast cDt cExpr -> castToIRs cDt cExpr
+  Dereference ptr -> derefToIRs ptr
+  AddrOf var -> addrOfToIRs var
 
 extractVarId :: IRInstruction -> [Int]
 extractVarId instr = case instr of
@@ -500,6 +530,9 @@ extractVarId instr = case instr of
   IRDoubleToUInt _ s d -> [getVarId s, getVarId d]
   IRIntToDouble s d -> [getVarId s, getVarId d]
   IRUIntToDouble _ s d -> [getVarId s, getVarId d]
+  IRGetAddress s d -> [getVarId s, getVarId d]
+  IRLoad s d -> [getVarId s, getVarId d]
+  IRStore s d -> [getVarId s, getVarId d]
   where getVarId i = case i of
           IRConstant _ _ -> 0
           IRVar _ iv -> if all isDigit iv then read iv else 0

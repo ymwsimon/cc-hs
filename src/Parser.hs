@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/23 22:33:56 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/24 17:50:45 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -962,7 +962,7 @@ addrOfParser = do
   modifyState $ updatePrecedence $ getUnaryOpPrecedence "&"
   expr <- exprParser
   unless (isVariableExpr expr) $
-    unexpected ""
+    unexpected "non lvalue"
   modifyState (setPrecedence p)
   pure $ TExpr (AddrOf expr) $ DTPointer $ tDT expr
 
