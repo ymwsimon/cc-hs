@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/07/25 11:41:24 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/26 12:35:09 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -485,7 +485,7 @@ addrOfToIRs :: TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
 addrOfToIRs v@(TExpr var dt) = case var of
   Variable {} -> do
     (varIRs, varIRVal) <- exprToIRs v
-    resIRVal <- gets (IRVar dt . show . fst) <* modify bumpOneToVarId
+    resIRVal <- gets (IRVar (DTPointer dt) . show . fst) <* modify bumpOneToVarId
     pure (varIRs ++ [IRGetAddress varIRVal resIRVal], resIRVal)
   Dereference ptr -> exprToIRs ptr
   _ -> undefined

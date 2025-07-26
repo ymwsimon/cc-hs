@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/24 17:50:45 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/26 21:06:13 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -764,6 +764,11 @@ isVariableExpr :: TypedExpr -> Bool
 isVariableExpr (TExpr (Variable {}) _) = True
 isVariableExpr _ = False
 
+isLValueExpr :: TypedExpr -> Bool
+isLValueExpr (TExpr (Variable {}) _) = True
+isLValueExpr (TExpr (Dereference _) _) = True
+isLValueExpr _ = False
+
 isConstantTypedExpr :: TypedExpr -> Bool
 isConstantTypedExpr (TExpr expr _) = case expr of
   Constant _ -> True
@@ -810,6 +815,7 @@ exprToConstantExpr te@(TExpr e dt) =
         DTInternal TUInt -> Constant . ConstUInt . toInteger . (fromInteger :: Integer -> Word32) 
         DTInternal TLong -> Constant . ConstLong . toInteger . (fromInteger :: Integer -> Int64)
         DTInternal TULong -> Constant . ConstULong . toInteger . (fromInteger :: Integer -> Word64)
+        DTPointer _ -> Constant . ConstULong . toInteger . (fromInteger :: Integer -> Word64)
         _ -> undefined
         in
   case e of
@@ -947,22 +953,22 @@ derefParser :: ParsecT String ParseInfo IO TypedExpr
 derefParser = do
   void mulLex
   p <- precedence <$> getState
-  modifyState $ updatePrecedence $ getUnaryOpPrecedence "*"
+  modifyState $ setPrecedence $ getUnaryOpPrecedence "*"
   expr <- exprParser
   unless (isPointerDT $ tDT expr) $
     unexpected "dereference of non pointer type"
-  modifyState (setPrecedence p)
+  modifyState $ setPrecedence p
   pure $ TExpr (Dereference expr) $ getPointingType $ tDT expr
 
 addrOfParser :: ParsecT String ParseInfo IO TypedExpr
 addrOfParser = do
   void bitAndLex
   p <- precedence <$> getState
-  modifyState $ updatePrecedence $ getUnaryOpPrecedence "&"
+  modifyState $ setPrecedence $ getUnaryOpPrecedence "&"
   expr <- exprParser
-  unless (isVariableExpr expr) $
+  unless (isLValueExpr expr) $
     unexpected "non lvalue"
-  modifyState (setPrecedence p)
+  modifyState $ setPrecedence p
   pure $ TExpr (AddrOf expr) $ DTPointer $ tDT expr
 
 unaryExprParser :: ParsecT String ParseInfo IO TypedExpr
@@ -974,14 +980,15 @@ unaryExprParser = do
     _ -> do
       uOp <- unaryOpParser
       p <- precedence <$> getState
-      modifyState $ updatePrecedence $ getUnaryOpPrecedence uOpStr
+      modifyState $ setPrecedence $ getUnaryOpPrecedence uOpStr
       expr <- exprParser
       when (uOp == Complement && isFloatTypedExpr expr) $
         unexpected "Complement unary operation for floating point number"
-      when (uOp `elem` [PreDecrement, PreIncrement] && not (isVariableExpr expr)) $
+      when (uOp `elem` [PreDecrement, PreIncrement] && not (isLValueExpr expr)) $
         unexpected "Need lvalue for prefix operation"
       let dt = if uOp == NotRelation then DTInternal TInt else tDT expr
-      foldToConstExpr (TExpr (Unary uOp expr) dt) <$ modifyState (setPrecedence p)
+      modifyState $ setPrecedence p
+      pure $ foldToConstExpr (TExpr (Unary uOp expr) dt)
 
 makeConstantTEIntWithDT :: Integer -> DT -> TypedExpr
 makeConstantTEIntWithDT n dt = case dt of
@@ -1028,6 +1035,7 @@ isUnsigned dt = case dt of
   DTInternal TUShort -> True
   DTInternal TUInt -> True
   DTInternal TULong -> True
+  DTPointer _ -> True
   _ -> False
 
 isFloatConstNumConst :: NumConst -> Bool
@@ -1151,8 +1159,9 @@ exprRightParser l@(TExpr lExpr lDt) = do
               modifyState $ setPrecedence $ getBinOpPrecedence binOp
               fCond <- exprParser
               let cType = getExprsCommonType tCond fCond
-              exprRightParser $ TExpr 
-                (Conditional l (foldToConstExpr (cvtTypedExpr tCond cType)) (foldToConstExpr (cvtTypedExpr fCond cType))) cType
+              modifyState $ setPrecedence p
+              exprRightParser $ (`TExpr` cType) $
+                Conditional l (foldToConstExpr $ cvtTypedExpr tCond cType) $ foldToConstExpr $ cvtTypedExpr fCond cType
             else do
               op <- binaryOpParser
               modifyState $ updatePrecedence $ getBinOpPrecedence binOp
@@ -1180,13 +1189,14 @@ longOperandParser :: ParsecT String u IO TypedExpr
 longOperandParser = flip TExpr (DTInternal TLong) . Constant . ConstLong . read <$> longParser
 
 postfixOp :: TypedExpr -> ParsecT String u IO TypedExpr
-postfixOp e@(TExpr expr dt) = case expr of
-    Variable {} -> do
+postfixOp e@(TExpr _ dt) =
+  if isLValueExpr e
+    then do
       maybePostOp <- lookAhead (try $ incrementLex <|> decrementLex) <|> pure ""
       if maybePostOp `elem` allPostUnaryOp
         then flip TExpr dt . ($ e) . Unary <$> postUnaryOpParser
         else pure e
-    _ -> pure e
+    else pure e
 
 parenExprParser :: ParsecT String ParseInfo IO TypedExpr
 parenExprParser = do
@@ -1274,7 +1284,8 @@ castParser = do
   let cType = declarator baseType
   when (isFuncDT cType) $
     unexpected "cast to function"
-  foldToConstExpr (TExpr (Cast cType e) cType) <$ modifyState (setPrecedence p)
+  modifyState $ setPrecedence p
+  pure $ foldToConstExpr $ TExpr (Cast cType e) cType
 
 factorParser :: ParsecT String ParseInfo IO TypedExpr
 factorParser = do
@@ -1414,9 +1425,9 @@ localExternVarHandle varType sc vName  = do
     unexpected "different data type"
   unless (M.member vName $ topLevelScopeIdent parseInfo)
       $ updateTopLevelVarCurrentVar varType vName Nothing sc
-  modifyState (\p -> p {currentScopeIdent = M.insert vName
-    (VarIdentifier (VarTypeInfo vName varType Nothing sc (topLevel p))) $ currentScopeIdent p})
-  pure $ VarTypeInfo vName varType Nothing sc (topLevel parseInfo)
+  modifyState $ \p -> p {currentScopeIdent = M.insert vName
+    (VarIdentifier (VarTypeInfo vName varType Nothing sc $ topLevel p)) $ currentScopeIdent p}
+  pure $ VarTypeInfo vName varType Nothing sc $ topLevel parseInfo
 
 localPlainVarHandle :: DT -> Maybe StorageClass -> IdentifierName -> ParsecT String ParseInfo IO VarTypeInfo
 localPlainVarHandle varType sc vName = do
@@ -1424,11 +1435,11 @@ localPlainVarHandle varType sc vName = do
   let varId = currentVarId parseInfo
       newVarName = vName ++ "#" ++ show varId
       newVarMap = M.insert vName
-        (VarIdentifier (VarTypeInfo newVarName varType Nothing sc (topLevel parseInfo))) $
+        (VarIdentifier (VarTypeInfo newVarName varType Nothing sc $ topLevel parseInfo)) $
         currentScopeIdent parseInfo
   putState $ parseInfo {currentVarId = varId + 1, currentScopeIdent = newVarMap}
   initialiser <- fmap (foldToConstExpr . (`cvtTypedExpr` varType)) <$> getInitialiser exprParser
-  pure $ VarTypeInfo newVarName varType initialiser sc (topLevel parseInfo)
+  pure $ VarTypeInfo newVarName varType initialiser sc $ topLevel parseInfo
 
 localStaticVarHandle :: DT -> Maybe StorageClass -> IdentifierName -> ParsecT String ParseInfo IO VarTypeInfo
 localStaticVarHandle varType sc vName = do

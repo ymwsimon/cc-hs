@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/07/22 10:27:20 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/26 11:49:16 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -534,10 +534,10 @@ irInstructionToAsmInstruction instr m funcList gVarMap = case instr of
   IRLabel target -> [AsmLabel target]
   IRCopy s d -> [Mov (dtToAsmType $ irValToDT s) (cvtOperand s) (cvtOperand d)]
   IRGetAddress s d -> [Lea (cvtOperand s) (cvtOperand d)]
-  IRLoad s d -> [Mov QuadWord (cvtOperand s) (Register AX),
-    Mov (dtToAsmType $ irValToDT d) (Memory AX 0) (cvtOperand d)]
-  IRStore s d -> [Mov QuadWord (cvtOperand d) (Register AX),
-    Mov (dtToAsmType $ irValToDT s) (cvtOperand s) (Memory AX 0)]
+  IRLoad s d -> [Mov QuadWord (cvtOperand s) (Register RAX),
+    Mov (dtToAsmType $ irValToDT d) (Memory RAX 0) (cvtOperand d)]
+  IRStore s d -> [Mov QuadWord (cvtOperand d) (Register RAX),
+    Mov (dtToAsmType $ irValToDT s) (cvtOperand s) (Memory RAX 0)]
   IRFuncCall name args dst -> irFuncCallToAsm name args dst funcList m gVarMap
   IRSignExtend s d -> [Movsx (cvtOperand s) (cvtOperand d)]
   IRTruncate s d -> [Mov LongWord (cvtOperand s) (cvtOperand d)]
