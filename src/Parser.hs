@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/26 21:06:13 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/27 22:20:31 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -55,7 +55,7 @@ data PrimType =
 data DT =
   DTInternal PrimType
   | DTFuncType {argList :: [(DT, IdentifierName)], retType :: DT}
-  | DTPointer DT
+  | DTPointer {ptrPointingType :: DT}
   | DTUserDefined String [DT]
 
 data IdentifierType =
@@ -654,6 +654,17 @@ unsupportedFloatOperation =
   [Modulo, BitAnd, BitOr, BitXor,
     BitShiftLeft, BitShiftRight]
 
+unsupportedPointerOperation :: [BinaryOp]
+unsupportedPointerOperation =
+  [Multiply, Division, Modulo, BitAnd, BitOr, BitXor,
+    BitShiftLeft, BitShiftRight]
+
+unsupportedPointerUnaryOperation :: [UnaryOp]
+unsupportedPointerUnaryOperation =
+  [Complement,
+    Negate,
+    UPlus]
+
 binaryOpParser :: ParsecT String u IO BinaryOp
 binaryOpParser = foldl1 (<|>) $
   map try $
@@ -802,6 +813,10 @@ isFloatTypedExpr = (== DTInternal TDouble) . tDT
 
 isIntegralTypedExpr :: TypedExpr -> Bool
 isIntegralTypedExpr = isIntDT . tDT
+
+isPointerTypedExpr :: TypedExpr -> Bool
+isPointerTypedExpr (TExpr _ (DTPointer _)) = True
+isPointerTypedExpr _ = False
 
 isFloatDT :: DT -> Bool
 isFloatDT dt = case dt of
@@ -986,6 +1001,8 @@ unaryExprParser = do
         unexpected "Complement unary operation for floating point number"
       when (uOp `elem` [PreDecrement, PreIncrement] && not (isLValueExpr expr)) $
         unexpected "Need lvalue for prefix operation"
+      when (uOp `elem` unsupportedPointerUnaryOperation && isPointerTypedExpr expr) $
+        unexpected "Invalid unary operation for pointer"
       let dt = if uOp == NotRelation then DTInternal TInt else tDT expr
       modifyState $ setPrecedence p
       pure $ foldToConstExpr (TExpr (Unary uOp expr) dt)
@@ -1139,6 +1156,10 @@ exprRightParser l@(TExpr lExpr lDt) = do
                     e <- exprParser
                     when (op `elem` unsupportedFloatOperation && (isFloatTypedExpr l || isFloatTypedExpr e)) $
                       unexpected "binary operation for floating point number"
+                    when (isPointerTypedExpr l
+                      && not (isPointerTypedExpr e || (isIntegralConstantTE e && exprToInteger e == 0))) $
+                      unexpected "assignment operation for pointer"
+                    checkImplicitCast e lDt
                     let cType = getExprsCommonType l e
                     let dt
                           | op `elem` [Plus, Minus, Multiply, Division, Modulo, BitAnd, BitOr, BitXor] = cType
@@ -1161,13 +1182,19 @@ exprRightParser l@(TExpr lExpr lDt) = do
               let cType = getExprsCommonType tCond fCond
               modifyState $ setPrecedence p
               exprRightParser $ (`TExpr` cType) $
-                Conditional l (foldToConstExpr $ cvtTypedExpr tCond cType) $ foldToConstExpr $ cvtTypedExpr fCond cType
+                Conditional l
+                  (if isPointerTypedExpr tCond then tCond else foldToConstExpr $ cvtTypedExpr tCond cType)
+                  (if isPointerTypedExpr fCond then fCond else foldToConstExpr $ cvtTypedExpr fCond cType)
             else do
               op <- binaryOpParser
               modifyState $ updatePrecedence $ getBinOpPrecedence binOp
               rExpr <- exprParser
               when (op `elem` unsupportedFloatOperation && (isFloatTypedExpr l || isFloatTypedExpr rExpr)) $
                 unexpected "binary operation for floating point number"
+              when (op `elem` unsupportedPointerOperation && (isPointerTypedExpr l || isPointerTypedExpr rExpr)) $
+                  unexpected "binary operation for pointer"
+              unless (op `elem` [LogicAnd, LogicOr]) $
+                checkImplicitCast rExpr lDt
               modifyState $ setPrecedence p
               case op of
                 LogicAnd -> exprRightParser $ TExpr (Binary op (foldToConstExpr l) (foldToConstExpr rExpr)) $ DTInternal TInt
@@ -1236,6 +1263,46 @@ getFunTypeInfoFromVarMap fIdentifier current outer =
     then fti $ current M.! fIdentifier
     else fti $ outer M.! fIdentifier
 
+checkPointerInit :: TypedExpr -> DT -> Maybe StorageClass -> ParsecT String ParseInfo IO ()
+checkPointerInit te dt sc = do
+  when (isPointerDT dt && sc == Just Static
+    && not (isConstantTypedExpr te && isIntegralTypedExpr te && exprToInteger te == 0)) $
+    unexpected "non 0 init for pointer"
+  when (isPointerDT dt && sc /= Just Static
+    && (isFloatTypedExpr te ||
+    not (isPointerTypedExpr te || (isConstantTypedExpr te && isIntegralTypedExpr te && exprToInteger te == 0)))) $
+    unexpected "non 0 init for pointer"
+  case te of
+    TExpr (Conditional _ t f) _ ->do
+      when (isPointerDT dt && sc /= Just Static
+        && (isPointerTypedExpr t && ptrPointingType dt /= ptrPointingType (tDT t)
+        || isPointerTypedExpr f && ptrPointingType dt /= ptrPointingType (tDT f))) $
+        unexpected "implicit type cast for pointer"
+    _ -> pure ()
+
+checkImplicitCast :: TypedExpr -> DT -> ParsecT String ParseInfo IO ()
+checkImplicitCast te dt = do
+  when (isPointerTypedExpr te && not (isPointerDT dt)) $
+    unexpected "implicit type cast for pointer"
+  when (isPointerTypedExpr te && isPointerDT dt && ptrPointingType dt /= ptrPointingType (tDT te)) $
+    unexpected "implicit type cast for pointer"
+  when (isPointerDT dt
+    && not (isPointerTypedExpr te || (isConstantTypedExpr te && isIntegralTypedExpr te && exprToInteger te == 0))) $
+    unexpected "implicit type cast for pointer"
+  case te of
+    TExpr (Conditional _ t f) _ -> when (isPointerDT dt
+      && (isPointerTypedExpr t && ptrPointingType dt /= ptrPointingType (tDT t)
+      || isPointerTypedExpr f && ptrPointingType dt /= ptrPointingType (tDT f))) $
+      unexpected "implicit type cast for pointer"
+    _ -> pure ()
+
+checkExplicitCast :: TypedExpr -> DT -> ParsecT String ParseInfo IO ()
+checkExplicitCast te dt = do
+  when (isPointerDT dt && isFloatTypedExpr te) $
+    unexpected "explicit type cast for pointer"
+  when (isFloatDT dt && isPointerTypedExpr te) $
+    unexpected "explicit type cast for pointer"
+
 functionCallParser :: ParsecT String ParseInfo IO TypedExpr
 functionCallParser = do
   functionName <- identifierParser <* openPParser
@@ -1258,6 +1325,7 @@ functionCallParser = do
   let funcInfo = getFunTypeInfoFromVarMap functionName current outer
   unless (length paraList == length (argList $ funcType funcInfo)) $
     unexpected "Function call. Incorrect number of parameters"
+  mapM_ (uncurry checkImplicitCast) $ zip paraList $ map fst $ argList $ funcType funcInfo
   let convertedParaList = zipWith cvtTypedExpr paraList (map fst $ argList $ funcType funcInfo)
   pure $ TExpr
     (FunctionCall functionName (map foldToConstExpr convertedParaList))
@@ -1272,7 +1340,7 @@ castParser :: ParsecT String ParseInfo IO TypedExpr
 castParser = do
   void openPParser
   (_, baseType) <- declarationSpecifierParser False ([], storageClassSpecifierStrList)
-  (name, declarator) <- declaratorParser (show baseType) ""
+  (name, declarator) <- declaratorParser (show baseType) "" [id]
   unless (null name) $
     unexpected "declarator"
   void closePParser
@@ -1281,10 +1349,11 @@ castParser = do
   e@(TExpr innerE _) <- exprParser
   when (isAssignmentExpr innerE) $
     unexpected "cast of assignment expression"
-  let cType = declarator baseType
+  let cType = foldl1 (.) declarator baseType
   when (isFuncDT cType) $
     unexpected "cast to function"
   modifyState $ setPrecedence p
+  checkExplicitCast e cType
   pure $ foldToConstExpr $ TExpr (Cast cType e) cType
 
 factorParser :: ParsecT String ParseInfo IO TypedExpr
@@ -1310,9 +1379,11 @@ returnStatParser :: ParsecT String ParseInfo IO Statement
 returnStatParser = do
   void keyReturnParser
   rType <- funcReturnType <$> getState
-  expr <- flip cvtTypedExpr rType <$> exprParser
+  expr <- exprParser
+  checkImplicitCast expr rType
+  let cvtedTE = cvtTypedExpr expr rType
   void semiColParser
-  pure $ Return $ foldToConstExpr expr
+  pure $ Return $ foldToConstExpr cvtedTE
 
 ifStatParser :: ParsecT String ParseInfo IO Statement
 ifStatParser = do
@@ -1330,8 +1401,8 @@ ifStatParser = do
 argPairParser :: ParsecT String ParseInfo IO (DT, IdentifierName)
 argPairParser = do
   (_, baseType) <- declarationSpecifierParser False ([], "void" : storageClassSpecifierStrList)
-  (vName, declarator) <- declaratorParser (show baseType) ""
-  let varType = declarator baseType
+  (vName, declarator) <- declaratorParser (show baseType) "" [id]
+  let varType = foldl1 (.) declarator baseType
   current <- currentScopeIdent <$> getState
   when (M.member vName current) $
     unexpected $ vName ++ ". Already defined"
@@ -1391,8 +1462,8 @@ getInitialiser parser = do
 topLevelVarDeclarationParser :: ParsecT String ParseInfo IO VarTypeInfo
 topLevelVarDeclarationParser = do
   (sc, baseType) <- declarationSpecifierParser False ([], [])
-  (vName, declarator) <- declaratorParser (show baseType) ""
-  let varType = declarator baseType
+  (vName, declarator) <- declaratorParser (show baseType) "" [id]
+  let varType = foldl1 (.) declarator baseType
   topIdentMap <- topLevelScopeIdent <$> getState
   when (M.member vName topIdentMap && isFuncIdentifier (topIdentMap M.! vName)) $
     unexpected $ vName ++ ". Already defined"
@@ -1403,6 +1474,8 @@ topLevelVarDeclarationParser = do
   initialiser <- fmap (foldToConstExpr . (`cvtTypedExpr` varType)) <$> getInitialiser exprParser
   unless (isNothing initialiser || isConstantTypedExpr (fromJust initialiser)) $
     unexpected "non constant initialiser"
+  when (isJust initialiser) $
+    checkPointerInit (fromJust initialiser) varType (Just Static)
   if M.member vName topIdentMap
     then do
       VarIdentifier (VarTypeInfo _ vType vDefine sClass _) <- pure $ topIdentMap M.! vName
@@ -1438,8 +1511,13 @@ localPlainVarHandle varType sc vName = do
         (VarIdentifier (VarTypeInfo newVarName varType Nothing sc $ topLevel parseInfo)) $
         currentScopeIdent parseInfo
   putState $ parseInfo {currentVarId = varId + 1, currentScopeIdent = newVarMap}
-  initialiser <- fmap (foldToConstExpr . (`cvtTypedExpr` varType)) <$> getInitialiser exprParser
-  pure $ VarTypeInfo newVarName varType initialiser sc $ topLevel parseInfo
+  initialiser <- getInitialiser exprParser
+  let cvtinitialiser = foldToConstExpr . (`cvtTypedExpr` varType) <$> initialiser
+  when (isJust initialiser) $
+    checkImplicitCast (fromJust initialiser) varType
+  when (isJust initialiser) $
+    checkPointerInit (fromJust initialiser) varType sc
+  pure $ VarTypeInfo newVarName varType cvtinitialiser sc $ topLevel parseInfo
 
 localStaticVarHandle :: DT -> Maybe StorageClass -> IdentifierName -> ParsecT String ParseInfo IO VarTypeInfo
 localStaticVarHandle varType sc vName = do
@@ -1462,41 +1540,43 @@ localStaticVarHandle varType sc vName = do
 funcDeclaratorArgListParser :: ParsecT String ParseInfo IO (DT -> DT)
 funcDeclaratorArgListParser = DTFuncType <$> argListParser
 
-declaratorParser :: String -> IdentifierName -> ParsecT String ParseInfo IO (IdentifierName, DT -> DT)
-declaratorParser preTok identiferName = do
+declaratorParser :: String -> IdentifierName -> [DT -> DT] ->
+  ParsecT String ParseInfo IO (IdentifierName, [DT -> DT])
+declaratorParser preTok identiferName preDTs = do
   nextChar <- lookAhead $ try (spaces >> anyChar)
   case nextChar of
     '(' -> do
       void openPParser
-      (newIdentName, innerType) <- declaratorParser "(" identiferName
+      (newIdentName, innerType) <- declaratorParser "(" identiferName preDTs
       void closePParser
       afterClosePChar <- lookAhead $ try (spaces >> anyChar)
       maybeFuncType <- case afterClosePChar of
         '(' -> do
+          when (isFuncDT $ last innerType (DTInternal TInt)) $
+            unexpected "function returning function"
           parseInfo <- getState
           funcDeclaratorArgListParser <* putState parseInfo
         _ -> pure id
-      pure (newIdentName, innerType . maybeFuncType)
+      pure (newIdentName, innerType ++ [maybeFuncType])
     '*' -> do
       void mulLex
-      (newIdentName, newType) <- declaratorParser "*" identiferName
+      (newIdentName, newType) <- declaratorParser "*" identiferName preDTs
       upcomingChar <- lookAhead $ try (spaces >> anyChar)
       maybeFuncType <- case upcomingChar of
         '(' -> do
           parseInfo <- getState
           funcDeclaratorArgListParser <* putState parseInfo
         _ -> pure id
-      pure (newIdentName, newType . maybeFuncType . DTPointer)
+      pure (newIdentName, newType ++ [maybeFuncType, DTPointer])
     ')' -> do
       case preTok of
-        "(" -> pure (identiferName, DTFuncType [])
-        "*" -> pure (identiferName, id)
-        _ -> pure (identiferName, id)
+        "(" -> pure (identiferName, [DTFuncType []])
+        _ -> pure (identiferName, [id])
     _ -> do
       newIdentName <- lookAhead (try closePParser <|> try identifierParser) <|> pure ""
       case newIdentName of
         "" -> anyChar >>= unexpected . pure
-        ")" -> pure (identiferName, id)
+        ")" -> pure (identiferName, [id])
         _ -> do
           void identifierParser
           afterIdentChar <- lookAhead $ try (spaces >> anyChar)
@@ -1505,13 +1585,13 @@ declaratorParser preTok identiferName = do
               parseInfo <- getState
               funcDeclaratorArgListParser <* putState parseInfo
             _ -> pure id
-          pure (newIdentName, maybeFuncType)
+          pure (newIdentName, [maybeFuncType])
 
 varDeclarationParser :: ParsecT String ParseInfo IO VarTypeInfo
 varDeclarationParser = do
   (sc, baseType) <- declarationSpecifierParser False ([], [])
-  (vName, declarator) <- declaratorParser (show baseType) ""
-  let varType = declarator baseType
+  (vName, declarator) <- declaratorParser (show baseType) "" [id]
+  let varType = foldl1 (.) declarator baseType
   when (isFuncDT varType) $
     unexpected "function declaration"
   current <- currentScopeIdent <$> getState
@@ -1713,7 +1793,7 @@ defaultParser = do
     _ -> unexpected "Default"
 
 isIntDT :: DT -> Bool
-isIntDT dt = dt `elem` [DTInternal TChar, DTInternal TShort, DTInternal TInt, DTInternal TLong,
+isIntDT dt = isPointerDT dt || dt `elem` [DTInternal TChar, DTInternal TShort, DTInternal TInt, DTInternal TLong,
   DTInternal TUChar, DTInternal TUShort, DTInternal TUInt, DTInternal TULong]
 
 switchParser :: ParsecT String ParseInfo IO Statement
@@ -1891,8 +1971,8 @@ functionDeclareParser = do
   parseInfo <- getState
   updateVarMapForFuncBlockScope
   toplvl <- topLevel <$> getState
-  (name, declarator) <- declaratorParser (show baseType) ""
-  let fType = declarator baseType
+  (name, declarator) <- declaratorParser (show baseType) "" [id]
+  let fType = foldl1 (.) declarator baseType
   void $ checkForFuncNameConflict name
   checkFuncStorageClass name sc
   checkForFuncTypeConflict parseInfo $
@@ -1928,10 +2008,10 @@ declareParser = do
         parseInfo <- getState
         updateVarMapForFuncBlockScope
         lookAhead (optionMaybe $ try $ declarationSpecifierParser False ([], []) >>
-          declaratorParser (show rType) "") <* putState parseInfo
+          declaratorParser (show rType) "" [id]) <* putState parseInfo
       case maybeDeclarator of
         Just (_, d) -> do
-          case d rType of
+          case foldl1 (.) d rType of
             DTFuncType _ _ -> functionDeclareParser
             _ -> do
               toplvl <- topLevel <$> getState
@@ -1939,7 +2019,7 @@ declareParser = do
                 then VariableDeclaration <$> topLevelVarDeclarationParser
                 else VariableDeclaration <$> varDeclarationParser
         _ ->
-          declarationSpecifierParser False ([], []) >> declaratorParser (show rType) "" >>
+          declarationSpecifierParser False ([], []) >> declaratorParser (show rType) "" [id] >>
             unexpected "declarator error"
     _ -> declarationSpecifierParser False ([], []) >> unexpected "specifier error"
 

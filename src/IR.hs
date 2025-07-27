@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/07/26 12:35:09 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/27 14:44:36 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -16,7 +16,6 @@ import Parser
 import Operation
 import Control.Monad.State
 import qualified Data.Map.Strict as M
-import Control.Monad (mapAndUnzipM)
 import Data.Char
 import Data.Maybe (fromMaybe)
 
@@ -247,20 +246,31 @@ postPrefixToBin op
 unaryOperationToIRs :: UnaryOp -> DT -> TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
 unaryOperationToIRs op dt uExpr
   | op `elem` [PostDecrement, PostIncrement] = do
-    varId <- gets $ IRVar dt . show . fst
+    oldVal <- gets $ IRVar dt . show . fst
     modify bumpOneToVarId
-    (oldIRs, irVal) <-
+    (newValIRs, irNewVal) <-
       let c = if isFloatDT dt then makeConstantTEFloatWithDT 1.0 dt else makeConstantTEIntWithDT 1 dt in
       exprToIRs $ TExpr
         (Binary (postPrefixToBin op) uExpr c) $ tDT uExpr
     (varIRs, irVar) <- exprToIRs uExpr
-    pure (concat [[IRCopy irVar varId], oldIRs, varIRs, [IRCopy irVal irVar]], varId)
+    updateVarIRs <- case uExpr of
+      TExpr (Dereference ptr) _ -> do
+        (ptrIRs, ptrIRVar) <- exprToIRs ptr
+        pure $ ptrIRs ++ [IRStore irNewVal ptrIRVar]
+      _ -> pure [IRCopy irNewVal irVar]
+    pure (concat [varIRs, [IRCopy irVar oldVal], newValIRs,
+      updateVarIRs], oldVal)
   | op `elem` [PreDecrement, PreIncrement] = do
     (oldIRs, irVal) <- let c = if isFloatDT dt then makeConstantTEFloatWithDT 1.0 dt else makeConstantTEIntWithDT 1 dt in
       exprToIRs $ TExpr 
         (Binary (postPrefixToBin op) uExpr c) $ tDT uExpr
     (varIRs, irVar) <- exprToIRs uExpr
-    pure (oldIRs ++ varIRs ++ [IRCopy irVal irVar], irVal)
+    updateVarIRs <- case uExpr of
+      TExpr (Dereference ptr) _ -> do
+        (ptrIRs, ptrIRVar) <- exprToIRs ptr
+        pure $ ptrIRs ++ [IRStore irVal ptrIRVar]
+      _ -> pure [IRCopy irVal irVar]
+    pure (oldIRs ++ varIRs ++ updateVarIRs, irVal)
   | otherwise = do
       (oldIRs, irVal) <- exprToIRs uExpr
       varId <- gets fst
@@ -473,7 +483,7 @@ castToIRs dt te@(TExpr _ tdt)
 derefToIRs :: TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
 derefToIRs ptr = do
   (ptrIRs, ptrIRVal) <- exprToIRs ptr
-  resIRVal <- gets (IRVar (tDT ptr) . show . fst) <* modify bumpOneToVarId
+  resIRVal <- gets (IRVar (getPointingType $ tDT ptr) . show . fst) <* modify bumpOneToVarId
   pure (ptrIRs ++ [IRLoad ptrIRVal resIRVal], resIRVal)
 
 derefAssignmentToIRs :: TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
