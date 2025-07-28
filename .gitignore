@@ -6,3 +6,4 @@ test.c
 src/b.c
 *.c
 .hiefiles/*
+log
