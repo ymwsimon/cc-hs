@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/27 22:20:31 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/28 17:16:42 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -137,7 +137,7 @@ data Expr =
   | FunctionCall String [TypedExpr]
   | Unary UnaryOp TypedExpr
   | Binary BinaryOp TypedExpr TypedExpr
-  | Assignment TypedExpr TypedExpr
+  | Assignment CompoundAssignOp TypedExpr TypedExpr
   | Conditional TypedExpr TypedExpr TypedExpr
   | Dereference TypedExpr
   | AddrOf TypedExpr
@@ -637,7 +637,7 @@ fileParser = do
   top <- topLevelScopeIdent <$> getState
   pure (top, declares)
 
-binaryAssignmentOpParser :: ParsecT String u IO BinaryOp
+binaryAssignmentOpParser :: ParsecT String u IO CompoundAssignOp
 binaryAssignmentOpParser = foldl1 (<|>) $
   map try $
     zipWith (>>)
@@ -645,9 +645,16 @@ binaryAssignmentOpParser = foldl1 (<|>) $
         modAssignLex, bitAndAssignLex, bitOrAssignLex, bitXorAssignLex,
         bitLeftShiftAssignLex, bitRightShiftAssignLex, assignmentLex] $
       map pure
-        [Plus, Minus, Multiply, Division,
-          Modulo, BitAnd, BitOr, BitXor,
-          BitShiftLeft, BitShiftRight, None]
+        [PlusAssign, MinusAssign, MultiplyAssign, DivisionAssign,
+          ModuloAssign, BitAndAssign, BitOrAssign, BitXorAssign,
+          BitShiftLeftAssign, BitShiftRightAssign, AssignOp]
+
+compoundAssignOpToBinOp :: CompoundAssignOp -> BinaryOp
+compoundAssignOpToBinOp op = (M.! op) $ M.fromList $ zip
+  [BitAndAssign, BitOrAssign, BitXorAssign, BitShiftLeftAssign, BitShiftRightAssign, PlusAssign,
+    MinusAssign, MultiplyAssign, DivisionAssign, ModuloAssign, AssignOp]
+  [BitAnd, BitOr, BitXor, BitShiftLeft, BitShiftRight, Plus,
+    Minus, Multiply, Division, Modulo, None]
 
 unsupportedFloatOperation :: [BinaryOp]
 unsupportedFloatOperation =
@@ -1154,22 +1161,17 @@ exprRightParser l@(TExpr lExpr lDt) = do
                     op <- binaryAssignmentOpParser
                     modifyState $ setPrecedence $ getBinOpPrecedence binOp
                     e <- exprParser
-                    when (op `elem` unsupportedFloatOperation && (isFloatTypedExpr l || isFloatTypedExpr e)) $
+                    liftIO $ print e
+                    when ((compoundAssignOpToBinOp op `elem` unsupportedFloatOperation) && (isFloatTypedExpr l || isFloatTypedExpr e)) $
                       unexpected "binary operation for floating point number"
                     when (isPointerTypedExpr l
                       && not (isPointerTypedExpr e || (isIntegralConstantTE e && exprToInteger e == 0))) $
                       unexpected "assignment operation for pointer"
+                    when (isPointerTypedExpr l
+                      && (compoundAssignOpToBinOp op `elem` unsupportedPointerOperation)) $
+                      unexpected "compound assignment operation for pointer"
                     checkImplicitCast e lDt
-                    let cType = getExprsCommonType l e
-                    let dt
-                          | op `elem` [Plus, Minus, Multiply, Division, Modulo, BitAnd, BitOr, BitXor] = cType
-                          | op `elem` [BitShiftLeft, BitShiftRight] = lDt
-                          | otherwise = DTInternal TInt
-                    let te = case op of
-                          None -> TExpr (Assignment l (foldToConstExpr (cvtTypedExpr e lDt))) lDt
-                          _ -> TExpr (Assignment l
-                            (cvtTypedExpr (TExpr (Binary op (cvtTypedExpr l dt) (foldToConstExpr (cvtTypedExpr e dt))) dt) lDt)) lDt
-                    exprRightParser te
+                    exprRightParser $ TExpr (Assignment op l e) lDt
             case lExpr of
                   Variable {} -> varDerefPtr
                   Dereference {} -> varDerefPtr

@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:50:42 by mayeung           #+#    #+#             --
---   Updated: 2025/07/16 12:31:49 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/28 13:54:19 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -46,6 +46,20 @@ data BinaryOp =
   | GreaterEqualRelation
   | None
   deriving (Show, Eq)
+
+data CompoundAssignOp =
+  PlusAssign
+  | MinusAssign
+  | MultiplyAssign
+  | DivisionAssign
+  | ModuloAssign
+  | BitOrAssign
+  | BitAndAssign
+  | BitXorAssign
+  | BitShiftLeftAssign
+  | BitShiftRightAssign
+  | AssignOp
+  deriving (Show, Eq, Ord)
 
 unaryOpToHaskellOperator :: (Num a, Bits a) => UnaryOp -> a -> a
 unaryOpToHaskellOperator op = case op of

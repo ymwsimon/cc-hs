@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/07/27 14:44:36 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/28 17:17:09 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -123,7 +123,7 @@ cStatmentToIRInstructions bi = case bi of
   S (Default statement l) -> defaultToIRs statement l
   D (VariableDeclaration (VarTypeInfo var dt (Just expr) Nothing False)) ->
     cStatmentToIRInstructions (S (Expression
-      (TExpr (Assignment (TExpr (Variable var False Nothing) dt) expr) dt)))
+      (TExpr (Assignment AssignOp (TExpr (Variable var False Nothing) dt) expr) dt)))
   D _ -> pure []
 
 initIRVarId :: a1 -> (a2, b) -> (a1, b)
@@ -331,16 +331,44 @@ binaryOperationToIRs op dt lExpr rExpr = do
 dropVarName :: String -> String
 dropVarName v = if '#' `elem` v then drop 1 $ dropWhile (/= '#') v else v
 
-assignmentToIRs :: TypedExpr -> TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
-assignmentToIRs var rExpr = do
-  (rIRs, rVal) <- exprToIRs rExpr
+assignmentToIRs :: CompoundAssignOp -> TypedExpr -> TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
+assignmentToIRs op var rExpr = do
+  let cType = getExprsCommonType var rExpr
+  let dt
+        | op `elem` [PlusAssign, MinusAssign, MultiplyAssign, DivisionAssign, ModuloAssign, BitAndAssign, BitOrAssign, BitXorAssign] = cType
+        | op `elem` [BitShiftLeftAssign, BitShiftRightAssign, AssignOp] = tDT var
+        | otherwise = DTInternal TInt
   case var of
-    TExpr (Dereference ptr) _ -> do
-      (varIRs, irVar) <- derefAssignmentToIRs ptr
-      pure (rIRs ++ varIRs ++ [IRStore rVal irVar], rVal)
+    TExpr (Dereference ptr) lDT -> do
+      tempVarId <- gets (('#' :) . show . fst) <* modify bumpOneToVarId
+      (tempVarIRs, tempVar) <- if op == AssignOp
+        then do
+          (rIRs, rVal) <- exprToIRs $ foldToConstExpr $ (`cvtTypedExpr` dt) rExpr
+          (varIRs, irVar) <- derefAssignmentToIRs ptr
+          pure (rIRs ++ varIRs ++ [IRStore rVal irVar], rVal)
+        else exprToIRs $ TExpr (Assignment AssignOp (TExpr (Variable tempVarId False Nothing) (tDT ptr)) ptr) (tDT ptr)
+      (newValIRs, newVal) <- if op == AssignOp
+        then pure ([], tempVar)
+        else do
+          (binOpIRs, binOpRes) <- exprToIRs $ (`cvtTypedExpr` tDT var) $ TExpr (Binary
+            (compoundAssignOpToBinOp op)
+            (cvtTypedExpr (TExpr (Dereference (TExpr (Variable tempVarId False Nothing) (tDT ptr))) lDT) dt)
+            (cvtTypedExpr rExpr dt)) dt
+          pure (binOpIRs ++ [IRStore binOpRes tempVar], binOpRes)
+      pure (tempVarIRs ++ newValIRs, newVal)
     _ -> do
-      (varIRs, irVar) <- exprToIRs var
-      pure (rIRs ++ varIRs ++ [IRCopy rVal irVar], irVar)
+      if op == AssignOp
+        then do
+          (rIRs, rVal) <- exprToIRs $ foldToConstExpr $ (`cvtTypedExpr` tDT var) rExpr
+          (varIRs, irVar) <- exprToIRs var
+          pure (varIRs ++ rIRs ++ [IRCopy rVal irVar], irVar)
+        else do
+          (varIRs, irVar) <- exprToIRs var
+          (newValIRs, newVal) <- exprToIRs $ (`cvtTypedExpr` tDT var) $ TExpr (Binary
+            (compoundAssignOpToBinOp op)
+            (cvtTypedExpr var dt)
+            (cvtTypedExpr rExpr dt)) dt
+          pure (newValIRs ++ varIRs ++ [IRCopy newVal irVar], irVar)
 
 conditionToIRs :: DT -> TypedExpr -> TypedExpr -> TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
 conditionToIRs dt condition tExpr fExpr = do
@@ -512,8 +540,8 @@ exprToIRs (TExpr expr dt) = case expr of
   Unary op uExpr -> unaryOperationToIRs op dt uExpr
   Binary op lExpr rExpr -> binaryOperationToIRs op dt lExpr rExpr
   Variable var _ _ -> pure ([], IRVar dt var)
-  Assignment vExpr rExpr ->
-    assignmentToIRs vExpr rExpr
+  Assignment op vExpr rExpr ->
+    assignmentToIRs op vExpr rExpr
   Conditional condition tCond fCond -> conditionToIRs dt condition tCond fCond
   FunctionCall name exprs -> funcCallToIRs name dt exprs
   Cast cDt cExpr -> castToIRs cDt cExpr
