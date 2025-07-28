@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/28 17:16:42 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/28 17:20:46 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -1161,7 +1161,6 @@ exprRightParser l@(TExpr lExpr lDt) = do
                     op <- binaryAssignmentOpParser
                     modifyState $ setPrecedence $ getBinOpPrecedence binOp
                     e <- exprParser
-                    liftIO $ print e
                     when ((compoundAssignOpToBinOp op `elem` unsupportedFloatOperation) && (isFloatTypedExpr l || isFloatTypedExpr e)) $
                       unexpected "binary operation for floating point number"
                     when (isPointerTypedExpr l
