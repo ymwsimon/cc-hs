@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/07/28 17:17:09 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/29 12:46:15 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -335,9 +335,8 @@ assignmentToIRs :: CompoundAssignOp -> TypedExpr -> TypedExpr -> State (Int, Int
 assignmentToIRs op var rExpr = do
   let cType = getExprsCommonType var rExpr
   let dt
-        | op `elem` [PlusAssign, MinusAssign, MultiplyAssign, DivisionAssign, ModuloAssign, BitAndAssign, BitOrAssign, BitXorAssign] = cType
         | op `elem` [BitShiftLeftAssign, BitShiftRightAssign, AssignOp] = tDT var
-        | otherwise = DTInternal TInt
+        | otherwise = cType
   case var of
     TExpr (Dereference ptr) lDT -> do
       tempVarId <- gets (('#' :) . show . fst) <* modify bumpOneToVarId
@@ -346,7 +345,9 @@ assignmentToIRs op var rExpr = do
           (rIRs, rVal) <- exprToIRs $ foldToConstExpr $ (`cvtTypedExpr` dt) rExpr
           (varIRs, irVar) <- derefAssignmentToIRs ptr
           pure (rIRs ++ varIRs ++ [IRStore rVal irVar], rVal)
-        else exprToIRs $ TExpr (Assignment AssignOp (TExpr (Variable tempVarId False Nothing) (tDT ptr)) ptr) (tDT ptr)
+        else exprToIRs $ TExpr 
+          (Assignment AssignOp (TExpr (Variable tempVarId False Nothing) (tDT ptr)) ptr)
+          (tDT ptr)
       (newValIRs, newVal) <- if op == AssignOp
         then pure ([], tempVar)
         else do
@@ -357,18 +358,15 @@ assignmentToIRs op var rExpr = do
           pure (binOpIRs ++ [IRStore binOpRes tempVar], binOpRes)
       pure (tempVarIRs ++ newValIRs, newVal)
     _ -> do
-      if op == AssignOp
-        then do
-          (rIRs, rVal) <- exprToIRs $ foldToConstExpr $ (`cvtTypedExpr` tDT var) rExpr
-          (varIRs, irVar) <- exprToIRs var
-          pure (varIRs ++ rIRs ++ [IRCopy rVal irVar], irVar)
-        else do
-          (varIRs, irVar) <- exprToIRs var
-          (newValIRs, newVal) <- exprToIRs $ (`cvtTypedExpr` tDT var) $ TExpr (Binary
+      (varIRs, irVar) <- exprToIRs var
+      (newValIRs, newVal) <- case op of
+        AssignOp -> exprToIRs $ foldToConstExpr $ (`cvtTypedExpr` tDT var) rExpr
+        _ -> do
+          exprToIRs $ (`cvtTypedExpr` tDT var) $ TExpr (Binary
             (compoundAssignOpToBinOp op)
             (cvtTypedExpr var dt)
             (cvtTypedExpr rExpr dt)) dt
-          pure (newValIRs ++ varIRs ++ [IRCopy newVal irVar], irVar)
+      pure (newValIRs ++ varIRs ++ [IRCopy newVal irVar], irVar)
 
 conditionToIRs :: DT -> TypedExpr -> TypedExpr -> TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
 conditionToIRs dt condition tExpr fExpr = do

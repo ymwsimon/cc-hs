@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/28 17:20:46 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/29 13:09:25 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -1140,8 +1140,8 @@ useNewLabelId oldParseIno = do
 isEqOrHigherPrecedence :: String -> Int -> Bool
 isEqOrHigherPrecedence binOp p = (binaryOpPrecedence M.! binOp) <= p
 
-condtionalTrueParser :: ParsecT String ParseInfo IO TypedExpr
-condtionalTrueParser = do
+conditionalTrueParser :: ParsecT String ParseInfo IO TypedExpr
+conditionalTrueParser = do
   void questionParser
   oldState <- precedence <$> getState
   modifyState $ updatePrecedence lowestPrecedence
@@ -1150,64 +1150,76 @@ condtionalTrueParser = do
   void colonParser
   pure $ foldToConstExpr expr
 
+compoundAssignParser :: TypedExpr -> String -> ParsecT String ParseInfo IO TypedExpr
+compoundAssignParser l@(TExpr lExpr lDt) binOp = do
+  let varDerefPtr =
+        do
+          op <- binaryAssignmentOpParser
+          modifyState $ setPrecedence $ getBinOpPrecedence binOp
+          e <- exprParser
+          when ((compoundAssignOpToBinOp op `elem` unsupportedFloatOperation) && (isFloatTypedExpr l || isFloatTypedExpr e)) $
+            unexpected "binary operation for floating point number"
+          when (isPointerTypedExpr l
+            && not (isPointerTypedExpr e || (isIntegralConstantTE e && exprToInteger e == 0))) $
+            unexpected "assignment operation for pointer"
+          when (isPointerTypedExpr l
+            && (compoundAssignOpToBinOp op `elem` unsupportedPointerOperation)) $
+            unexpected "compound assignment operation for pointer"
+          checkImplicitCast e lDt
+          exprRightParser $ TExpr (Assignment op l e) lDt
+  case lExpr of
+        Variable {} -> varDerefPtr
+        Dereference {} -> varDerefPtr
+        _ -> unexpected "Invalid lvalue on the left side"
+
+conditionalParser :: TypedExpr -> String -> ParsecT String ParseInfo IO TypedExpr
+conditionalParser l binOp = do
+  p <- precedence <$> getState
+  tCond <- conditionalTrueParser
+  modifyState $ setPrecedence $ getBinOpPrecedence binOp
+  fCond <- exprParser
+  let cType = getExprsCommonType tCond fCond
+  modifyState $ setPrecedence p
+  exprRightParser $ (`TExpr` cType) $
+    Conditional l
+      (if isPointerTypedExpr tCond then tCond else foldToConstExpr $ cvtTypedExpr tCond cType)
+      (if isPointerTypedExpr fCond then fCond else foldToConstExpr $ cvtTypedExpr fCond cType)
+
+binaryParser :: TypedExpr -> String -> ParsecT String ParseInfo IO TypedExpr
+binaryParser l binOp = do
+  p <- precedence <$> getState
+  op <- binaryOpParser
+  modifyState $ updatePrecedence $ getBinOpPrecedence binOp
+  rExpr <- exprParser
+  when (op `elem` unsupportedFloatOperation && (isFloatTypedExpr l || isFloatTypedExpr rExpr)) $
+    unexpected "binary operation for floating point number"
+  when (op `elem` unsupportedPointerOperation && (isPointerTypedExpr l || isPointerTypedExpr rExpr)) $
+      unexpected "binary operation for pointer"
+  unless (op `elem` [LogicAnd, LogicOr]) $
+    checkImplicitCast rExpr $ tDT l
+  modifyState $ setPrecedence p
+  case op of
+    LogicAnd -> exprRightParser $ TExpr (Binary op (foldToConstExpr l) (foldToConstExpr rExpr)) $ DTInternal TInt
+    LogicOr -> exprRightParser $ TExpr (Binary op (foldToConstExpr l) (foldToConstExpr rExpr)) $ DTInternal TInt
+    _ -> do
+      let cType = getExprsCommonType l rExpr
+      let dt
+            | op `elem` [Plus, Minus, Multiply, Division, Modulo, BitAnd, BitOr, BitXor] = cType
+            | op `elem` [BitShiftLeft, BitShiftRight] = tDT l
+            | otherwise = DTInternal TInt
+      exprRightParser $ (`cvtTypedExpr` dt) $ TExpr
+        (Binary op (foldToConstExpr (cvtTypedExpr l cType)) (foldToConstExpr (cvtTypedExpr rExpr cType))) dt
+
 exprRightParser :: TypedExpr -> ParsecT String ParseInfo IO TypedExpr
-exprRightParser l@(TExpr lExpr lDt) = do
+exprRightParser l = do
   binOp <- lookAhead (try binaryOpStringParser) <|> pure ""
   p <- precedence <$> getState
   if isBinaryOpChar binOp && isEqOrHigherPrecedence binOp p
     then if binOp `elem` binaryAssignmentOp
-          then do
-            let varDerefPtr = do
-                    op <- binaryAssignmentOpParser
-                    modifyState $ setPrecedence $ getBinOpPrecedence binOp
-                    e <- exprParser
-                    when ((compoundAssignOpToBinOp op `elem` unsupportedFloatOperation) && (isFloatTypedExpr l || isFloatTypedExpr e)) $
-                      unexpected "binary operation for floating point number"
-                    when (isPointerTypedExpr l
-                      && not (isPointerTypedExpr e || (isIntegralConstantTE e && exprToInteger e == 0))) $
-                      unexpected "assignment operation for pointer"
-                    when (isPointerTypedExpr l
-                      && (compoundAssignOpToBinOp op `elem` unsupportedPointerOperation)) $
-                      unexpected "compound assignment operation for pointer"
-                    checkImplicitCast e lDt
-                    exprRightParser $ TExpr (Assignment op l e) lDt
-            case lExpr of
-                  Variable {} -> varDerefPtr
-                  Dereference {} -> varDerefPtr
-                  _ -> unexpected "Invalid lvalue on the left side"
+          then compoundAssignParser l binOp
           else if binOp == "?"
-            then do
-              tCond <- condtionalTrueParser
-              modifyState $ setPrecedence $ getBinOpPrecedence binOp
-              fCond <- exprParser
-              let cType = getExprsCommonType tCond fCond
-              modifyState $ setPrecedence p
-              exprRightParser $ (`TExpr` cType) $
-                Conditional l
-                  (if isPointerTypedExpr tCond then tCond else foldToConstExpr $ cvtTypedExpr tCond cType)
-                  (if isPointerTypedExpr fCond then fCond else foldToConstExpr $ cvtTypedExpr fCond cType)
-            else do
-              op <- binaryOpParser
-              modifyState $ updatePrecedence $ getBinOpPrecedence binOp
-              rExpr <- exprParser
-              when (op `elem` unsupportedFloatOperation && (isFloatTypedExpr l || isFloatTypedExpr rExpr)) $
-                unexpected "binary operation for floating point number"
-              when (op `elem` unsupportedPointerOperation && (isPointerTypedExpr l || isPointerTypedExpr rExpr)) $
-                  unexpected "binary operation for pointer"
-              unless (op `elem` [LogicAnd, LogicOr]) $
-                checkImplicitCast rExpr lDt
-              modifyState $ setPrecedence p
-              case op of
-                LogicAnd -> exprRightParser $ TExpr (Binary op (foldToConstExpr l) (foldToConstExpr rExpr)) $ DTInternal TInt
-                LogicOr -> exprRightParser $ TExpr (Binary op (foldToConstExpr l) (foldToConstExpr rExpr)) $ DTInternal TInt
-                _ -> do
-                  let cType = getExprsCommonType l rExpr
-                  let dt
-                        | op `elem` [Plus, Minus, Multiply, Division, Modulo, BitAnd, BitOr, BitXor] = cType
-                        | op `elem` [BitShiftLeft, BitShiftRight] = lDt
-                        | otherwise = DTInternal TInt
-                  exprRightParser $ (`cvtTypedExpr` dt) $ TExpr
-                    (Binary op (foldToConstExpr (cvtTypedExpr l cType)) (foldToConstExpr (cvtTypedExpr rExpr cType))) dt
+            then conditionalParser l binOp
+            else binaryParser l binOp
     else pure l
 
 intOperandParser :: ParsecT String u IO TypedExpr
@@ -1222,7 +1234,9 @@ postfixOp e@(TExpr _ dt) =
     then do
       maybePostOp <- lookAhead (try $ incrementLex <|> decrementLex) <|> pure ""
       if maybePostOp `elem` allPostUnaryOp
-        then flip TExpr dt . ($ e) . Unary <$> postUnaryOpParser
+        then do
+          postUOp <- postUnaryOpParser
+          pure $ (`TExpr` dt) $ Unary postUOp e
         else pure e
     else pure e
 
