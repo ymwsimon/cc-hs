@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/29 13:09:25 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/30 11:54:06 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -56,6 +56,7 @@ data DT =
   DTInternal PrimType
   | DTFuncType {argList :: [(DT, IdentifierName)], retType :: DT}
   | DTPointer {ptrPointingType :: DT}
+  | DTArray {arrType :: DT, arrSize :: Maybe Int}
   | DTUserDefined String [DT]
 
 data IdentifierType =
@@ -70,7 +71,7 @@ data Declaration =
 
 data VarTypeInfo =
   VarTypeInfo {varName :: IdentifierName, variableType :: DT,
-    varDefine :: Maybe TypedExpr, varStoreClass :: Maybe StorageClass, topLv :: Bool}
+    varDefine :: Maybe Initialiser, varStoreClass :: Maybe StorageClass, topLv :: Bool}
   deriving (Show, Eq)
 
 data FuncTypeInfo =
@@ -141,6 +142,12 @@ data Expr =
   | Conditional TypedExpr TypedExpr TypedExpr
   | Dereference TypedExpr
   | AddrOf TypedExpr
+  | Subscript TypedExpr TypedExpr
+  deriving (Show, Eq)
+
+data Initialiser =
+  SingleInit TypedExpr
+  | CompoundInit [Initialiser]
   deriving (Show, Eq)
 
 data StorageClass =
@@ -446,6 +453,12 @@ questionParser = createSkipSpacesStringParser "?"
 
 colonParser :: ParsecT String u IO String
 colonParser = createSkipSpacesStringParser ":"
+
+openSqtParser :: ParsecT String u IO String
+openSqtParser = createSkipSpacesStringParser "["
+
+closeSqtParser :: ParsecT String u IO String
+closeSqtParser = createSkipSpacesStringParser "]"
 
 keywordParserCreate :: String -> ParsecT String u IO String
 keywordParserCreate k = do
@@ -799,6 +812,12 @@ isConstantTypedExpr (TExpr expr _) = case expr of
   Conditional c t f -> isConstantTypedExpr c && isConstantTypedExpr t && isConstantTypedExpr f
   AddrOf {} -> False
   Dereference {} -> False
+  Subscript {} -> False
+
+isConstantInit :: Initialiser -> Bool
+isConstantInit initialiser = case initialiser of
+  SingleInit te -> isConstantTypedExpr te
+  CompoundInit te -> all isConstantInit te
 
 isIntegralConstantTE :: TypedExpr -> Bool
 isIntegralConstantTE (TExpr expr _) = case expr of
@@ -908,6 +927,9 @@ foldToConstExpr :: TypedExpr -> TypedExpr
 -- foldToConstExpr = id
 foldToConstExpr te = if isConstantTypedExpr te then exprToConstantExpr te else te
 
+foldInitToConstExpr :: Initialiser -> Initialiser
+foldInitToConstExpr = id
+
 doubleIntegralParser :: ParsecT String ParseInfo IO TypedExpr
 doubleIntegralParser = do
   maybeDotE <- lookAhead $ optionMaybe $ try $ spaces >> (dotLex <|> (many1 digit >> (dotLex <|> eLex)))
@@ -965,6 +987,11 @@ cvtTypedExpr :: TypedExpr -> DT -> TypedExpr
 cvtTypedExpr te@(TExpr _ dt) cDT
   | dt == cDT = te
   | otherwise = TExpr (Cast cDT te) cDT
+
+cvtInit :: Initialiser -> DT -> Initialiser
+cvtInit initialiser dt = case initialiser of
+  SingleInit te -> SingleInit $ cvtTypedExpr te dt
+  CompoundInit cInit -> CompoundInit $ map (`cvtInit` dt) cInit
 
 getPointingType :: DT -> DT
 getPointingType dt = case dt of
@@ -1278,8 +1305,8 @@ getFunTypeInfoFromVarMap fIdentifier current outer =
     then fti $ current M.! fIdentifier
     else fti $ outer M.! fIdentifier
 
-checkPointerInit :: TypedExpr -> DT -> Maybe StorageClass -> ParsecT String ParseInfo IO ()
-checkPointerInit te dt sc = do
+checkPointerInitVal :: TypedExpr -> DT -> Maybe StorageClass -> ParsecT String ParseInfo IO ()
+checkPointerInitVal te dt sc = do
   when (isPointerDT dt && sc == Just Static
     && not (isConstantTypedExpr te && isIntegralTypedExpr te && exprToInteger te == 0)) $
     unexpected "non 0 init for pointer"
@@ -1294,6 +1321,11 @@ checkPointerInit te dt sc = do
         || isPointerTypedExpr f && ptrPointingType dt /= ptrPointingType (tDT f))) $
         unexpected "implicit type cast for pointer"
     _ -> pure ()
+
+checkPointerInit :: Initialiser -> DT -> Maybe StorageClass -> ParsecT String ParseInfo IO ()
+checkPointerInit initialiser dt sc = case initialiser of
+  SingleInit te -> checkPointerInitVal te dt sc
+  CompoundInit cInit -> mapM_ (\i -> checkPointerInit i dt sc) cInit
 
 checkImplicitCast :: TypedExpr -> DT -> ParsecT String ParseInfo IO ()
 checkImplicitCast te dt = do
@@ -1310,6 +1342,11 @@ checkImplicitCast te dt = do
       || isPointerTypedExpr f && ptrPointingType dt /= ptrPointingType (tDT f))) $
       unexpected "implicit type cast for pointer"
     _ -> pure ()
+
+checkImplicitCastInit :: Initialiser -> DT -> ParsecT String ParseInfo IO ()
+checkImplicitCastInit initialiser dt = case initialiser of
+  SingleInit te -> checkImplicitCast te dt
+  CompoundInit cInit -> mapM_ (`checkImplicitCastInit` dt) cInit
 
 checkExplicitCast :: TypedExpr -> DT -> ParsecT String ParseInfo IO ()
 checkExplicitCast te dt = do
@@ -1451,7 +1488,7 @@ topLevelFuncStorageClassCheck (Just Static) Nothing = True
 topLevelFuncStorageClassCheck _ (Just Static) = False
 topLevelFuncStorageClassCheck _ _ = True
 
-updateTopLevelVarCurrentVar :: DT -> IdentifierName -> Maybe TypedExpr ->
+updateTopLevelVarCurrentVar :: DT -> IdentifierName -> Maybe Initialiser ->
   Maybe StorageClass -> ParsecT String ParseInfo IO ()
 updateTopLevelVarCurrentVar dt vName vDf sClass = do
   topMap <- topLevelScopeIdent <$> getState
@@ -1465,14 +1502,14 @@ updateTopLevelVarCurrentVar dt vName vDf sClass = do
   modifyState (\p -> p {topLevelScopeIdent = M.insert vName typeInfo (topLevelScopeIdent p)})
   modifyState (\p -> p {currentScopeIdent = M.insert vName typeInfo (currentScopeIdent p)})
 
-getInitialiser :: ParsecT String u IO TypedExpr -> ParsecT String u IO (Maybe TypedExpr)
+getInitialiser :: ParsecT String u IO TypedExpr -> ParsecT String u IO (Maybe Initialiser)
 getInitialiser parser = do
   maybeEqual <- optionMaybe $ try equalLex
   initialiser <- case maybeEqual of
     Just _ -> Just <$> parser
     _ -> pure Nothing
   void semiColParser
-  pure $ foldToConstExpr <$> initialiser
+  pure $ foldInitToConstExpr <$> undefined
 
 topLevelVarDeclarationParser :: ParsecT String ParseInfo IO VarTypeInfo
 topLevelVarDeclarationParser = do
@@ -1486,8 +1523,8 @@ topLevelVarDeclarationParser = do
     && (variableType (vti (topIdentMap M.! vName)) /= varType
       || not (topLevelVarStorageClassCheck (varStoreClass (vti (topIdentMap M.! vName))) sc))) $
     unexpected $ vName ++ ". Type mismatch to previous declaration"
-  initialiser <- fmap (foldToConstExpr . (`cvtTypedExpr` varType)) <$> getInitialiser exprParser
-  unless (isNothing initialiser || isConstantTypedExpr (fromJust initialiser)) $
+  initialiser <- fmap (foldInitToConstExpr . (`cvtInit` varType)) <$> getInitialiser exprParser
+  unless (isNothing initialiser || isConstantInit (fromJust initialiser)) $
     unexpected "non constant initialiser"
   when (isJust initialiser) $
     checkPointerInit (fromJust initialiser) varType (Just Static)
@@ -1527,17 +1564,17 @@ localPlainVarHandle varType sc vName = do
         currentScopeIdent parseInfo
   putState $ parseInfo {currentVarId = varId + 1, currentScopeIdent = newVarMap}
   initialiser <- getInitialiser exprParser
-  let cvtinitialiser = foldToConstExpr . (`cvtTypedExpr` varType) <$> initialiser
+  let cvtinitialiser = foldInitToConstExpr . (`cvtInit` varType) <$> initialiser
   when (isJust initialiser) $
-    checkImplicitCast (fromJust initialiser) varType
+    checkImplicitCastInit (fromJust initialiser) varType
   when (isJust initialiser) $
     checkPointerInit (fromJust initialiser) varType sc
   pure $ VarTypeInfo newVarName varType cvtinitialiser sc $ topLevel parseInfo
 
 localStaticVarHandle :: DT -> Maybe StorageClass -> IdentifierName -> ParsecT String ParseInfo IO VarTypeInfo
 localStaticVarHandle varType sc vName = do
-  initialiser <- fmap (foldToConstExpr . (`cvtTypedExpr` varType)) <$> getInitialiser exprParser
-  unless (isNothing initialiser || isConstantTypedExpr (fromJust initialiser)) $
+  initialiser <- fmap (foldInitToConstExpr . (`cvtInit` varType)) <$> getInitialiser exprParser
+  unless (isNothing initialiser || isConstantInit (fromJust initialiser)) $
     unexpected "non constant initialiser"
   parseInfo <- getState
   let varId = globalVarId parseInfo
