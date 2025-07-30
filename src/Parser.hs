@@ -1502,14 +1502,21 @@ updateTopLevelVarCurrentVar dt vName vDf sClass = do
   modifyState (\p -> p {topLevelScopeIdent = M.insert vName typeInfo (topLevelScopeIdent p)})
   modifyState (\p -> p {currentScopeIdent = M.insert vName typeInfo (currentScopeIdent p)})
 
-getInitialiser :: ParsecT String u IO TypedExpr -> ParsecT String u IO (Maybe Initialiser)
+singleInitParser :: ParsecT String u IO TypedExpr -> ParsecT String u IO Initialiser
+singleInitParser parser = SingleInit <$> parser
+
+getInitialiser :: ParsecT String u IO TypedExpr -> ParsecT String u IO Initialiser
 getInitialiser parser = do
-  maybeEqual <- optionMaybe $ try equalLex
-  initialiser <- case maybeEqual of
-    Just _ -> Just <$> parser
-    _ -> pure Nothing
+  maybeOpenCur <- optionMaybe $ try openCurParser
+  initialiser <- case maybeOpenCur of
+    Just _ -> do
+      void openCurParser
+      i <- CompoundInit <$> sepBy (getInitialiser parser) (try commaParser)
+      void closeCurParser
+      pure i
+    _ -> singleInitParser parser
   void semiColParser
-  pure $ foldInitToConstExpr <$> undefined
+  pure $ foldInitToConstExpr initialiser
 
 topLevelVarDeclarationParser :: ParsecT String ParseInfo IO VarTypeInfo
 topLevelVarDeclarationParser = do
@@ -1523,7 +1530,7 @@ topLevelVarDeclarationParser = do
     && (variableType (vti (topIdentMap M.! vName)) /= varType
       || not (topLevelVarStorageClassCheck (varStoreClass (vti (topIdentMap M.! vName))) sc))) $
     unexpected $ vName ++ ". Type mismatch to previous declaration"
-  initialiser <- fmap (foldInitToConstExpr . (`cvtInit` varType)) <$> getInitialiser exprParser
+  initialiser <- fmap (fmap (foldInitToConstExpr . (`cvtInit` varType))) <$> optionMaybe $ try $ equalLex >> getInitialiser exprParser
   unless (isNothing initialiser || isConstantInit (fromJust initialiser)) $
     unexpected "non constant initialiser"
   when (isJust initialiser) $
@@ -1563,7 +1570,7 @@ localPlainVarHandle varType sc vName = do
         (VarIdentifier (VarTypeInfo newVarName varType Nothing sc $ topLevel parseInfo)) $
         currentScopeIdent parseInfo
   putState $ parseInfo {currentVarId = varId + 1, currentScopeIdent = newVarMap}
-  initialiser <- getInitialiser exprParser
+  initialiser <- optionMaybe $ try $ equalLex >> getInitialiser exprParser
   let cvtinitialiser = foldInitToConstExpr . (`cvtInit` varType) <$> initialiser
   when (isJust initialiser) $
     checkImplicitCastInit (fromJust initialiser) varType
@@ -1573,7 +1580,7 @@ localPlainVarHandle varType sc vName = do
 
 localStaticVarHandle :: DT -> Maybe StorageClass -> IdentifierName -> ParsecT String ParseInfo IO VarTypeInfo
 localStaticVarHandle varType sc vName = do
-  initialiser <- fmap (foldInitToConstExpr . (`cvtInit` varType)) <$> getInitialiser exprParser
+  initialiser <- fmap (fmap (foldInitToConstExpr . (`cvtInit` varType))) <$> optionMaybe $ try $ equalLex >> getInitialiser exprParser
   unless (isNothing initialiser || isConstantInit (fromJust initialiser)) $
     unexpected "non constant initialiser"
   parseInfo <- getState
