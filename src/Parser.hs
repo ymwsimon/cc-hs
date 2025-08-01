@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/07/30 11:54:06 by mayeung          ###   ########.fr       --
+--   Updated: 2025/08/01 11:02:16 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -15,16 +15,47 @@
 module Parser where
 
 import Text.Parsec as P
-import Control.Monad
-import Control.Monad.IO.Class
+    ( anyChar,
+      char,
+      digit,
+      oneOf,
+      satisfy,
+      spaces,
+      string',
+      eof,
+      many1,
+      manyTill,
+      notFollowedBy,
+      optionMaybe,
+      sepBy,
+      sepBy1,
+      (<?>),
+      (<|>),
+      getState,
+      lookAhead,
+      many,
+      modifyState,
+      putState,
+      try,
+      unexpected,
+      ParsecT )
+import Control.Monad ( when, unless, void )
 import Operation
+    ( binaryOpToHaskellOperator,
+      binaryOpToHaskellOperatorDouble,
+      unaryOpToHaskellOperator,
+      unaryOpToHaskellOperatorDouble,
+      BinaryOp(..),
+      CompoundAssignOp(..),
+      UnaryOp(..) )
 import qualified Data.Map.Strict as M
 import Data.Char (isLetter, isAlphaNum, isDigit)
 import Data.Either (isLeft, fromRight, fromLeft)
-import Data.Maybe
+import Data.Maybe ( fromJust, isJust, isNothing )
 import Data.List (sort)
-import Data.Int
-import Data.Word
+import Data.Int ( Int8, Int16, Int32, Int64 )
+import Data.Word ( Word32, Word64 )
+import Control.Monad.IO.Class (liftIO)
 
 type CProgramAST = [Declaration]
 
@@ -58,6 +89,7 @@ data DT =
   | DTPointer {ptrPointingType :: DT}
   | DTArray {arrType :: DT, arrSize :: Maybe Int}
   | DTUserDefined String [DT]
+  deriving Show
 
 data IdentifierType =
   VarIdentifier {vti :: VarTypeInfo}
@@ -187,11 +219,12 @@ instance Show PrimType where
   show TDouble = "double"
   show TLDouble = "long double"
 
-instance Show DT where
-  show (DTInternal pt) = show pt
-  show (DTPointer t) = show t ++ " *"
-  show (DTFuncType aList rType) = show rType ++ " " ++ "(" ++ show aList ++ ")"
-  show (DTUserDefined name dts) = name ++ " " ++ show dts
+-- instance Show DT where
+--   show (DTInternal pt) = show pt
+--   show (DTPointer t) = show t ++ " *"
+--   show (DTFuncType aList rType) = show rType ++ " " ++ "(" ++ show aList ++ ")"
+--   show (DTUserDefined name dts) = name ++ " " ++ show dts
+--   show (DTArray t aSize) = show t ++ " [" ++ show aSize ++ "]"
 
 instance Show StorageClass where
   show Static = "static"
@@ -1104,6 +1137,24 @@ isIntegralConstantNumConst c = case c of
   ConstULong _ -> True
   ConstDouble _ -> False
 
+constantExprToInt :: TypedExpr -> Integer
+constantExprToInt e = case e of
+  TExpr (Constant (ConstInt i)) _ -> fromIntegral i
+  TExpr (Constant (ConstLong l)) _ -> fromIntegral l
+  TExpr (Constant (ConstUInt ui)) _ -> fromIntegral ui
+  TExpr (Constant (ConstULong ul)) _ -> fromIntegral ul
+  TExpr (Constant (ConstDouble d)) _ -> truncate d
+  _ -> undefined
+
+constantExprToDouble :: TypedExpr -> Double
+constantExprToDouble e = case e of
+  TExpr (Constant (ConstDouble d)) _ -> d
+  TExpr (Constant (ConstInt i)) _ -> fromIntegral i
+  TExpr (Constant (ConstLong l)) _ -> fromIntegral l
+  TExpr (Constant (ConstUInt ui)) _ -> fromIntegral ui
+  TExpr (Constant (ConstULong ul)) _ -> fromIntegral ul
+  _ -> undefined
+
 getExprsCommonType :: TypedExpr -> TypedExpr -> DT
 getExprsCommonType (TExpr _ lDT) (TExpr _ rDT)
   | lDT == rDT =lDT
@@ -1502,20 +1553,25 @@ updateTopLevelVarCurrentVar dt vName vDf sClass = do
   modifyState (\p -> p {topLevelScopeIdent = M.insert vName typeInfo (topLevelScopeIdent p)})
   modifyState (\p -> p {currentScopeIdent = M.insert vName typeInfo (currentScopeIdent p)})
 
+getArrayInnerType :: DT -> DT
+getArrayInnerType dt = case dt of
+  DTArray d _ -> getArrayInnerType d
+  _ -> dt
+
 singleInitParser :: ParsecT String u IO TypedExpr -> ParsecT String u IO Initialiser
 singleInitParser parser = SingleInit <$> parser
 
 getInitialiser :: ParsecT String u IO TypedExpr -> ParsecT String u IO Initialiser
 getInitialiser parser = do
-  maybeOpenCur <- optionMaybe $ try openCurParser
+  maybeOpenCur <- lookAhead $ optionMaybe $ try openCurParser
   initialiser <- case maybeOpenCur of
     Just _ -> do
       void openCurParser
-      i <- CompoundInit <$> sepBy (getInitialiser parser) (try commaParser)
+      i <- CompoundInit <$> sepBy1 (getInitialiser parser) (try commaParser)
+      void $ optionMaybe $ try commaParser
       void closeCurParser
       pure i
     _ -> singleInitParser parser
-  void semiColParser
   pure $ foldInitToConstExpr initialiser
 
 topLevelVarDeclarationParser :: ParsecT String ParseInfo IO VarTypeInfo
@@ -1530,7 +1586,8 @@ topLevelVarDeclarationParser = do
     && (variableType (vti (topIdentMap M.! vName)) /= varType
       || not (topLevelVarStorageClassCheck (varStoreClass (vti (topIdentMap M.! vName))) sc))) $
     unexpected $ vName ++ ". Type mismatch to previous declaration"
-  initialiser <- fmap (fmap (foldInitToConstExpr . (`cvtInit` varType))) <$> optionMaybe $ try $ equalLex >> getInitialiser exprParser
+  initialiser <- fmap (fmap (foldInitToConstExpr . (`cvtInit` getArrayInnerType varType))) <$> optionMaybe $ try $ equalLex >> getInitialiser exprParser
+  void semiColParser
   unless (isNothing initialiser || isConstantInit (fromJust initialiser)) $
     unexpected "non constant initialiser"
   when (isJust initialiser) $
@@ -1571,7 +1628,8 @@ localPlainVarHandle varType sc vName = do
         currentScopeIdent parseInfo
   putState $ parseInfo {currentVarId = varId + 1, currentScopeIdent = newVarMap}
   initialiser <- optionMaybe $ try $ equalLex >> getInitialiser exprParser
-  let cvtinitialiser = foldInitToConstExpr . (`cvtInit` varType) <$> initialiser
+  void semiColParser
+  let cvtinitialiser = foldInitToConstExpr . (`cvtInit` getArrayInnerType varType) <$> initialiser
   when (isJust initialiser) $
     checkImplicitCastInit (fromJust initialiser) varType
   when (isJust initialiser) $
@@ -1580,7 +1638,8 @@ localPlainVarHandle varType sc vName = do
 
 localStaticVarHandle :: DT -> Maybe StorageClass -> IdentifierName -> ParsecT String ParseInfo IO VarTypeInfo
 localStaticVarHandle varType sc vName = do
-  initialiser <- fmap (fmap (foldInitToConstExpr . (`cvtInit` varType))) <$> optionMaybe $ try $ equalLex >> getInitialiser exprParser
+  initialiser <- fmap (fmap (foldInitToConstExpr . (`cvtInit` getArrayInnerType varType))) <$> optionMaybe $ try $ equalLex >> getInitialiser exprParser
+  void semiColParser
   unless (isNothing initialiser || isConstantInit (fromJust initialiser)) $
     unexpected "non constant initialiser"
   parseInfo <- getState
@@ -1599,6 +1658,15 @@ localStaticVarHandle varType sc vName = do
 funcDeclaratorArgListParser :: ParsecT String ParseInfo IO (DT -> DT)
 funcDeclaratorArgListParser = DTFuncType <$> argListParser
 
+arrayDeclaratorParser :: ParsecT String ParseInfo IO (DT -> DT)
+arrayDeclaratorParser = do
+  void openSqtParser
+  aSize <- optionMaybe exprParser
+  unless (isNothing aSize || isIntegralConstantTE (fromJust aSize) && constantExprToInt (fromJust aSize) >= 0) $
+    unexpected "non constant array size or negative array size"
+  void closeSqtParser
+  pure (`DTArray` (fromInteger . constantExprToInt <$> aSize))
+
 declaratorParser :: String -> IdentifierName -> [DT -> DT] ->
   ParsecT String ParseInfo IO (IdentifierName, [DT -> DT])
 declaratorParser preTok identiferName preDTs = do
@@ -1609,14 +1677,17 @@ declaratorParser preTok identiferName preDTs = do
       (newIdentName, innerType) <- declaratorParser "(" identiferName preDTs
       void closePParser
       afterClosePChar <- lookAhead $ try (spaces >> anyChar)
-      maybeFuncType <- case afterClosePChar of
+      maybeFuncArrType <- case afterClosePChar of
         '(' -> do
           when (isFuncDT $ last innerType (DTInternal TInt)) $
             unexpected "function returning function"
+          when (isArraryDT $ head innerType (DTInternal TInt)) $
+            unexpected "array of function"
           parseInfo <- getState
           funcDeclaratorArgListParser <* putState parseInfo
+        '[' -> pure id
         _ -> pure id
-      pure (newIdentName, innerType ++ [maybeFuncType])
+      pure (newIdentName, innerType ++ [maybeFuncArrType])
     '*' -> do
       void mulLex
       (newIdentName, newType) <- declaratorParser "*" identiferName preDTs
@@ -1627,24 +1698,36 @@ declaratorParser preTok identiferName preDTs = do
           funcDeclaratorArgListParser <* putState parseInfo
         _ -> pure id
       pure (newIdentName, newType ++ [maybeFuncType, DTPointer])
+    '[' -> do
+      when (null identiferName) $ unexpected "array type casting"
+      aType <- arrayDeclaratorParser
+      (iName, nextType) <- declaratorParser "]" identiferName preDTs
+      pure (iName, aType : nextType)
     ')' -> do
       case preTok of
         "(" -> pure (identiferName, [DTFuncType []])
         _ -> pure (identiferName, [id])
+    ';' -> pure (identiferName, [id])
+    '=' -> pure (identiferName, [id])
     _ -> do
-      newIdentName <- lookAhead (try closePParser <|> try identifierParser) <|> pure ""
+      newIdentName <- lookAhead (try closePParser <|> try openSqtParser <|> try identifierParser) <|> pure ""
       case newIdentName of
         "" -> anyChar >>= unexpected . pure
         ")" -> pure (identiferName, [id])
         _ -> do
           void identifierParser
           afterIdentChar <- lookAhead $ try (spaces >> anyChar)
-          maybeFuncType <- case afterIdentChar of
+          maybeFuncArrType <- case afterIdentChar of
             '(' -> do
               parseInfo <- getState
-              funcDeclaratorArgListParser <* putState parseInfo
-            _ -> pure id
-          pure (newIdentName, [maybeFuncType])
+              fType <- funcDeclaratorArgListParser
+              putState parseInfo
+              pure [fType]
+            '[' -> do
+                (_, nextType) <- declaratorParser identiferName identiferName preDTs
+                pure nextType
+            _ -> pure [id]
+          pure (newIdentName, maybeFuncArrType)
 
 varDeclarationParser :: ParsecT String ParseInfo IO VarTypeInfo
 varDeclarationParser = do
@@ -1953,6 +2036,11 @@ isFuncDT dt = case dt of
 isPointerDT :: DT -> Bool
 isPointerDT dt = case dt of
   DTPointer {} -> True
+  _ -> False
+
+isArraryDT :: DT -> Bool
+isArraryDT dt = case dt of
+  DTArray {} -> True
   _ -> False
 
 funcNotYetDefined :: String -> ParseInfo -> Bool

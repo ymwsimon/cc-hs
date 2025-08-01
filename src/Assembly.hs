@@ -6,19 +6,55 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/07/26 11:49:16 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/31 10:29:55 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
 module Assembly where
 
 import IR
+    ( cASTToIrAST,
+      dropVarName,
+      getMaxStackVarId,
+      irValToDT,
+      isIRFuncDefine,
+      staticInitToDouble,
+      staticInitToInt,
+      staticVarConvertion,
+      IRFunctionDefine(irInstruction, irParameter, irFuncName,
+                       irFuncGlobal),
+      IRInstruction(IRBinary, IRReturn, IRUnary, IRJumpIfZero,
+                    IRJumpIfNotZero, IRJumpIfP, IRJumpIfNP, IRJump, IRLabel, IRCopy,
+                    IRGetAddress, IRLoad, IRStore, IRFuncCall, IRSignExtend,
+                    IRTruncate, IRZeroExtend, IRDoubleToInt, IRDoubleToUInt,
+                    IRIntToDouble, IRUIntToDouble),
+      IRProgramAST,
+      IRStaticVarDefine(IRStaticVarDefine),
+      IRTopLevel(IRStaticVar, irFuncD),
+      IRVal(IRConstant, IRVar, irVName),
+      StaticInit(..) )
 import Operation
-import Data.List
+    ( BinaryOp(LessEqualRelation, Plus, Minus, Multiply, BitAnd, BitOr,
+               BitXor, Division, Modulo, BitShiftLeft, BitShiftRight,
+               EqualRelation, NotEqualRelation, GreaterThanRelation,
+               GreaterEqualRelation, LessThanRelation),
+      UnaryOp(NotRelation, Complement, Negate) )
+import Data.List ( foldl', intercalate )
 import qualified Data.Map.Strict as M
 import qualified Data.Set as S
 import Parser
-import GHC.Float
+    ( NumConst(ConstDouble, ConstULong, ConstLong, ConstInt),
+      IdentifierType,
+      DT(DTInternal, DTPointer),
+      PrimType(TUInt, TInt, TLong, TULong, TDouble),
+      CProgramAST,
+      numConstToStr,
+      isFloatDT,
+      isSignedInteger,
+      isFloatConstNumConst,
+      isIntDT,
+      isVarIdentifier )
+import GHC.Float ( castDoubleToWord64, castWord64ToDouble )
 import Data.Word (Word64)
 
 type AsmProgramAST = [AsmTopLevel]

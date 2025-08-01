@@ -6,17 +6,51 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/07/29 12:46:15 by mayeung          ###   ########.fr       --
+--   Updated: 2025/07/31 11:45:10 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
 module IR where
 
 import Parser
+    ( NumConst(..),
+      StorageClass(Static),
+      Expr(AddrOf, Constant, Unary, Binary, Variable, Assignment,
+           Conditional, FunctionCall, Cast, Dereference),
+      TypedExpr(TExpr, tDT),
+      Block(Block, unBlock),
+      BlockItem(..),
+      Statement(..),
+      ForInit(..),
+      FuncTypeInfo(FuncTypeInfo, nextVarId, funcName, funcType),
+      VarTypeInfo(VarTypeInfo),
+      Declaration(..),
+      IdentifierType(VarIdentifier),
+      DT(DTInternal, DTPointer, argList),
+      PrimType(TDouble, TShort, TUShort, TInt, TUInt, TLong, TULong),
+      JumpLabel(SwitchLabel, LoopLabel),
+      CProgramAST,
+      compoundAssignOpToBinOp,
+      isFloatDT,
+      foldToConstExpr,
+      cvtTypedExpr,
+      getPointingType,
+      makeConstantTEIntWithDT,
+      makeConstantTEFloatWithDT,
+      getDTSize,
+      isSignedInteger,
+      isUnsigned,
+      getExprsCommonType,
+      isVarIdentifier )
 import Operation
+    ( BinaryOp(EqualRelation, Minus, Plus, LogicAnd, LogicOr),
+      CompoundAssignOp(AssignOp, BitShiftLeftAssign,
+                       BitShiftRightAssign),
+      UnaryOp(PreIncrement, PostDecrement, PostIncrement, PreDecrement) )
 import Control.Monad.State
+    ( mapAndUnzipM, gets, modify, evalState, State )
 import qualified Data.Map.Strict as M
-import Data.Char
+import Data.Char ( isDigit )
 import Data.Maybe (fromMaybe)
 
 type IRProgramAST = [IRTopLevel]
@@ -123,7 +157,8 @@ cStatmentToIRInstructions bi = case bi of
   S (Default statement l) -> defaultToIRs statement l
   D (VariableDeclaration (VarTypeInfo var dt (Just expr) Nothing False)) ->
     cStatmentToIRInstructions (S (Expression
-      (TExpr (Assignment AssignOp (TExpr (Variable var False Nothing) dt) expr) dt)))
+      (TExpr (Assignment AssignOp (TExpr (Variable var False Nothing) dt) undefined) dt)))
+      -- (TExpr (Assignment AssignOp (TExpr (Variable var False Nothing) dt) expr) dt)))
   D _ -> pure []
 
 initIRVarId :: a1 -> (a2, b) -> (a1, b)
@@ -143,24 +178,6 @@ cFuncDefineToIRFuncDefine  _ = undefined
 
 cASTToIrAST :: CProgramAST -> IRProgramAST
 cASTToIrAST = flip evalState (1, 1) . mapM cFuncDefineToIRFuncDefine . filter hasFuncBody
-
-constantExprToInt :: TypedExpr -> Integer
-constantExprToInt e = case e of
-  TExpr (Constant (ConstInt i)) _ -> fromIntegral i
-  TExpr (Constant (ConstLong l)) _ -> fromIntegral l
-  TExpr (Constant (ConstUInt ui)) _ -> fromIntegral ui
-  TExpr (Constant (ConstULong ul)) _ -> fromIntegral ul
-  TExpr (Constant (ConstDouble d)) _ -> truncate d
-  _ -> undefined
-
-constantExprToDouble :: TypedExpr -> Double
-constantExprToDouble e = case e of
-  TExpr (Constant (ConstDouble d)) _ -> d
-  TExpr (Constant (ConstInt i)) _ -> fromIntegral i
-  TExpr (Constant (ConstLong l)) _ -> fromIntegral l
-  TExpr (Constant (ConstUInt ui)) _ -> fromIntegral ui
-  TExpr (Constant (ConstULong ul)) _ -> fromIntegral ul
-  _ -> undefined
 
 exprToStaticInit :: TypedExpr -> StaticInit
 exprToStaticInit (TExpr e _) = case e of
@@ -193,14 +210,18 @@ staticVarConvertion m = map IRStaticVar .
   where identToStaticVar ident = case ident of
           VarIdentifier (VarTypeInfo vName dt expr (Just Static) _) -> if dt == DTInternal TDouble
             then [IRStaticVarDefine vName False dt
-              (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstDouble 0) (DTInternal TDouble)) expr)]
+              -- (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstDouble 0) (DTInternal TDouble)) expr)]
+              (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstDouble 0) (DTInternal TDouble)) undefined)]
             else [IRStaticVarDefine vName False dt
-              (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstInt 0) (DTInternal TInt)) expr)]
+              -- (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstInt 0) (DTInternal TInt)) expr)]
+              (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstInt 0) (DTInternal TInt)) undefined)]
           VarIdentifier (VarTypeInfo vName dt expr Nothing topLvl) -> if dt == DTInternal TDouble
             then [IRStaticVarDefine vName topLvl dt
-              (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstDouble 0) (DTInternal TDouble)) expr)]
+              -- (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstDouble 0) (DTInternal TDouble)) expr)]
+              (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstDouble 0) (DTInternal TDouble)) undefined)]
             else [IRStaticVarDefine vName topLvl dt
-              (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstInt 0) (DTInternal TInt)) expr)]
+              -- (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstInt 0) (DTInternal TInt)) expr)]
+              (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstInt 0) (DTInternal TInt)) undefined)]
           _ -> []
 
 bumpOneToVarId :: Num a => (a, b) -> (a, b)
