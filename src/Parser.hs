@@ -1712,10 +1712,11 @@ declaratorParser preTok identiferName preDTs = do
     _ -> do
       newIdentName <- lookAhead (try closePParser <|> try openSqtParser <|> try identifierParser) <|> pure ""
       case newIdentName of
-        "" -> anyChar >>= unexpected . pure
+        "" -> spaces >> anyChar >>= unexpected . pure
         ")" -> pure (identiferName, [id])
         _ -> do
           void identifierParser
+          void $ lookAhead $ try $ spaces >> anyChar
           afterIdentChar <- lookAhead $ try (spaces >> anyChar)
           maybeFuncArrType <- case afterIdentChar of
             '(' -> do
@@ -1724,7 +1725,7 @@ declaratorParser preTok identiferName preDTs = do
               putState parseInfo
               pure [fType]
             '[' -> do
-                (_, nextType) <- declaratorParser identiferName identiferName preDTs
+                (_, nextType) <- declaratorParser newIdentName newIdentName preDTs
                 pure nextType
             _ -> pure [id]
           pure (newIdentName, maybeFuncArrType)
