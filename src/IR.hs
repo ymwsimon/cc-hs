@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/07/31 11:45:10 by mayeung          ###   ########.fr       --
+--   Updated: 2025/08/02 12:50:42 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -48,10 +48,11 @@ import Operation
                        BitShiftRightAssign),
       UnaryOp(PreIncrement, PostDecrement, PostIncrement, PreDecrement) )
 import Control.Monad.State
-    ( mapAndUnzipM, gets, modify, evalState, State )
+    ( gets, modify, evalState, State )
 import qualified Data.Map.Strict as M
 import Data.Char ( isDigit )
 import Data.Maybe (fromMaybe)
+import Control.Monad (mapAndUnzipM)
 
 type IRProgramAST = [IRTopLevel]
 

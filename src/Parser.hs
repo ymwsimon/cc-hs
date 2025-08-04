@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/08/01 11:02:16 by mayeung          ###   ########.fr       --
+--   Updated: 2025/08/03 18:29:50 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -875,6 +875,7 @@ isIntegralTypedExpr = isIntDT . tDT
 
 isPointerTypedExpr :: TypedExpr -> Bool
 isPointerTypedExpr (TExpr _ (DTPointer _)) = True
+isPointerTypedExpr (TExpr _ (DTArray _ _)) = True
 isPointerTypedExpr _ = False
 
 isFloatDT :: DT -> Bool
@@ -1029,6 +1030,7 @@ cvtInit initialiser dt = case initialiser of
 getPointingType :: DT -> DT
 getPointingType dt = case dt of
   DTPointer pDT -> pDT
+  DTArray aDT _ -> aDT
   _ -> dt
 
 derefParser :: ParsecT String ParseInfo IO TypedExpr
@@ -1459,10 +1461,30 @@ castParser = do
   checkExplicitCast e cType
   pure $ foldToConstExpr $ TExpr (Cast cType e) cType
 
+subscriptParser :: TypedExpr -> ParsecT String ParseInfo IO TypedExpr
+subscriptParser te = do
+  maybeSqtBra <- lookAhead $ spaces >> anyChar
+  case maybeSqtBra of
+    '[' -> do
+      void openSqtParser
+      expr <- exprParser
+      void closeSqtParser
+      if isPointerTypedExpr te && isIntegralTypedExpr expr
+        || isPointerTypedExpr expr && isIntegralTypedExpr te
+        then do
+          let aType = if isPointerTypedExpr te
+              then getPointingType $ tDT te
+              else getPointingType $ tDT expr
+          pure $ (`TExpr` aType) $ Subscript te expr
+        else
+          unexpected "subscript operation"
+    _ -> pure te
+
 factorParser :: ParsecT String ParseInfo IO TypedExpr
 factorParser = do
   c <- lookAhead $ try $ spaces >> anyChar
-  next c where
+  next c >>= subscriptParser
+    where
     next c
       | isDigit c || c == '.' = doubleIntegralParser
       | [c] `elem` allUnaryOp = unaryExprParser
@@ -1514,6 +1536,9 @@ argPairParser = do
       M.insert vName (VarIdentifier (VarTypeInfo vName varType Nothing Nothing False)) (currentScopeIdent p)})
   pure (varType, vName)
 
+isTypeSpecifier :: String -> Bool
+isTypeSpecifier sym = sym `elem` declarationSpecifierStrList
+
 argListParser :: ParsecT String ParseInfo IO [(DT, IdentifierName)]
 argListParser = do
   void openPParser
@@ -1521,7 +1546,9 @@ argListParser = do
   r <- case res of
     "void" -> keyVoidParser >> pure []
     ")" -> pure []
-    _ -> sepBy argPairParser $ try commaParser
+    _ -> if isTypeSpecifier res
+      then sepBy argPairParser $ try commaParser
+      else unexpected "identifier without type"
   void closePParser
   pure r
 
@@ -1656,7 +1683,11 @@ localStaticVarHandle varType sc vName = do
   pure $ VarTypeInfo newVarName varType initialiser sc $ topLevel parseInfo
 
 funcDeclaratorArgListParser :: ParsecT String ParseInfo IO (DT -> DT)
-funcDeclaratorArgListParser = DTFuncType <$> argListParser
+funcDeclaratorArgListParser = do
+  parseInfo <- getState
+  aList <- argListParser
+  putState parseInfo
+  pure $ DTFuncType aList
 
 arrayDeclaratorParser :: ParsecT String ParseInfo IO (DT -> DT)
 arrayDeclaratorParser = do
@@ -1673,62 +1704,44 @@ declaratorParser preTok identiferName preDTs = do
   nextChar <- lookAhead $ try (spaces >> anyChar)
   case nextChar of
     '(' -> do
-      void openPParser
-      (newIdentName, innerType) <- declaratorParser "(" identiferName preDTs
-      void closePParser
-      afterClosePChar <- lookAhead $ try (spaces >> anyChar)
-      maybeFuncArrType <- case afterClosePChar of
-        '(' -> do
-          when (isFuncDT $ last innerType (DTInternal TInt)) $
-            unexpected "function returning function"
-          when (isArraryDT $ head innerType (DTInternal TInt)) $
+      maybeType <- lookAhead $ optionMaybe $ try $ openPParser >> symbolExtract
+      if isJust maybeType && isTypeSpecifier (fromJust maybeType)
+        then do
+          when (isArraryDT $ last preDTs $ DTInternal TInt) $
             unexpected "array of function"
-          parseInfo <- getState
-          funcDeclaratorArgListParser <* putState parseInfo
-        '[' -> pure id
-        _ -> pure id
-      pure (newIdentName, innerType ++ [maybeFuncArrType])
+          when (isFuncDT $ last preDTs $ DTInternal TInt) $
+            unexpected "function returning function"
+          func <- funcDeclaratorArgListParser
+          pure (identiferName, preDTs ++ [func])
+        else do
+          void openPParser
+          (newIdentName, innerType) <- declaratorParser "(" identiferName preDTs
+          void closePParser
+          (newNewIdentName, nextType) <- declaratorParser ")" newIdentName (preDTs ++ innerType)
+          pure (newNewIdentName, nextType)
     '*' -> do
       void mulLex
       (newIdentName, newType) <- declaratorParser "*" identiferName preDTs
-      upcomingChar <- lookAhead $ try (spaces >> anyChar)
-      maybeFuncType <- case upcomingChar of
-        '(' -> do
-          parseInfo <- getState
-          funcDeclaratorArgListParser <* putState parseInfo
-        _ -> pure id
-      pure (newIdentName, newType ++ [maybeFuncType, DTPointer])
+      pure (newIdentName, newType ++ [DTPointer])
+    ';' -> pure (identiferName, preDTs)
+    '=' -> pure (identiferName, preDTs)
     '[' -> do
       when (null identiferName) $ unexpected "array type casting"
       aType <- arrayDeclaratorParser
-      (iName, nextType) <- declaratorParser "]" identiferName preDTs
-      pure (iName, aType : nextType)
+      (iName, types) <- declaratorParser "]" identiferName (preDTs ++ [aType])
+      pure (iName, types)
     ')' -> do
       case preTok of
         "(" -> pure (identiferName, [DTFuncType []])
-        _ -> pure (identiferName, [id])
-    ';' -> pure (identiferName, [id])
-    '=' -> pure (identiferName, [id])
+        _ -> pure (identiferName, preDTs)
     _ -> do
-      newIdentName <- lookAhead (try closePParser <|> try openSqtParser <|> try identifierParser) <|> pure ""
+      newIdentName <- lookAhead (try identifierParser) <|> pure ""
       case newIdentName of
-        "" -> spaces >> anyChar >>= unexpected . pure
-        ")" -> pure (identiferName, [id])
+        "" -> pure (identiferName, preDTs)
         _ -> do
           void identifierParser
-          void $ lookAhead $ try $ spaces >> anyChar
-          afterIdentChar <- lookAhead $ try (spaces >> anyChar)
-          maybeFuncArrType <- case afterIdentChar of
-            '(' -> do
-              parseInfo <- getState
-              fType <- funcDeclaratorArgListParser
-              putState parseInfo
-              pure [fType]
-            '[' -> do
-                (_, nextType) <- declaratorParser newIdentName newIdentName preDTs
-                pure nextType
-            _ -> pure [id]
-          pure (newIdentName, maybeFuncArrType)
+          nextType <- snd <$> declaratorParser newIdentName newIdentName preDTs
+          pure (newIdentName, nextType)
 
 varDeclarationParser :: ParsecT String ParseInfo IO VarTypeInfo
 varDeclarationParser = do
