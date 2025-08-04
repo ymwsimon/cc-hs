@@ -1308,8 +1308,8 @@ intOperandParser = flip TExpr (DTInternal TInt) . Constant . ConstInt . read <$>
 longOperandParser :: ParsecT String u IO TypedExpr
 longOperandParser = flip TExpr (DTInternal TLong) . Constant . ConstLong . read <$> longParser
 
-postfixOp :: TypedExpr -> ParsecT String u IO TypedExpr
-postfixOp e@(TExpr _ dt) =
+postAdjustOp :: TypedExpr -> ParsecT String u IO TypedExpr
+postAdjustOp e@(TExpr _ dt) =
   if isLValueExpr e
     then do
       maybePostOp <- lookAhead (try $ incrementLex <|> decrementLex) <|> pure ""
@@ -1328,7 +1328,7 @@ parenExprParser = do
   expr <- exprParser
   void closePParser
   modifyState $ setPrecedence p
-  postfixOp $ foldToConstExpr expr
+  postAdjustOp $ foldToConstExpr expr
 
 variableParser :: ParsecT String ParseInfo IO TypedExpr
 variableParser = do
@@ -1341,11 +1341,17 @@ variableParser = do
       (not (M.member vName current) && M.member vName outer &&
         isFuncIdentifier (outer M.! vName))) $
     unexpected "Function identifier"
-  if M.member vName current
-    then let var = vti $ current M.! vName in
-        postfixOp $ TExpr (Variable (varName var) (topLv var) (varStoreClass var)) (variableType var)
-    else let var = vti $ outer M.! vName in
-        postfixOp $ TExpr  (Variable (varName var) (topLv var) (varStoreClass var)) (variableType var)
+  let var = if M.member vName current
+      then vti $ current M.! vName
+      else vti $ outer M.! vName
+  let finalType = if isArraryDT $ variableType var
+      then DTPointer $ arrType $ variableType var
+      else variableType var
+  let finalVar = if isArraryDT $ variableType var
+      then AddrOf $ (`TExpr` finalType) $ Variable (varName var) (topLv var) (varStoreClass var)
+      -- then Variable (varName var) (topLv var) (varStoreClass var)
+      else Variable (varName var) (topLv var) (varStoreClass var)
+  postAdjustOp $ TExpr finalVar finalType
 
 isFuncIdentiferInVarMap :: String -> M.Map String IdentifierType -> M.Map String IdentifierType -> Bool
 isFuncIdentiferInVarMap fIdentifier current outer =
@@ -1463,8 +1469,8 @@ castParser = do
 
 subscriptParser :: TypedExpr -> ParsecT String ParseInfo IO TypedExpr
 subscriptParser te = do
-  maybeSqtBra <- lookAhead $ spaces >> anyChar
-  case maybeSqtBra of
+  maybeSqtBracket <- lookAhead $ spaces >> anyChar
+  case maybeSqtBracket of
     '[' -> do
       void openSqtParser
       expr <- exprParser
@@ -1475,15 +1481,23 @@ subscriptParser te = do
           let aType = if isPointerTypedExpr te
               then getPointingType $ tDT te
               else getPointingType $ tDT expr
-          pure $ (`TExpr` aType) $ Subscript te expr
+          postfixOpParser $ (`TExpr` aType) $ Subscript te expr
         else
           unexpected "subscript operation"
     _ -> pure te
 
+postfixOpParser :: TypedExpr -> ParsecT String ParseInfo IO TypedExpr
+postfixOpParser te = do
+  maybePostfixOp <- lookAhead (try $ incrementLex <|> try decrementLex <|> openSqtParser) <|> pure ""
+  case maybePostfixOp of
+    "" -> pure te
+    "[" -> subscriptParser te
+    _ -> postAdjustOp te
+
 factorParser :: ParsecT String ParseInfo IO TypedExpr
 factorParser = do
   c <- lookAhead $ try $ spaces >> anyChar
-  next c >>= subscriptParser
+  next c >>= postfixOpParser
     where
     next c
       | isDigit c || c == '.' = doubleIntegralParser
