@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/07/31 10:29:55 by mayeung          ###   ########.fr       --
+--   Updated: 2025/08/06 13:50:06 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -116,7 +116,7 @@ data AsmUnaryOp =
 
 data AsmBinaryOp =
   AsmPlus
-  | AsmMius
+  | AsmMinus
   | AsmMul
   | AsmIDivOp
   | AsmDivOp
@@ -197,7 +197,7 @@ instance Show AsmUnaryOp where
 
 instance Show AsmBinaryOp where
   show AsmPlus = "add"
-  show AsmMius = "sub"
+  show AsmMinus = "sub"
   show AsmMul = "imul"
   show AsmIDivOp = undefined
   show AsmDivOp = undefined
@@ -303,9 +303,9 @@ isAsmStaticVarDefine :: AsmTopLevel -> Bool
 isAsmStaticVarDefine (AsmStaticVar _) = True
 isAsmStaticVarDefine _ = False
 
-isAsmConstantDefein :: AsmTopLevel -> Bool
-isAsmConstantDefein (AsmStaticConstant _) = True
-isAsmConstantDefein _ = False
+isAsmConstantDefine :: AsmTopLevel -> Bool
+isAsmConstantDefine (AsmStaticConstant _) = True
+isAsmConstantDefine _ = False
 
 generalRegister :: [Reg]
 generalRegister = enumFromTo AL R12 
@@ -425,7 +425,7 @@ irUnaryOpToAsmOp _ = undefined
 
 irBinaryOpToAsmOp :: BinaryOp -> AsmBinaryOp
 irBinaryOpToAsmOp Plus = AsmPlus
-irBinaryOpToAsmOp Minus = AsmMius
+irBinaryOpToAsmOp Minus = AsmMinus
 irBinaryOpToAsmOp Multiply = AsmMul
 irBinaryOpToAsmOp Division = AsmDivOp
 irBinaryOpToAsmOp Modulo = AsmMod
@@ -588,7 +588,7 @@ irInstructionToAsmInstruction instr m funcList gVarMap = case instr of
       AsmJmp $ "castDToU2." ++ (!! 1) lbs,
       AsmLabel $ "castDToU1." ++ (!! 0) lbs,
       Mov AsmDouble (cvtOperand s) (Register XMM0),
-      AsmBinary AsmMius AsmDouble (Data $ ".L_" ++ doubleValToLabel 9223372036854775808.0) (Register XMM0),
+      AsmBinary AsmMinus AsmDouble (Data $ ".L_" ++ doubleValToLabel 9223372036854775808.0) (Register XMM0),
       Cvttsd2si QuadWord (Register XMM0) (cvtOperand d),
       Mov QuadWord (Imm $ ConstULong 9223372036854775808) (Register R10),
       AsmBinary AsmPlus QuadWord (Register R10) (cvtOperand d),
