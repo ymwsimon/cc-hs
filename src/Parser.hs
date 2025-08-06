@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/08/03 18:29:50 by mayeung          ###   ########.fr       --
+--   Updated: 2025/08/06 22:29:48 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -460,6 +460,12 @@ symbolExtract = do
   tailLetters <- many (satisfy (\c -> (c == '_') || isAlphaNum c))
   pure $ firstLetter : tailLetters
 
+isValidIdentifier :: String -> Bool
+isValidIdentifier str =
+  not (null str)
+    && (!! 0) str `elem` '_' : ['a'..'z']
+    && all (\c -> c == '_' || isAlphaNum c) (drop 1 str)
+
 createSkipSpacesStringParser :: String -> ParsecT String u IO String
 createSkipSpacesStringParser = (spaces >>) . string'
 
@@ -576,7 +582,7 @@ declarationSpecifierParser isFunc (toks, prohibitedList) = do
             [] -> Nothing 
             ["static"] -> Just Static
             ["extern"] -> Just Extern
-            _ -> undefined
+            _ -> error "unknow storage class specifier"
       let varType = primDataTypeMap M.! sort (filter (`notElem` storageClassSpecifierStrList) toks)
       pure (sc, varType)
     else
@@ -788,7 +794,7 @@ exprToInteger (TExpr expr _) = case expr of
   Constant (ConstLong l) -> l
   Constant (ConstULong ul) -> ul
   Constant (ConstDouble d) -> truncate d
-  _ -> undefined
+  _ -> error "unsupported expression conversion to integer"
 
 exprToDouble :: TypedExpr -> Double
 exprToDouble (TExpr expr _) = case expr of
@@ -797,7 +803,7 @@ exprToDouble (TExpr expr _) = case expr of
   Constant (ConstLong l) -> fromIntegral l
   Constant (ConstULong ul) -> fromIntegral ul
   Constant (ConstDouble d) -> d
-  _ -> undefined
+  _ -> error "unsupported expression conversion to double"
 
 numConstToInt :: Num b => NumConst -> b
 numConstToInt n = case n of
@@ -807,12 +813,12 @@ numConstToInt n = case n of
   ConstLong l -> fromIntegral l
   ConstUInt ui -> fromIntegral ui
   ConstULong ul -> fromIntegral ul
-  _ -> undefined
+  _ -> error "unsupported number constant to int"
 
 numConstToDouble :: NumConst -> Double
 numConstToDouble n = case n of
   ConstDouble d -> d
-  _ -> undefined
+  _ -> error "unsupported number constant to double"
 
 numConstToStr :: NumConst -> String
 numConstToStr n = case n of
@@ -829,7 +835,10 @@ isVariableExpr (TExpr (Variable {}) _) = True
 isVariableExpr _ = False
 
 isLValueExpr :: TypedExpr -> Bool
-isLValueExpr (TExpr (Variable {}) _) = True
+isLValueExpr (TExpr (Variable {}) vdt) =
+  case vdt of
+    DTArray {} -> False
+    _ -> True
 isLValueExpr (TExpr (Dereference _) _) = True
 isLValueExpr _ = False
 
@@ -891,7 +900,7 @@ exprToConstantExpr te@(TExpr e dt) =
         DTInternal TLong -> Constant . ConstLong . toInteger . (fromInteger :: Integer -> Int64)
         DTInternal TULong -> Constant . ConstULong . toInteger . (fromInteger :: Integer -> Word64)
         DTPointer _ -> Constant . ConstULong . toInteger . (fromInteger :: Integer -> Word64)
-        _ -> undefined
+        _ -> error $ "unsupported expression with data type " ++ show dt
         in
   case e of
   Constant _ -> te
@@ -940,7 +949,7 @@ exprToConstantExpr te@(TExpr e dt) =
     else (`TExpr` dt) $ constructor $ 
       if exprToInteger (exprToConstantExpr c) /= 0 then
           exprToInteger $ exprToConstantExpr t else exprToInteger $ exprToConstantExpr f
-  _ -> undefined
+  _ -> error "unsupported expression conversion to constant expression"
   where relationToIntConst op lE rE =
           let lVal = if isFloatDT $ tDT lE then (/= 0.0) $ exprToDouble lE else (/= 0) $ exprToInteger lE
               rVal = if isFloatDT $ tDT rE then (/= 0.0) $ exprToDouble rE else (/= 0) $ exprToInteger rE in
@@ -962,7 +971,9 @@ foldToConstExpr :: TypedExpr -> TypedExpr
 foldToConstExpr te = if isConstantTypedExpr te then exprToConstantExpr te else te
 
 foldInitToConstExpr :: Initialiser -> Initialiser
-foldInitToConstExpr = id
+foldInitToConstExpr initialiser = case initialiser of
+  SingleInit si -> if isConstantInit initialiser then SingleInit (foldToConstExpr si) else initialiser
+  CompoundInit ci -> CompoundInit $ map foldInitToConstExpr ci
 
 doubleIntegralParser :: ParsecT String ParseInfo IO TypedExpr
 doubleIntegralParser = do
@@ -1084,12 +1095,12 @@ makeConstantTEIntWithDT n dt = case dt of
   DTInternal TUInt -> TExpr (Constant $ ConstUInt n) dt
   DTInternal TLong -> TExpr (Constant $ ConstLong n) dt
   DTInternal TULong -> TExpr (Constant $ ConstULong n) dt
-  _ -> undefined
+  _ -> error "unsupported constant int type creatation"
 
 makeConstantTEFloatWithDT :: Double -> DT -> TypedExpr
 makeConstantTEFloatWithDT n dt = case dt of
   DTInternal TDouble -> TExpr (Constant $ ConstDouble n) dt
-  _ -> undefined
+  _ -> error "unsupported constant double type creatation"
 
 getDTSize :: DT -> Int
 getDTSize dt = case dt of
@@ -1105,7 +1116,7 @@ getDTSize dt = case dt of
   DTInternal TDouble -> 8
   DTInternal TLDouble -> 16
   DTPointer _ -> 8
-  _ -> undefined
+  _ -> error $ "get size of unsupported data type " ++ show dt
 
 isSignedInteger :: DT -> Bool
 isSignedInteger dt = case dt of
@@ -1146,7 +1157,7 @@ constantExprToInt e = case e of
   TExpr (Constant (ConstUInt ui)) _ -> fromIntegral ui
   TExpr (Constant (ConstULong ul)) _ -> fromIntegral ul
   TExpr (Constant (ConstDouble d)) _ -> truncate d
-  _ -> undefined
+  _ -> error $ "unsupported const type expression to int"
 
 constantExprToDouble :: TypedExpr -> Double
 constantExprToDouble e = case e of
@@ -1155,7 +1166,7 @@ constantExprToDouble e = case e of
   TExpr (Constant (ConstLong l)) _ -> fromIntegral l
   TExpr (Constant (ConstUInt ui)) _ -> fromIntegral ui
   TExpr (Constant (ConstULong ul)) _ -> fromIntegral ul
-  _ -> undefined
+  _ -> error $ "unsupported const type expression to double"
 
 getExprsCommonType :: TypedExpr -> TypedExpr -> DT
 getExprsCommonType (TExpr _ lDT) (TExpr _ rDT)
@@ -1344,12 +1355,13 @@ variableParser = do
   let var = if M.member vName current
       then vti $ current M.! vName
       else vti $ outer M.! vName
-  let finalType = if isArraryDT $ variableType var
-      then DTPointer $ arrType $ variableType var
+  let finalType = if isArrayDT $ variableType var
+      -- then DTPointer $ arrType $ variableType var
+      then variableType var
       else variableType var
-  let finalVar = if isArraryDT $ variableType var
-      then AddrOf $ (`TExpr` finalType) $ Variable (varName var) (topLv var) (varStoreClass var)
-      -- then Variable (varName var) (topLv var) (varStoreClass var)
+  let finalVar = if isArrayDT $ variableType var
+      -- then AddrOf $ (`TExpr` finalType) $ Variable (varName var) (topLv var) (varStoreClass var)
+      then Variable (varName var) (topLv var) (varStoreClass var)
       else Variable (varName var) (topLv var) (varStoreClass var)
   postAdjustOp $ TExpr finalVar finalType
 
@@ -1451,9 +1463,12 @@ castParser :: ParsecT String ParseInfo IO TypedExpr
 castParser = do
   void openPParser
   (_, baseType) <- declarationSpecifierParser False ([], storageClassSpecifierStrList)
-  (name, declarator) <- declaratorParser (show baseType) "" [id]
-  unless (null name) $
+  (name, declarator) <- declaratorParser (show baseType) Nothing [id]
+  liftIO $ print name
+  unless (null $ fromJust name) $
     unexpected "declarator"
+  when (isArrayDT $ foldl1 (.) declarator baseType) $
+    unexpected "cast to array"
   void closePParser
   p <- precedence <$> getState
   modifyState $ setPrecedence 2
@@ -1479,8 +1494,8 @@ subscriptParser te = do
         || isPointerTypedExpr expr && isIntegralTypedExpr te
         then do
           let aType = if isPointerTypedExpr te
-              then getPointingType $ tDT te
-              else getPointingType $ tDT expr
+              then tDT te
+              else tDT expr
           postfixOpParser $ (`TExpr` aType) $ Subscript te expr
         else
           unexpected "subscript operation"
@@ -1540,15 +1555,15 @@ ifStatParser = do
 argPairParser :: ParsecT String ParseInfo IO (DT, IdentifierName)
 argPairParser = do
   (_, baseType) <- declarationSpecifierParser False ([], "void" : storageClassSpecifierStrList)
-  (vName, declarator) <- declaratorParser (show baseType) "" [id]
+  (vName, declarator) <- declaratorParser (show baseType) Nothing [id]
   let varType = foldl1 (.) declarator baseType
   current <- currentScopeIdent <$> getState
-  when (M.member vName current) $
-    unexpected $ vName ++ ". Already defined"
+  when (M.member (fromJust vName) current) $
+    unexpected $ fromJust vName ++ ". Already defined"
   unless (null vName) $
     modifyState (\p -> p {currentScopeIdent =
-      M.insert vName (VarIdentifier (VarTypeInfo vName varType Nothing Nothing False)) (currentScopeIdent p)})
-  pure (varType, vName)
+      M.insert (fromJust vName) (VarIdentifier (VarTypeInfo (fromJust vName) varType Nothing Nothing False)) (currentScopeIdent p)})
+  pure (varType, fromJust vName)
 
 isTypeSpecifier :: String -> Bool
 isTypeSpecifier sym = sym `elem` declarationSpecifierStrList
@@ -1618,33 +1633,33 @@ getInitialiser parser = do
 topLevelVarDeclarationParser :: ParsecT String ParseInfo IO VarTypeInfo
 topLevelVarDeclarationParser = do
   (sc, baseType) <- declarationSpecifierParser False ([], [])
-  (vName, declarator) <- declaratorParser (show baseType) "" [id]
+  (vName, declarator) <- declaratorParser (show baseType) Nothing [id]
   let varType = foldl1 (.) declarator baseType
   topIdentMap <- topLevelScopeIdent <$> getState
-  when (M.member vName topIdentMap && isFuncIdentifier (topIdentMap M.! vName)) $
-    unexpected $ vName ++ ". Already defined"
-  when (M.member vName topIdentMap && isVarIdentifier (topIdentMap M.! vName)
-    && (variableType (vti (topIdentMap M.! vName)) /= varType
-      || not (topLevelVarStorageClassCheck (varStoreClass (vti (topIdentMap M.! vName))) sc))) $
-    unexpected $ vName ++ ". Type mismatch to previous declaration"
+  when (M.member (fromJust vName) topIdentMap && isFuncIdentifier (topIdentMap M.! fromJust vName)) $
+    unexpected $ fromJust vName ++ ". Already defined"
+  when (M.member (fromJust vName) topIdentMap && isVarIdentifier (topIdentMap M.! fromJust vName)
+    && (variableType (vti (topIdentMap M.! fromJust vName)) /= varType
+      || not (topLevelVarStorageClassCheck (varStoreClass (vti (topIdentMap M.! fromJust vName))) sc))) $
+    unexpected $ fromJust vName ++ ". Type mismatch to previous declaration"
   initialiser <- fmap (fmap (foldInitToConstExpr . (`cvtInit` getArrayInnerType varType))) <$> optionMaybe $ try $ equalLex >> getInitialiser exprParser
   void semiColParser
   unless (isNothing initialiser || isConstantInit (fromJust initialiser)) $
     unexpected "non constant initialiser"
   when (isJust initialiser) $
     checkPointerInit (fromJust initialiser) varType (Just Static)
-  if M.member vName topIdentMap
+  if M.member (fromJust vName) topIdentMap
     then do
-      VarIdentifier (VarTypeInfo _ vType vDefine sClass _) <- pure $ topIdentMap M.! vName
+      VarIdentifier (VarTypeInfo _ vType vDefine sClass _) <- pure $ topIdentMap M.! fromJust vName
       when (isJust vDefine && isJust initialiser) $
         unexpected "variable redefine"
       let newSClass = if sc == Just Extern then sClass else sc
       let define = if isJust vDefine then vDefine else initialiser
-      updateTopLevelVarCurrentVar vType vName initialiser sc
-      pure $ VarTypeInfo vName vType define newSClass True
+      updateTopLevelVarCurrentVar vType (fromJust vName) initialiser sc
+      pure $ VarTypeInfo (fromJust vName) vType define newSClass True
     else do
-      updateTopLevelVarCurrentVar varType vName initialiser sc
-      pure $ VarTypeInfo vName varType initialiser sc True
+      updateTopLevelVarCurrentVar varType (fromJust vName) initialiser sc
+      pure $ VarTypeInfo (fromJust vName) varType initialiser sc True
 
 localExternVarHandle :: DT -> Maybe StorageClass -> IdentifierName -> ParsecT String ParseInfo IO VarTypeInfo
 localExternVarHandle varType sc vName  = do
@@ -1712,71 +1727,75 @@ arrayDeclaratorParser = do
   void closeSqtParser
   pure (`DTArray` (fromInteger . constantExprToInt <$> aSize))
 
-declaratorParser :: String -> IdentifierName -> [DT -> DT] ->
-  ParsecT String ParseInfo IO (IdentifierName, [DT -> DT])
-declaratorParser preTok identiferName preDTs = do
+declaratorParser :: String -> Maybe IdentifierName -> [DT -> DT] ->
+  ParsecT String ParseInfo IO (Maybe IdentifierName, [DT -> DT])
+declaratorParser preTok identifierName preDTs = do
   nextChar <- lookAhead $ try (spaces >> anyChar)
   case nextChar of
     '(' -> do
       maybeType <- lookAhead $ optionMaybe $ try $ openPParser >> symbolExtract
-      if isJust maybeType && isTypeSpecifier (fromJust maybeType)
+      if isJust maybeType && isTypeSpecifier (fromJust maybeType) || isValidIdentifier preTok
         then do
-          when (isArraryDT $ last preDTs $ DTInternal TInt) $
+          when (isArrayDT $ last preDTs $ DTInternal TInt) $
             unexpected "array of function"
           when (isFuncDT $ last preDTs $ DTInternal TInt) $
             unexpected "function returning function"
           func <- funcDeclaratorArgListParser
-          pure (identiferName, preDTs ++ [func])
+          pure (identifierName, preDTs ++ [func])
         else do
           void openPParser
-          (newIdentName, innerType) <- declaratorParser "(" identiferName preDTs
+          (newIdentName, innerType) <- declaratorParser "(" identifierName preDTs
           void closePParser
           (newNewIdentName, nextType) <- declaratorParser ")" newIdentName (preDTs ++ innerType)
           pure (newNewIdentName, nextType)
     '*' -> do
+      when (preTok == ")") $ unexpected "pointer after parenthesized expressions"
       void mulLex
-      (newIdentName, newType) <- declaratorParser "*" identiferName preDTs
+      (newIdentName, newType) <- declaratorParser "*" identifierName preDTs
       pure (newIdentName, newType ++ [DTPointer])
-    ';' -> pure (identiferName, preDTs)
-    '=' -> pure (identiferName, preDTs)
+    ';' -> pure (identifierName, preDTs)
+    '=' -> pure (identifierName, preDTs)
     '[' -> do
-      when (null identiferName) $ unexpected "array type casting"
+      liftIO $ print identifierName
+      when (isNothing identifierName) $ unexpected "array type casting"
       aType <- arrayDeclaratorParser
-      (iName, types) <- declaratorParser "]" identiferName (preDTs ++ [aType])
+      (iName, types) <- declaratorParser "]" identifierName (preDTs ++ [aType])
       pure (iName, types)
     ')' -> do
       case preTok of
-        "(" -> pure (identiferName, [DTFuncType []])
-        _ -> pure (identiferName, preDTs)
+        "(" -> pure (identifierName, [DTFuncType []])
+        _ -> pure (if isJust identifierName then identifierName else Just "", preDTs)
     _ -> do
       newIdentName <- lookAhead (try identifierParser) <|> pure ""
       case newIdentName of
-        "" -> pure (identiferName, preDTs)
+        "" -> pure (identifierName, preDTs)
         _ -> do
+          when (isJust identifierName) $
+            unexpected "identifier"
           void identifierParser
-          nextType <- snd <$> declaratorParser newIdentName newIdentName preDTs
-          pure (newIdentName, nextType)
+          nextType <- snd <$> declaratorParser newIdentName (Just newIdentName) preDTs
+          pure (Just newIdentName, nextType)
 
 varDeclarationParser :: ParsecT String ParseInfo IO VarTypeInfo
 varDeclarationParser = do
   (sc, baseType) <- declarationSpecifierParser False ([], [])
-  (vName, declarator) <- declaratorParser (show baseType) "" [id]
+  (vName, declarator) <- declaratorParser (show baseType) Nothing [id]
   let varType = foldl1 (.) declarator baseType
   when (isFuncDT varType) $
     unexpected "function declaration"
   current <- currentScopeIdent <$> getState
   topIdentMap <- topLevelScopeIdent <$> getState
-  when (M.member vName current
-    && (isFuncIdentifier (current M.! vName)
-      || (varStoreClass (vti (current M.! vName)) /= Just Extern) || sc /= Just Extern)) $
-    unexpected $ "Variable redeclare: " ++ vName
-  when (sc == Just Extern && M.member vName topIdentMap && isFuncIdentifier (topIdentMap M.! vName)) $
-    unexpected $ vName ++ ". Already defined"
+  when (M.member (fromJust vName) current
+    && (isFuncIdentifier (current M.! fromJust vName)
+      || (varStoreClass (vti (current M.! fromJust vName)) /= Just Extern) || sc /= Just Extern)) $
+    unexpected $ "Variable redeclare: " ++ fromJust vName
+  when (sc == Just Extern && M.member (fromJust vName) topIdentMap && isFuncIdentifier (topIdentMap M.! fromJust vName)) $
+    unexpected $ fromJust vName ++ ". Already defined"
   if sc == Just Extern
-    then localExternVarHandle varType sc vName
+    then localExternVarHandle varType sc (fromJust vName)
     else if isNothing sc
-      then localPlainVarHandle varType sc vName
-    else localStaticVarHandle varType sc vName
+      then localPlainVarHandle varType sc (fromJust vName)
+    else localStaticVarHandle varType sc (fromJust vName)
 
 expressionParser :: ParsecT String ParseInfo IO Statement
 expressionParser = Expression . foldToConstExpr <$> exprParser
@@ -1921,7 +1940,7 @@ dtCvtRead dt = case dt of
   DTInternal TLong -> fromIntegral . (read :: String -> Int64)
   DTInternal TUInt -> fromIntegral . (read :: String -> Word32)
   DTInternal TULong -> fromIntegral . (read :: String -> Word64)
-  _ -> undefined
+  _ -> error "unsupported data type convert read"
 
 caseParser :: ParsecT String ParseInfo IO Statement
 caseParser = do
@@ -2043,10 +2062,11 @@ checkForFuncTypeConflict parseInfo declare = case declare of
     when (M.member fn current && isVarIdentifier (current M.! fn) ||
       M.member fn top && isVarIdentifier (top M.! fn)) $
       unexpected "Identifier redeclared"
+    liftIO $ print declare
     when (checkForPrevTypeConflict current || checkForPrevTypeConflict outer || checkForPrevTypeConflict top) $
       unexpected "Incompatible function type redeclare"
     modifyState (\p -> p {outerScopeIdent = M.insert fn (FuncIdentifier newFuncType) $ outerScopeIdent p})
-  _ -> undefined
+  _ -> error "check function type conflict is not for variable declaration"
 
 isFuncIdentifier :: IdentifierType -> Bool
 isFuncIdentifier (FuncIdentifier _) = True
@@ -2066,8 +2086,8 @@ isPointerDT dt = case dt of
   DTPointer {} -> True
   _ -> False
 
-isArraryDT :: DT -> Bool
-isArraryDT dt = case dt of
+isArrayDT :: DT -> Bool
+isArrayDT dt = case dt of
   DTArray {} -> True
   _ -> False
 
@@ -2146,18 +2166,18 @@ functionDeclareParser = do
   parseInfo <- getState
   updateVarMapForFuncBlockScope
   toplvl <- topLevel <$> getState
-  (name, declarator) <- declaratorParser (show baseType) "" [id]
+  (name, declarator) <- declaratorParser (show baseType) Nothing [id]
   let fType = foldl1 (.) declarator baseType
-  void $ checkForFuncNameConflict name
-  checkFuncStorageClass name sc
+  void $ checkForFuncNameConflict (fromJust name)
+  checkFuncStorageClass (fromJust name) sc
   checkForFuncTypeConflict parseInfo $
-      FunctionDeclaration $ FuncTypeInfo name fType  Nothing sc 1
-  addFuncDeclarationIfNeed $ FuncTypeInfo name fType Nothing sc 1
+      FunctionDeclaration $ FuncTypeInfo (fromJust name) fType  Nothing sc 1
+  addFuncDeclarationIfNeed $ FuncTypeInfo (fromJust name) fType Nothing sc 1
   maybeSemiColon <- lookAhead (try semiColParser <|> try openCurParser)
   modifyState (\p -> p {funcReturnType = retType fType})
   block <- case maybeSemiColon of
     ";" -> semiColParser >> pure Nothing
-    "{" -> checkFuncDefinition name parseInfo >>
+    "{" -> checkFuncDefinition (fromJust name) parseInfo >>
       Just <$> blockParser (M.fromList (map (\(dt, vName) ->
         (vName, VarIdentifier (VarTypeInfo vName dt Nothing sc toplvl))) (argList fType)))
     _ -> unexpected maybeSemiColon
@@ -2167,12 +2187,12 @@ functionDeclareParser = do
   let outerExtract = const $ M.union outer (M.filter isFuncIdentifier current) in
     keepIdsJumpLabel parseInfo outerExtract id
   topScope <- topLevelScopeIdent <$> getState
-  let newSc = if M.member name topScope && isFuncIdentifier (topScope M.! name) &&
-                funcStorageClass (fti (topScope M.! name)) /= Just Extern
-      then funcStorageClass $ fti $ topScope M.! name
+  let newSc = if M.member (fromJust name) topScope && isFuncIdentifier (topScope M.! fromJust name) &&
+                funcStorageClass (fti (topScope M.! fromJust name)) /= Just Extern
+      then funcStorageClass $ fti $ topScope M.! fromJust name
       else sc
-  updateFuncInfoIfNeed name $ FuncIdentifier $ FuncTypeInfo name fType block newSc nVarId
-  pure $ FunctionDeclaration $ FuncTypeInfo name fType block newSc nVarId
+  updateFuncInfoIfNeed (fromJust name) $ FuncIdentifier $ FuncTypeInfo (fromJust name) fType block newSc nVarId
+  pure $ FunctionDeclaration $ FuncTypeInfo (fromJust name) fType block newSc nVarId
 
 declareParser :: ParsecT String ParseInfo IO Declaration
 declareParser = do
@@ -2183,7 +2203,7 @@ declareParser = do
         parseInfo <- getState
         updateVarMapForFuncBlockScope
         lookAhead (optionMaybe $ try $ declarationSpecifierParser False ([], []) >>
-          declaratorParser (show rType) "" [id]) <* putState parseInfo
+          declaratorParser (show rType) Nothing [id]) <* putState parseInfo
       case maybeDeclarator of
         Just (_, d) -> do
           case foldl1 (.) d rType of
@@ -2194,7 +2214,7 @@ declareParser = do
                 then VariableDeclaration <$> topLevelVarDeclarationParser
                 else VariableDeclaration <$> varDeclarationParser
         _ ->
-          declarationSpecifierParser False ([], []) >> declaratorParser (show rType) "" [id] >>
+          declarationSpecifierParser False ([], []) >> declaratorParser (show rType) Nothing [id] >>
             unexpected "declarator error"
     _ -> declarationSpecifierParser False ([], []) >> unexpected "specifier error"
 
@@ -2245,7 +2265,7 @@ labelCheck bls = do
 
 extractStatement :: BlockItem -> Statement
 extractStatement (S s) = s
-extractStatement _ = undefined
+extractStatement _ = error "not a statement"
 
 updateLabelBlockItem :: BlockItem -> M.Map String String -> BlockItem
 updateLabelBlockItem bi m = case bi of
