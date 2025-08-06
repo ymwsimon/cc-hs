@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/07/31 10:29:19 by mayeung          ###   ########.fr       --
+--   Updated: 2025/08/06 15:01:57 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -49,6 +49,7 @@ data Args = Args
     ifiles :: [String],
     doLex :: Bool,
     doParse :: Bool,
+    validate :: Bool,
     codegen :: Bool,
     objOnly :: Bool,
     library :: [String]
@@ -60,6 +61,7 @@ argsParser = Args
   <$> O.many (O.argument O.str (O.metavar "input files"))
   <*> O.switch (O.long "lex")
   <*> O.switch (O.long "parse")
+  <*> O.switch (O.long "validate")
   <*> O.switch (O.long "codegen")
   <*> O.switch (O.short 'c')
   <*> O.many (O.strOption (O.short 'l'))
@@ -89,8 +91,8 @@ parseOkAct :: Args -> String -> (M.Map String IdentifierType, [Declaration]) -> 
 parseOkAct args path (m, parseOk) = do
   print parseOk
   putStrLn ""
-  print $ cASTToIrAST parseOk
-  putStrLn ""
+  unless (validate args) $
+    print (cASTToIrAST parseOk) >> putStrLn ""
   let fdsBlock = map (\case
           FunctionDeclaration (FuncTypeInfo _ _ (Just bl) _ _) -> unBlock bl
           _ -> []) parseOk
@@ -107,16 +109,19 @@ parseOkAct args path (m, parseOk) = do
         print "m-----------------m"
         print m
         print "m-----------------m"
-        print $ convertCASTToAsm varOnlyGlobalMap $ updateGotoLabel parseOk labelMap
-        writeFile (outAsmFileName path) converted
-        (_, _, _, assemblerPid) <- let libs = map ("-l" ++) $ library args in
-          if objOnly args
-            then createProcess $ proc "cc" $ [outAsmFileName path, "-c", "-o", outObjFileName path] ++ libs
-            else createProcess $ proc "cc" $ [outAsmFileName path, "-o", outExeFileName path] ++ libs
-        assemblerEC <- waitForProcess assemblerPid
-        if assemblerEC == ExitSuccess
-          then putStrLn converted >> pure (Right updatedLabel)
-          else pure $ parse (parserFail "") "" ""
+        if validate args
+          then pure (Right updatedLabel)
+          else do
+          print $ convertCASTToAsm varOnlyGlobalMap $ updateGotoLabel parseOk labelMap
+          writeFile (outAsmFileName path) converted
+          (_, _, _, assemblerPid) <- let libs = map ("-l" ++) $ library args in
+            if objOnly args
+              then createProcess $ proc "cc" $ [outAsmFileName path, "-c", "-o", outObjFileName path] ++ libs
+              else createProcess $ proc "cc" $ [outAsmFileName path, "-o", outExeFileName path] ++ libs
+          assemblerEC <- waitForProcess assemblerPid
+          if assemblerEC == ExitSuccess
+            then putStrLn converted >> pure (Right updatedLabel)
+            else pure $ parse (parserFail "") "" ""
 
 readNParse :: Args -> FilePath -> IO (Either ParseError [Declaration])
 readNParse args path =
