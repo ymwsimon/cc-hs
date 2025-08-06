@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/08/02 12:50:42 by mayeung          ###   ########.fr       --
+--   Updated: 2025/08/06 22:40:18 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -144,16 +144,16 @@ cStatmentToIRInstructions bi = case bi of
   S (Continue l) -> pure [IRJump l]
   S (DoWhile bl condition l) -> case l of
     LoopLabel jLabel -> doWhileToIRs bl condition jLabel
-    _ -> undefined
+    _ -> error "incorrect label combination for do while"
   S (While condition bl l) -> case l of
     LoopLabel jLabel -> whileToIRs condition bl jLabel
-    _ -> undefined
+    _ -> error "incorrect label combination for while"
   S (For forInit condition post bl l) -> case l of
     LoopLabel jLabel -> forToIRs forInit condition post bl jLabel
-    _ -> undefined
+    _ -> error "incorrect label combination for forloop"
   S (Switch condition bl l) -> case l of
     SwitchLabel jLabel caseMap -> switchToIRs condition bl jLabel caseMap
-    _ -> undefined
+    _ -> error "incorrect label combination for switch"
   S (Case statement l) -> caseToIRs statement l
   S (Default statement l) -> defaultToIRs statement l
   D (VariableDeclaration (VarTypeInfo var dt (Just expr) Nothing False)) ->
@@ -175,7 +175,7 @@ cFuncDefineToIRFuncDefine (FunctionDeclaration fd@(FuncTypeInfo _ _ (Just bl) sc
     . (++ [IRReturn (IRConstant (DTInternal TInt) $ ConstInt 0)]) . concat
     <$> (modify (initIRVarId (nextVarId fd)) >>
       mapM cStatmentToIRInstructions (unBlock bl))
-cFuncDefineToIRFuncDefine  _ = undefined
+cFuncDefineToIRFuncDefine  _ = error "function define only, not for variable define"
 
 cASTToIrAST :: CProgramAST -> IRProgramAST
 cASTToIrAST = flip evalState (1, 1) . mapM cFuncDefineToIRFuncDefine . filter hasFuncBody
@@ -187,7 +187,7 @@ exprToStaticInit (TExpr e _) = case e of
   Constant (ConstUInt ui) -> UIntInit $ ConstUInt ui
   Constant (ConstULong ul) -> ULongInit $ ConstULong ul
   Constant (ConstDouble d) -> DoubleInit $ ConstDouble d
-  _ -> undefined
+  _ -> error "unsupported expression convert to static init"
 
 staticInitToInt :: StaticInit -> Integer
 staticInitToInt (IntInit (ConstInt i)) = i
@@ -195,7 +195,7 @@ staticInitToInt (UIntInit (ConstUInt ui)) = ui
 staticInitToInt (LongInit (ConstLong l)) = l
 staticInitToInt (ULongInit (ConstULong ul)) = ul
 staticInitToInt (DoubleInit (ConstDouble d)) = truncate d
-staticInitToInt _ = undefined
+staticInitToInt _ = error "not a static init"
 
 staticInitToDouble :: StaticInit -> Double
 staticInitToDouble (IntInit (ConstInt i)) = fromIntegral i
@@ -203,7 +203,7 @@ staticInitToDouble (UIntInit (ConstUInt ui)) = fromIntegral ui
 staticInitToDouble (LongInit (ConstLong l)) = fromIntegral l
 staticInitToDouble (ULongInit (ConstULong ul)) = fromIntegral ul
 staticInitToDouble (DoubleInit (ConstDouble d)) = d
-staticInitToDouble _ = undefined
+staticInitToDouble _ = error "not a static init"
 
 staticVarConvertion :: M.Map String IdentifierType -> [IRTopLevel]
 staticVarConvertion m = map IRStaticVar .
@@ -502,7 +502,7 @@ truncateIRVal irVal dt = case irVal of
   og@(IRConstant _ (ConstLong l)) -> case dt of
     DTInternal TInt -> IRConstant dt (ConstInt (fromIntegral l))
     DTInternal TLong -> og
-    _ -> undefined
+    _ -> error "unsupported ir value truncation"
   _ -> irVal
 
 castToIRs :: DT -> TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
@@ -546,7 +546,7 @@ addrOfToIRs v@(TExpr var dt) = case var of
     resIRVal <- gets (IRVar (DTPointer dt) . show . fst) <* modify bumpOneToVarId
     pure (varIRs ++ [IRGetAddress varIRVal resIRVal], resIRVal)
   Dereference ptr -> exprToIRs ptr
-  _ -> undefined
+  _ -> error "unsupported address of operation for ir value"
 
 exprToIRs :: TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
 exprToIRs (TExpr expr dt) = case expr of

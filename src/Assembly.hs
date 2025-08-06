@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/08/06 13:50:06 by mayeung          ###   ########.fr       --
+--   Updated: 2025/08/06 22:36:39 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -199,10 +199,10 @@ instance Show AsmBinaryOp where
   show AsmPlus = "add"
   show AsmMinus = "sub"
   show AsmMul = "imul"
-  show AsmIDivOp = undefined
-  show AsmDivOp = undefined
+  show AsmIDivOp = error "asm int div should be converted in binary op statement"
+  show AsmDivOp = error "asm div should be converted in binary op statement"
   show AsmDivDoubleOp = "div"
-  show AsmMod = undefined
+  show AsmMod = error "asm mod should be converted in binary op statement"
   show AsmBitAnd = "and"
   show AsmBitOr = "or"
   show AsmBitXor = "xor"
@@ -333,7 +333,7 @@ staticInitToAsmSize si = case si of
   LongInit _ -> 8
   ULongInit _ -> 8
   DoubleInit _ -> 16
-  _ -> undefined
+  _ -> error "unknown init type to asm size"
 
 dtToAsmSize :: DT -> Int
 dtToAsmSize dt = case dt of
@@ -343,7 +343,7 @@ dtToAsmSize dt = case dt of
   DTInternal TULong -> 8
   DTInternal TDouble -> 8
   DTPointer _ -> 8
-  _ -> undefined
+  _ -> error "unknown data type to asm size"
 
 dtToAsmType :: DT -> AsmType
 dtToAsmType dt = case dt of
@@ -353,7 +353,7 @@ dtToAsmType dt = case dt of
   DTInternal TULong -> QuadWord
   DTInternal TDouble -> AsmDouble
   DTPointer _ -> QuadWord
-  _ -> undefined
+  _ -> error "unknown data type to asm type"
 
 asmTypeToMemSize :: AsmType -> MemorySize
 asmTypeToMemSize t = case t of
@@ -370,7 +370,7 @@ irStaticVarToAsmStaticVarDefine :: IRTopLevel -> AsmStaticVarDefine
 irStaticVarToAsmStaticVarDefine irD = case irD of
   IRStaticVar (IRStaticVarDefine vName global vType initVal) ->
     AsmStaticVarDefine vName global (dtToAsmSize vType) initVal
-  _ -> undefined
+  _ -> error "unknown condition for static var conversion to asm static var define"
 
 irASTToAsmAST :: M.Map String IdentifierType -> IRProgramAST -> AsmProgramAST
 irASTToAsmAST m irAst = map
@@ -421,7 +421,7 @@ irOperandToAsmOperand m gVarMap (IRVar _ s)
 irUnaryOpToAsmOp :: UnaryOp -> AsmUnaryOp
 irUnaryOpToAsmOp Complement = AsmNot
 irUnaryOpToAsmOp Negate = AsmNeg
-irUnaryOpToAsmOp _ = undefined
+irUnaryOpToAsmOp _ = error "should be converted to another ir form"
 
 irBinaryOpToAsmOp :: BinaryOp -> AsmBinaryOp
 irBinaryOpToAsmOp Plus = AsmPlus
@@ -434,7 +434,7 @@ irBinaryOpToAsmOp BitOr = AsmBitOr
 irBinaryOpToAsmOp BitXor = AsmBitXor
 irBinaryOpToAsmOp BitShiftLeft = AsmShiftL
 irBinaryOpToAsmOp BitShiftRight = AsmShiftR
-irBinaryOpToAsmOp _ = undefined
+irBinaryOpToAsmOp _ = error "should be converted to another ir form"
 
 regStackArgSplit :: ([Reg], [Reg]) -> [Int] -> [IRVal] ->
   ([(IRVal, Reg)], [(IRVal, Int)]) -> ([(IRVal, Reg)], [(IRVal, Int)])
@@ -523,7 +523,7 @@ irBinaryInstrToAsmInstr instr m gVarMap = case instr of
     else [Mov (dtToAsmType $ irValToDT lVal) (cvtOperand lVal) (cvtOperand d),
           AsmBinary (irBinaryOpToAsmOp op) (dtToAsmType $ irValToDT lVal)
           (cvtOperand rVal) (cvtOperand d)]
-  _ -> undefined
+  _ -> error "unknown ir instruction conversion to asm"
   where cvtOperand = irOperandToAsmOperand m gVarMap
 
 irInstructionToAsmInstruction :: IRInstruction -> M.Map String Int -> M.Map String String
@@ -643,7 +643,7 @@ buildAsmIntrsForIRRelationOp instr m gVarMap =
         IRBinary GreaterEqualRelation valL valR d -> (valL, valR, d, op (irValToDT valL) (irValToDT valR) GE AE)
         IRBinary LessThanRelation valL valR d -> (valL, valR, d, op (irValToDT valL) (irValToDT valR) L B)
         IRBinary LessEqualRelation valL valR d -> (valL, valR, d, op (irValToDT valL) (irValToDT valR) LE BE)
-        _ -> undefined in
+        _ -> error "only comparsion ir are supported" in
   if isFloatDT $ irValToDT vL
     then
       [Cmp (dtToAsmType $ irValToDT vL) (cvtOperand vR) (cvtOperand vL),
@@ -968,7 +968,7 @@ asmInstructionToStr instr = case instr of
     0 -> []
     _ -> pure $ tabulate ["addq", "$" ++ show i ++ ", %rsp"]
   Movsx s d -> pure $ tabulate ["movslq", show (convertToNSizeOperand DWORD s) ++ ", " ++ show (convertToNSizeOperand QWORD d)]
-  MovZeroExtend _ _ -> undefined
+  MovZeroExtend _ _ -> error "should be converted to another ir form"
   Cvtsi2sd t s d ->
     pure $ tabulate ["cvtsi2sd" ++ asmTypeToAsmStrSuffix t,
       show (convertToNSizeOperand (asmTypeToMemSize t) s) ++ ", " ++ show (convertToNSizeOperand (asmTypeToMemSize t) d)]

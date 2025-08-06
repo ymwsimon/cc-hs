@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:50:42 by mayeung           #+#    #+#             --
---   Updated: 2025/07/31 10:30:01 by mayeung          ###   ########.fr       --
+--   Updated: 2025/08/06 22:41:26 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -68,14 +68,14 @@ unaryOpToHaskellOperator op = case op of
   Negate -> negate
   UPlus -> id
   NotRelation -> (\u -> if popCount u == 0 then 1 else 0)
-  _ -> undefined
+  _ -> error "should be converted to another form"
 
 unaryOpToHaskellOperatorDouble :: (Eq a, Fractional a) => UnaryOp -> a -> a
 unaryOpToHaskellOperatorDouble op = case op of
   Negate -> negate
   UPlus -> id
   NotRelation -> (\u -> if u == 0.0 then 1.0 else 0.0)
-  _ -> undefined
+  _ -> error "should be converted to another form"
 
 binaryOpToHaskellOperator :: (Integral a, Bits a) => BinaryOp -> a -> a -> a
 binaryOpToHaskellOperator op = case op of
@@ -97,7 +97,7 @@ binaryOpToHaskellOperator op = case op of
   LessEqualRelation -> (\l r -> if l <= r then 1 else 0)
   GreaterThanRelation -> (\l r -> if l > r then 1 else 0)
   GreaterEqualRelation -> (\l r -> if l >= r then 1 else 0)
-  _ -> undefined
+  _ -> error "unsupported operator"
 
 binaryOpToHaskellOperatorDouble :: (Fractional a, Ord a) => BinaryOp -> a -> a -> a
 binaryOpToHaskellOperatorDouble op = case op of
@@ -113,4 +113,4 @@ binaryOpToHaskellOperatorDouble op = case op of
   LessEqualRelation -> (\l r -> if l <= r then 1 else 0)
   GreaterThanRelation -> (\l r -> if l > r then 1 else 0)
   GreaterEqualRelation -> (\l r -> if l >= r then 1 else 0)
-  _ -> undefined
+  _ -> error "unsupported operator"
