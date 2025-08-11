@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/08/06 22:29:48 by mayeung          ###   ########.fr       --
+--   Updated: 2025/08/11 17:13:10 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -203,6 +203,7 @@ instance Eq DT where
     map fst lArgList == map fst rArgList && lRetType == rRetType
  (DTPointer l) == (DTPointer r) = l == r
  (DTUserDefined lName lDT) == (DTUserDefined rName rDT) = lName == rName && lDT == rDT
+ (DTArray alDT alSize) == (DTArray arDT arSize) = alDT == arDT && alSize == arSize
  _ == _ = False
 
 instance Show PrimType where
@@ -724,6 +725,24 @@ unsupportedPointerUnaryOperation =
     Negate,
     UPlus]
 
+supportedTwoPointersOperation :: [BinaryOp]
+supportedTwoPointersOperation = 
+  [LogicAnd,
+    LogicOr,
+    EqualRelation,
+    NotEqualRelation,
+    LessThanRelation,
+    LessEqualRelation,
+    GreaterThanRelation,
+    GreaterEqualRelation]
+
+greaterLessRelation :: [BinaryOp]
+greaterLessRelation =
+  [LessThanRelation,
+    LessEqualRelation,
+    GreaterThanRelation,
+    GreaterEqualRelation]
+
 binaryOpParser :: ParsecT String u IO BinaryOp
 binaryOpParser = foldl1 (<|>) $
   map try $
@@ -840,7 +859,13 @@ isLValueExpr (TExpr (Variable {}) vdt) =
     DTArray {} -> False
     _ -> True
 isLValueExpr (TExpr (Dereference _) _) = True
+isLValueExpr (TExpr (Subscript {}) sDT) = not $ isArrayDT sDT
 isLValueExpr _ = False
+
+isAddrOf :: TypedExpr -> Bool
+isAddrOf te = case te of
+ TExpr (AddrOf _) _ -> True
+ _ -> False
 
 isConstantTypedExpr :: TypedExpr -> Bool
 isConstantTypedExpr (TExpr expr _) = case expr of
@@ -859,6 +884,11 @@ isConstantTypedExpr (TExpr expr _) = case expr of
 isConstantInit :: Initialiser -> Bool
 isConstantInit initialiser = case initialiser of
   SingleInit te -> isConstantTypedExpr te
+  CompoundInit te -> all isConstantInit te
+
+isConstantIntegralInit :: Initialiser -> Bool
+isConstantIntegralInit initialiser = case initialiser of
+  SingleInit te -> isIntegralConstantTE te
   CompoundInit te -> all isConstantInit te
 
 isIntegralConstantTE :: TypedExpr -> Bool
@@ -884,8 +914,14 @@ isIntegralTypedExpr = isIntDT . tDT
 
 isPointerTypedExpr :: TypedExpr -> Bool
 isPointerTypedExpr (TExpr _ (DTPointer _)) = True
-isPointerTypedExpr (TExpr _ (DTArray _ _)) = True
 isPointerTypedExpr _ = False
+
+isArrayTypedExpr :: TypedExpr -> Bool
+isArrayTypedExpr (TExpr _ (DTArray _ _)) = True
+isArrayTypedExpr _ = False
+
+isPointerOrArray :: TypedExpr -> Bool
+isPointerOrArray te = isPointerTypedExpr te || isArrayTypedExpr te
 
 isFloatDT :: DT -> Bool
 isFloatDT dt = case dt of
@@ -1044,6 +1080,11 @@ getPointingType dt = case dt of
   DTArray aDT _ -> aDT
   _ -> dt
 
+decayArrayToPointer :: DT -> DT
+decayArrayToPointer dt = case dt of
+  DTArray aDT _ -> DTPointer aDT
+  _ -> dt
+
 derefParser :: ParsecT String ParseInfo IO TypedExpr
 derefParser = do
   void mulLex
@@ -1061,7 +1102,7 @@ addrOfParser = do
   p <- precedence <$> getState
   modifyState $ setPrecedence $ getUnaryOpPrecedence "&"
   expr <- exprParser
-  unless (isLValueExpr expr) $
+  unless (isLValueExpr expr || isArrayTypedExpr expr) $
     unexpected "non lvalue"
   modifyState $ setPrecedence p
   pure $ TExpr (AddrOf expr) $ DTPointer $ tDT expr
@@ -1157,7 +1198,7 @@ constantExprToInt e = case e of
   TExpr (Constant (ConstUInt ui)) _ -> fromIntegral ui
   TExpr (Constant (ConstULong ul)) _ -> fromIntegral ul
   TExpr (Constant (ConstDouble d)) _ -> truncate d
-  _ -> error $ "unsupported const type expression to int"
+  _ -> error "unsupported const type expression to int"
 
 constantExprToDouble :: TypedExpr -> Double
 constantExprToDouble e = case e of
@@ -1166,10 +1207,12 @@ constantExprToDouble e = case e of
   TExpr (Constant (ConstLong l)) _ -> fromIntegral l
   TExpr (Constant (ConstUInt ui)) _ -> fromIntegral ui
   TExpr (Constant (ConstULong ul)) _ -> fromIntegral ul
-  _ -> error $ "unsupported const type expression to double"
+  _ -> error "unsupported const type expression to double"
 
 getExprsCommonType :: TypedExpr -> TypedExpr -> DT
-getExprsCommonType (TExpr _ lDT) (TExpr _ rDT)
+getExprsCommonType le@(TExpr _ lDT) re@(TExpr _ rDT)
+  | isPointerOrArray le = DTPointer $ getRefType lDT
+  | isPointerOrArray re = DTPointer $ getRefType rDT
   | lDT == rDT =lDT
   | lDT == DTInternal TDouble || rDT == DTInternal TDouble = DTInternal TDouble
   | isSameSize lDT rDT && isSignedInteger lDT = rDT
@@ -1256,11 +1299,14 @@ compoundAssignParser l@(TExpr lExpr lDt) binOp = do
           when (isPointerTypedExpr l
             && (compoundAssignOpToBinOp op `elem` unsupportedPointerOperation)) $
             unexpected "compound assignment operation for pointer"
+          when (isArrayTypedExpr l) $
+            unexpected "assignment to array"
           checkImplicitCast e lDt
           exprRightParser $ TExpr (Assignment op l e) lDt
   case lExpr of
         Variable {} -> varDerefPtr
         Dereference {} -> varDerefPtr
+        Subscript {} -> varDerefPtr
         _ -> unexpected "Invalid lvalue on the left side"
 
 conditionalParser :: TypedExpr -> String -> ParsecT String ParseInfo IO TypedExpr
@@ -1286,12 +1332,17 @@ binaryParser l binOp = do
     unexpected "binary operation for floating point number"
   when (op `elem` unsupportedPointerOperation && (isPointerTypedExpr l || isPointerTypedExpr rExpr)) $
       unexpected "binary operation for pointer"
+  when (isPointerTypedExpr l && isPointerTypedExpr rExpr && op `notElem` supportedTwoPointersOperation) $
+    unexpected "operation between 2 pointers"
+  when (((isPointerTypedExpr l && not (isPointerTypedExpr rExpr)) || (isPointerTypedExpr rExpr && not (isPointerTypedExpr l)))
+    && op `elem` greaterLessRelation) $
+    unexpected "operation for pointer and non pointer"
   unless (op `elem` [LogicAnd, LogicOr]) $
     checkImplicitCast rExpr $ tDT l
   modifyState $ setPrecedence p
   case op of
-    LogicAnd -> exprRightParser $ TExpr (Binary op (foldToConstExpr l) (foldToConstExpr rExpr)) $ DTInternal TInt
-    LogicOr -> exprRightParser $ TExpr (Binary op (foldToConstExpr l) (foldToConstExpr rExpr)) $ DTInternal TInt
+    LogicAnd -> exprRightParser $ foldToConstExpr $ TExpr (Binary op (foldToConstExpr l) (foldToConstExpr rExpr)) $ DTInternal TInt
+    LogicOr -> exprRightParser $ foldToConstExpr $ TExpr (Binary op (foldToConstExpr l) (foldToConstExpr rExpr)) $ DTInternal TInt
     _ -> do
       let cType = getExprsCommonType l rExpr
       let dt
@@ -1319,15 +1370,15 @@ intOperandParser = flip TExpr (DTInternal TInt) . Constant . ConstInt . read <$>
 longOperandParser :: ParsecT String u IO TypedExpr
 longOperandParser = flip TExpr (DTInternal TLong) . Constant . ConstLong . read <$> longParser
 
-postAdjustOp :: TypedExpr -> ParsecT String u IO TypedExpr
+postAdjustOp :: TypedExpr -> ParsecT String ParseInfo IO TypedExpr
 postAdjustOp e@(TExpr _ dt) =
   if isLValueExpr e
     then do
-      maybePostOp <- lookAhead (try $ incrementLex <|> decrementLex) <|> pure ""
+      maybePostOp <- lookAhead (try $ incrementLex <|> try decrementLex) <|> pure ""
       if maybePostOp `elem` allPostUnaryOp
         then do
           postUOp <- postUnaryOpParser
-          pure $ (`TExpr` dt) $ Unary postUOp e
+          postfixOpParser $ (`TExpr` dt) $ Unary postUOp e
         else pure e
     else pure e
 
@@ -1355,14 +1406,8 @@ variableParser = do
   let var = if M.member vName current
       then vti $ current M.! vName
       else vti $ outer M.! vName
-  let finalType = if isArrayDT $ variableType var
-      -- then DTPointer $ arrType $ variableType var
-      then variableType var
-      else variableType var
-  let finalVar = if isArrayDT $ variableType var
-      -- then AddrOf $ (`TExpr` finalType) $ Variable (varName var) (topLv var) (varStoreClass var)
-      then Variable (varName var) (topLv var) (varStoreClass var)
-      else Variable (varName var) (topLv var) (varStoreClass var)
+  let finalType = variableType var
+  let finalVar = Variable (varName var) (topLv var) (varStoreClass var)
   postAdjustOp $ TExpr finalVar finalType
 
 isFuncIdentiferInVarMap :: String -> M.Map String IdentifierType -> M.Map String IdentifierType -> Bool
@@ -1400,13 +1445,14 @@ checkPointerInit initialiser dt sc = case initialiser of
 
 checkImplicitCast :: TypedExpr -> DT -> ParsecT String ParseInfo IO ()
 checkImplicitCast te dt = do
-  when (isPointerTypedExpr te && not (isPointerDT dt)) $
-    unexpected "implicit type cast for pointer"
-  when (isPointerTypedExpr te && isPointerDT dt && ptrPointingType dt /= ptrPointingType (tDT te)) $
-    unexpected "implicit type cast for pointer"
+  when (isPointerTypedExpr te && not (isPointerDT dt || isArrayDT dt)) $
+    unexpected "implicit type cast for pointer and non pointer"
+  when (isPointerOrArray te &&
+    (isPointerDT dt || isArrayDT dt) && getRefType dt /= getRefType (tDT te)) $
+    unexpected "implicit type cast for pointers with different types"
   when (isPointerDT dt
-    && not (isPointerTypedExpr te || (isConstantTypedExpr te && isIntegralTypedExpr te && exprToInteger te == 0))) $
-    unexpected "implicit type cast for pointer"
+    && not (isPointerOrArray te || (isConstantTypedExpr te && isIntegralTypedExpr te))) $
+    unexpected "implicit type cast for non zero constant to pointer"
   case te of
     TExpr (Conditional _ t f) _ -> when (isPointerDT dt
       && (isPointerTypedExpr t && ptrPointingType dt /= ptrPointingType (tDT t)
@@ -1417,7 +1463,7 @@ checkImplicitCast te dt = do
 checkImplicitCastInit :: Initialiser -> DT -> ParsecT String ParseInfo IO ()
 checkImplicitCastInit initialiser dt = case initialiser of
   SingleInit te -> checkImplicitCast te dt
-  CompoundInit cInit -> mapM_ (`checkImplicitCastInit` dt) cInit
+  CompoundInit cInit -> mapM_ (`checkImplicitCastInit` getRefType dt) cInit
 
 checkExplicitCast :: TypedExpr -> DT -> ParsecT String ParseInfo IO ()
 checkExplicitCast te dt = do
@@ -1425,6 +1471,12 @@ checkExplicitCast te dt = do
     unexpected "explicit type cast for pointer"
   when (isFloatDT dt && isPointerTypedExpr te) $
     unexpected "explicit type cast for pointer"
+
+getRefType :: DT -> DT
+getRefType dt = case dt of
+  DTPointer pDT -> pDT
+  DTArray aDT _ -> aDT
+  _ -> error "not a derived type"
 
 functionCallParser :: ParsecT String ParseInfo IO TypedExpr
 functionCallParser = do
@@ -1464,7 +1516,6 @@ castParser = do
   void openPParser
   (_, baseType) <- declarationSpecifierParser False ([], storageClassSpecifierStrList)
   (name, declarator) <- declaratorParser (show baseType) Nothing [id]
-  liftIO $ print name
   unless (null $ fromJust name) $
     unexpected "declarator"
   when (isArrayDT $ foldl1 (.) declarator baseType) $
@@ -1490,12 +1541,12 @@ subscriptParser te = do
       void openSqtParser
       expr <- exprParser
       void closeSqtParser
-      if isPointerTypedExpr te && isIntegralTypedExpr expr
-        || isPointerTypedExpr expr && isIntegralTypedExpr te
+      if isPointerOrArray te && isIntegralTypedExpr expr && not (isPointerTypedExpr expr)
+        || isPointerOrArray expr && isIntegralTypedExpr te && not (isPointerTypedExpr te)
         then do
-          let aType = if isPointerTypedExpr te
-              then tDT te
-              else tDT expr
+          let aType = if isPointerOrArray te
+              then getRefType $ tDT te
+              else getRefType $ tDT expr
           postfixOpParser $ (`TExpr` aType) $ Subscript te expr
         else
           unexpected "subscript operation"
@@ -1503,7 +1554,7 @@ subscriptParser te = do
 
 postfixOpParser :: TypedExpr -> ParsecT String ParseInfo IO TypedExpr
 postfixOpParser te = do
-  maybePostfixOp <- lookAhead (try $ incrementLex <|> try decrementLex <|> openSqtParser) <|> pure ""
+  maybePostfixOp <- lookAhead (try $ incrementLex <|> try decrementLex <|> try openSqtParser) <|> pure ""
   case maybePostfixOp of
     "" -> pure te
     "[" -> subscriptParser te
@@ -1556,7 +1607,7 @@ argPairParser :: ParsecT String ParseInfo IO (DT, IdentifierName)
 argPairParser = do
   (_, baseType) <- declarationSpecifierParser False ([], "void" : storageClassSpecifierStrList)
   (vName, declarator) <- declaratorParser (show baseType) Nothing [id]
-  let varType = foldl1 (.) declarator baseType
+  let varType = decayArrayToPointer $ foldl1 (.) declarator baseType
   current <- currentScopeIdent <$> getState
   when (M.member (fromJust vName) current) $
     unexpected $ fromJust vName ++ ". Already defined"
@@ -1614,6 +1665,14 @@ getArrayInnerType dt = case dt of
   DTArray d _ -> getArrayInnerType d
   _ -> dt
 
+checkVarInitCorrectness :: DT -> Initialiser -> Bool
+checkVarInitCorrectness (DTArray _ _) (SingleInit _) = False
+checkVarInitCorrectness (DTArray aDT aSize) (CompoundInit cInit) =
+  not (isArrayDT aDT && null cInit) && (isJust aSize && fromJust aSize >= length cInit) &&
+    all (checkVarInitCorrectness aDT) cInit
+checkVarInitCorrectness _ (CompoundInit _) = False
+checkVarInitCorrectness _ (SingleInit _) = True
+
 singleInitParser :: ParsecT String u IO TypedExpr -> ParsecT String u IO Initialiser
 singleInitParser parser = SingleInit <$> parser
 
@@ -1623,7 +1682,7 @@ getInitialiser parser = do
   initialiser <- case maybeOpenCur of
     Just _ -> do
       void openCurParser
-      i <- CompoundInit <$> sepBy1 (getInitialiser parser) (try commaParser)
+      i <- CompoundInit <$> sepBy1 (getInitialiser parser) (try (commaParser <* notFollowedBy closeCurParser))
       void $ optionMaybe $ try commaParser
       void closeCurParser
       pure i
@@ -1642,24 +1701,27 @@ topLevelVarDeclarationParser = do
     && (variableType (vti (topIdentMap M.! fromJust vName)) /= varType
       || not (topLevelVarStorageClassCheck (varStoreClass (vti (topIdentMap M.! fromJust vName))) sc))) $
     unexpected $ fromJust vName ++ ". Type mismatch to previous declaration"
-  initialiser <- fmap (fmap (foldInitToConstExpr . (`cvtInit` getArrayInnerType varType))) <$> optionMaybe $ try $ equalLex >> getInitialiser exprParser
+  initialiser <- optionMaybe $ try $ equalLex >> getInitialiser exprParser
+  let cvtinitialiser = foldInitToConstExpr . (`cvtInit` getArrayInnerType varType) <$> initialiser
   void semiColParser
   unless (isNothing initialiser || isConstantInit (fromJust initialiser)) $
     unexpected "non constant initialiser"
   when (isJust initialiser) $
-    checkPointerInit (fromJust initialiser) varType (Just Static)
+    checkPointerInit (fromJust initialiser) (getArrayInnerType varType) (Just Static)
+  when (isJust initialiser && not (checkVarInitCorrectness varType $ fromJust initialiser)) $
+    unexpected "mismatch between initialiser and type"
   if M.member (fromJust vName) topIdentMap
     then do
       VarIdentifier (VarTypeInfo _ vType vDefine sClass _) <- pure $ topIdentMap M.! fromJust vName
-      when (isJust vDefine && isJust initialiser) $
+      when (isJust vDefine && isJust cvtinitialiser) $
         unexpected "variable redefine"
       let newSClass = if sc == Just Extern then sClass else sc
-      let define = if isJust vDefine then vDefine else initialiser
-      updateTopLevelVarCurrentVar vType (fromJust vName) initialiser sc
+      let define = if isJust vDefine then vDefine else cvtinitialiser
+      updateTopLevelVarCurrentVar vType (fromJust vName) cvtinitialiser sc
       pure $ VarTypeInfo (fromJust vName) vType define newSClass True
     else do
-      updateTopLevelVarCurrentVar varType (fromJust vName) initialiser sc
-      pure $ VarTypeInfo (fromJust vName) varType initialiser sc True
+      updateTopLevelVarCurrentVar varType (fromJust vName) cvtinitialiser sc
+      pure $ VarTypeInfo (fromJust vName) varType cvtinitialiser sc True
 
 localExternVarHandle :: DT -> Maybe StorageClass -> IdentifierName -> ParsecT String ParseInfo IO VarTypeInfo
 localExternVarHandle varType sc vName  = do
@@ -1690,6 +1752,8 @@ localPlainVarHandle varType sc vName = do
     checkImplicitCastInit (fromJust initialiser) varType
   when (isJust initialiser) $
     checkPointerInit (fromJust initialiser) varType sc
+  when (isJust initialiser && not (checkVarInitCorrectness varType $ fromJust initialiser)) $
+    unexpected "mismatch between initialiser and type"
   pure $ VarTypeInfo newVarName varType cvtinitialiser sc $ topLevel parseInfo
 
 localStaticVarHandle :: DT -> Maybe StorageClass -> IdentifierName -> ParsecT String ParseInfo IO VarTypeInfo
@@ -1698,6 +1762,8 @@ localStaticVarHandle varType sc vName = do
   void semiColParser
   unless (isNothing initialiser || isConstantInit (fromJust initialiser)) $
     unexpected "non constant initialiser"
+  when (isJust initialiser && not (checkVarInitCorrectness varType $ fromJust initialiser)) $
+    unexpected "mismatch between initialiser and type"
   parseInfo <- getState
   let varId = globalVarId parseInfo
       newVarName = vName ++ "." ++ show varId
@@ -1756,9 +1822,10 @@ declaratorParser preTok identifierName preDTs = do
     ';' -> pure (identifierName, preDTs)
     '=' -> pure (identifierName, preDTs)
     '[' -> do
-      liftIO $ print identifierName
       when (isNothing identifierName) $ unexpected "array type casting"
       aType <- arrayDeclaratorParser
+      when (isFuncDT $ last preDTs (DTInternal TInt)) $
+        unexpected "function returning array"
       (iName, types) <- declaratorParser "]" identifierName (preDTs ++ [aType])
       pure (iName, types)
     ')' -> do
@@ -2062,7 +2129,6 @@ checkForFuncTypeConflict parseInfo declare = case declare of
     when (M.member fn current && isVarIdentifier (current M.! fn) ||
       M.member fn top && isVarIdentifier (top M.! fn)) $
       unexpected "Identifier redeclared"
-    liftIO $ print declare
     when (checkForPrevTypeConflict current || checkForPrevTypeConflict outer || checkForPrevTypeConflict top) $
       unexpected "Incompatible function type redeclare"
     modifyState (\p -> p {outerScopeIdent = M.insert fn (FuncIdentifier newFuncType) $ outerScopeIdent p})
