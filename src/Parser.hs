@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/08/11 17:13:10 by mayeung          ###   ########.fr       --
+--   Updated: 2025/08/13 21:57:39 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -729,6 +729,7 @@ supportedTwoPointersOperation :: [BinaryOp]
 supportedTwoPointersOperation = 
   [LogicAnd,
     LogicOr,
+    Minus,
     EqualRelation,
     NotEqualRelation,
     LessThanRelation,
@@ -1091,7 +1092,7 @@ derefParser = do
   p <- precedence <$> getState
   modifyState $ setPrecedence $ getUnaryOpPrecedence "*"
   expr <- exprParser
-  unless (isPointerDT $ tDT expr) $
+  unless (isPointerOrArray expr) $
     unexpected "dereference of non pointer type"
   modifyState $ setPrecedence p
   pure $ TExpr (Dereference expr) $ getPointingType $ tDT expr
@@ -1286,23 +1287,12 @@ conditionalTrueParser = do
 
 compoundAssignParser :: TypedExpr -> String -> ParsecT String ParseInfo IO TypedExpr
 compoundAssignParser l@(TExpr lExpr lDt) binOp = do
-  let varDerefPtr =
-        do
-          op <- binaryAssignmentOpParser
-          modifyState $ setPrecedence $ getBinOpPrecedence binOp
-          e <- exprParser
-          when ((compoundAssignOpToBinOp op `elem` unsupportedFloatOperation) && (isFloatTypedExpr l || isFloatTypedExpr e)) $
-            unexpected "binary operation for floating point number"
-          when (isPointerTypedExpr l
-            && not (isPointerTypedExpr e || (isIntegralConstantTE e && exprToInteger e == 0))) $
-            unexpected "assignment operation for pointer"
-          when (isPointerTypedExpr l
-            && (compoundAssignOpToBinOp op `elem` unsupportedPointerOperation)) $
-            unexpected "compound assignment operation for pointer"
-          when (isArrayTypedExpr l) $
-            unexpected "assignment to array"
-          checkImplicitCast e lDt
-          exprRightParser $ TExpr (Assignment op l e) lDt
+  let varDerefPtr = do
+        op <- binaryAssignmentOpParser
+        modifyState $ setPrecedence $ getBinOpPrecedence binOp
+        e <- exprParser
+        checkImplicitCastAssign l op e
+        exprRightParser $ TExpr (Assignment op l e) lDt
   case lExpr of
         Variable {} -> varDerefPtr
         Dereference {} -> varDerefPtr
@@ -1328,24 +1318,18 @@ binaryParser l binOp = do
   op <- binaryOpParser
   modifyState $ updatePrecedence $ getBinOpPrecedence binOp
   rExpr <- exprParser
-  when (op `elem` unsupportedFloatOperation && (isFloatTypedExpr l || isFloatTypedExpr rExpr)) $
-    unexpected "binary operation for floating point number"
-  when (op `elem` unsupportedPointerOperation && (isPointerTypedExpr l || isPointerTypedExpr rExpr)) $
-      unexpected "binary operation for pointer"
-  when (isPointerTypedExpr l && isPointerTypedExpr rExpr && op `notElem` supportedTwoPointersOperation) $
-    unexpected "operation between 2 pointers"
-  when (((isPointerTypedExpr l && not (isPointerTypedExpr rExpr)) || (isPointerTypedExpr rExpr && not (isPointerTypedExpr l)))
-    && op `elem` greaterLessRelation) $
-    unexpected "operation for pointer and non pointer"
-  unless (op `elem` [LogicAnd, LogicOr]) $
-    checkImplicitCast rExpr $ tDT l
+  unless (op `elem` [LogicAnd, LogicOr]) $ do
+    checkImplicitCastBinary l op rExpr
   modifyState $ setPrecedence p
+  let forAndOr = exprRightParser $ foldToConstExpr $
+        TExpr (Binary op (foldToConstExpr l) (foldToConstExpr rExpr)) $ DTInternal TInt
   case op of
-    LogicAnd -> exprRightParser $ foldToConstExpr $ TExpr (Binary op (foldToConstExpr l) (foldToConstExpr rExpr)) $ DTInternal TInt
-    LogicOr -> exprRightParser $ foldToConstExpr $ TExpr (Binary op (foldToConstExpr l) (foldToConstExpr rExpr)) $ DTInternal TInt
+    LogicAnd -> forAndOr
+    LogicOr -> forAndOr
     _ -> do
       let cType = getExprsCommonType l rExpr
       let dt
+            | op == Minus && isPointerOrArray l && isPointerOrArray rExpr = DTInternal TLong
             | op `elem` [Plus, Minus, Multiply, Division, Modulo, BitAnd, BitOr, BitXor] = cType
             | op `elem` [BitShiftLeft, BitShiftRight] = tDT l
             | otherwise = DTInternal TInt
@@ -1374,7 +1358,7 @@ postAdjustOp :: TypedExpr -> ParsecT String ParseInfo IO TypedExpr
 postAdjustOp e@(TExpr _ dt) =
   if isLValueExpr e
     then do
-      maybePostOp <- lookAhead (try $ incrementLex <|> try decrementLex) <|> pure ""
+      maybePostOp <- lookAhead (try $ incrementLex <|> decrementLex) <|> pure ""
       if maybePostOp `elem` allPostUnaryOp
         then do
           postUOp <- postUnaryOpParser
@@ -1425,10 +1409,10 @@ checkPointerInitVal :: TypedExpr -> DT -> Maybe StorageClass -> ParsecT String P
 checkPointerInitVal te dt sc = do
   when (isPointerDT dt && sc == Just Static
     && not (isConstantTypedExpr te && isIntegralTypedExpr te && exprToInteger te == 0)) $
-    unexpected "non 0 init for pointer"
+    unexpected "non 0 init for static pointer"
   when (isPointerDT dt && sc /= Just Static
     && (isFloatTypedExpr te ||
-    not (isPointerTypedExpr te || (isConstantTypedExpr te && isIntegralTypedExpr te && exprToInteger te == 0)))) $
+    not (isPointerOrArray te || (isConstantTypedExpr te && isIntegralTypedExpr te && exprToInteger te == 0)))) $
     unexpected "non 0 init for pointer"
   case te of
     TExpr (Conditional _ t f) _ ->do
@@ -1445,24 +1429,66 @@ checkPointerInit initialiser dt sc = case initialiser of
 
 checkImplicitCast :: TypedExpr -> DT -> ParsecT String ParseInfo IO ()
 checkImplicitCast te dt = do
-  when (isPointerTypedExpr te && not (isPointerDT dt || isArrayDT dt)) $
-    unexpected "implicit type cast for pointer and non pointer"
   when (isPointerOrArray te &&
     (isPointerDT dt || isArrayDT dt) && getRefType dt /= getRefType (tDT te)) $
     unexpected "implicit type cast for pointers with different types"
-  when (isPointerDT dt
-    && not (isPointerOrArray te || (isConstantTypedExpr te && isIntegralTypedExpr te))) $
+  checkImplicitCastConditional te dt
+
+checkImplicitCastConditional :: TypedExpr -> DT -> ParsecT String ParseInfo IO ()
+checkImplicitCastConditional te dt = case te of
+  TExpr (Conditional _ t f) _ -> when (isPointerDT dt
+    && (isPointerTypedExpr t && ptrPointingType dt /= ptrPointingType (tDT t)
+    || isPointerTypedExpr f && ptrPointingType dt /= ptrPointingType (tDT f))) $
+    unexpected "implicit type cast for pointer"
+  _ -> pure ()
+
+checkImplicitCastAssign :: TypedExpr -> CompoundAssignOp -> TypedExpr -> ParsecT String ParseInfo IO ()
+checkImplicitCastAssign l op r = do
+  when ((compoundAssignOpToBinOp op `elem` unsupportedFloatOperation) && (isFloatTypedExpr l || isFloatTypedExpr r)) $
+    unexpected "binary operation for floating point number"
+  when (isPointerTypedExpr l
+    && (compoundAssignOpToBinOp op `elem` unsupportedPointerOperation)) $
+    unexpected "compound assignment operation for pointer"
+  when (isArrayTypedExpr l) $
+    unexpected "assignment to array"
+  when (op `elem` [PlusAssign, MinusAssign] && isPointerTypedExpr l && (not (isIntegralTypedExpr r) || isPointerOrArray r)) $
+    unexpected "non integral right operand for plus/minus assign operation on pointer"
+  when (op `elem` [PlusAssign, MinusAssign, AssignOp] && not (isPointerTypedExpr l) && isPointerOrArray r) $
+    unexpected "pointer right operand for [plus/minus] assign operation on non pointer"
+  when (op `elem` [MultiplyAssign, ModuloAssign, DivisionAssign,
+    BitOrAssign, BitAndAssign, BitXorAssign, BitShiftLeftAssign, BitShiftRightAssign]
+    && (isPointerOrArray l || isPointerOrArray r)) $
+    unexpected "pointer right operand for plus/minus assign operation on non pointer"
+  when (op == AssignOp && isPointerTypedExpr l
+    && not (isPointerOrArray r || (isIntegralConstantTE r && exprToInteger r == 0))) $
+    unexpected "assignment operation for pointer"
+  checkImplicitCast r (tDT l)
+
+checkImplicitCastBinary :: TypedExpr -> BinaryOp -> TypedExpr -> ParsecT String ParseInfo IO ()
+checkImplicitCastBinary l op r = do
+  when (op `elem` unsupportedFloatOperation && (isFloatTypedExpr l || isFloatTypedExpr r)) $
+    unexpected "binary operation for floating point number"
+  when (op `elem` unsupportedPointerOperation && (isPointerTypedExpr l || isPointerTypedExpr r)) $
+      unexpected "binary operation for pointer"
+  when (isPointerTypedExpr l && isPointerTypedExpr r && op `notElem` supportedTwoPointersOperation) $
+    unexpected "operation between 2 pointers"
+  when (((isPointerTypedExpr l && not (isPointerTypedExpr r)) || (isPointerTypedExpr r && not (isPointerTypedExpr l)))
+    && op `elem` greaterLessRelation) $
+    unexpected "operation for pointer and non pointer"
+  when (op == Plus && isPointerOrArray l && (not (isIntegralTypedExpr r) || isPointerOrArray r)) $
+    unexpected "operand for plus operation for pointer"
+  when (op == Minus && isPointerOrArray l && not (isIntegralTypedExpr r || isPointerOrArray r)) $
+    unexpected "operand for minus operation for pointer"
+  when (op == Minus && isPointerOrArray r && not (isPointerOrArray l)) $
+    unexpected "pointer operand for minus operation for non pointer"
+  when (op `elem` relationOp && isPointerTypedExpr l
+     && not (isPointerOrArray r || (isIntegralConstantTE r && exprToInteger r == 0))) $
     unexpected "implicit type cast for non zero constant to pointer"
-  case te of
-    TExpr (Conditional _ t f) _ -> when (isPointerDT dt
-      && (isPointerTypedExpr t && ptrPointingType dt /= ptrPointingType (tDT t)
-      || isPointerTypedExpr f && ptrPointingType dt /= ptrPointingType (tDT f))) $
-      unexpected "implicit type cast for pointer"
-    _ -> pure ()
+  checkImplicitCast r (tDT l)
 
 checkImplicitCastInit :: Initialiser -> DT -> ParsecT String ParseInfo IO ()
 checkImplicitCastInit initialiser dt = case initialiser of
-  SingleInit te -> checkImplicitCast te dt
+  SingleInit te -> checkImplicitCastAssign (TExpr (Variable "" False Nothing) dt) AssignOp te
   CompoundInit cInit -> mapM_ (`checkImplicitCastInit` getRefType dt) cInit
 
 checkExplicitCast :: TypedExpr -> DT -> ParsecT String ParseInfo IO ()
@@ -1500,7 +1526,8 @@ functionCallParser = do
   let funcInfo = getFunTypeInfoFromVarMap functionName current outer
   unless (length paraList == length (argList $ funcType funcInfo)) $
     unexpected "Function call. Incorrect number of parameters"
-  mapM_ (uncurry checkImplicitCast) $ zip paraList $ map fst $ argList $ funcType funcInfo
+  mapM_ (\(l, r) -> checkImplicitCastAssign (TExpr (Variable "" False Nothing) l) AssignOp r) $
+    zip (map fst $ argList $ funcType funcInfo) paraList
   let convertedParaList = zipWith cvtTypedExpr paraList (map fst $ argList $ funcType funcInfo)
   pure $ TExpr
     (FunctionCall functionName (map foldToConstExpr convertedParaList))
@@ -1748,9 +1775,8 @@ localPlainVarHandle varType sc vName = do
   initialiser <- optionMaybe $ try $ equalLex >> getInitialiser exprParser
   void semiColParser
   let cvtinitialiser = foldInitToConstExpr . (`cvtInit` getArrayInnerType varType) <$> initialiser
-  when (isJust initialiser) $
+  when (isJust initialiser) $ do
     checkImplicitCastInit (fromJust initialiser) varType
-  when (isJust initialiser) $
     checkPointerInit (fromJust initialiser) varType sc
   when (isJust initialiser && not (checkVarInitCorrectness varType $ fromJust initialiser)) $
     unexpected "mismatch between initialiser and type"
