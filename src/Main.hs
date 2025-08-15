@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/08/06 15:01:57 by mayeung          ###   ########.fr       --
+--   Updated: 2025/08/15 12:24:22 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -16,33 +16,16 @@ module Main where
 
 import qualified Options.Applicative as O
 import Text.Parsec as P
-    ( parse, parserFail, runParserT, ParseError )
-import Data.List ( isSuffixOf )
-import Control.Monad ( unless )
-import System.IO ( hGetContents' )
+import Data.List
+import Control.Monad
+import System.IO
 import Parser
-    ( Block(unBlock),
-      FuncTypeInfo(FuncTypeInfo),
-      Declaration(FunctionDeclaration),
-      IdentifierType,
-      CProgramAST,
-      defaultParsecState,
-      fileParser,
-      isVarIdentifier,
-      labelCheck,
-      updateGotoLabel )
-import IR ( cASTToIrAST )
+import IR
 import Assembly
-    ( convertCASTToAsmStr, irASTToAsmAST, AsmProgramAST )
-import System.Exit ( ExitCode(ExitSuccess), exitFailure )
+import System.Exit
 import System.Process
-    ( createProcess,
-      proc,
-      waitForProcess,
-      CreateProcess(std_out),
-      StdStream(CreatePipe) )
 import qualified Data.Map as M
-import Data.Either (isRight)
+import Data.Either
 
 data Args = Args
   {

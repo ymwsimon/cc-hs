@@ -6,14 +6,13 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:50:42 by mayeung           #+#    #+#             --
---   Updated: 2025/08/06 22:41:26 by mayeung          ###   ########.fr       --
+--   Updated: 2025/08/15 12:24:36 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
 module Operation where
 
 import Data.Bits
-    ( Bits(shiftR, complement, popCount, (.|.), (.&.), xor, shiftL) )
 
 data UnaryOp =
   Complement

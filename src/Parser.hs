@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/08/15 10:53:22 by mayeung          ###   ########.fr       --
+--   Updated: 2025/08/15 12:25:48 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -15,47 +15,16 @@
 module Parser where
 
 import Text.Parsec as P
-    ( anyChar,
-      char,
-      digit,
-      oneOf,
-      satisfy,
-      spaces,
-      string',
-      eof,
-      many1,
-      manyTill,
-      notFollowedBy,
-      optionMaybe,
-      sepBy,
-      sepBy1,
-      (<?>),
-      (<|>),
-      getState,
-      lookAhead,
-      many,
-      modifyState,
-      putState,
-      try,
-      unexpected,
-      ParsecT )
-import Control.Monad ( when, unless, void )
+import Control.Monad
 import Operation
-    ( binaryOpToHaskellOperator,
-      binaryOpToHaskellOperatorDouble,
-      unaryOpToHaskellOperator,
-      unaryOpToHaskellOperatorDouble,
-      BinaryOp(..),
-      CompoundAssignOp(..),
-      UnaryOp(..) )
 import qualified Data.Map.Strict as M
-import Data.Char (isLetter, isAlphaNum, isDigit)
-import Data.Either (isLeft, fromRight, fromLeft)
-import Data.Maybe ( fromJust, isJust, isNothing )
-import Data.List (sort)
-import Data.Int ( Int8, Int16, Int32, Int64 )
-import Data.Word ( Word32, Word64 )
-import Control.Monad.IO.Class (liftIO)
+import Data.Char
+import Data.Either
+import Data.Maybe
+import Data.List
+import Data.Int
+import Data.Word
+import Control.Monad.IO.Class
 
 type CProgramAST = [Declaration]
 

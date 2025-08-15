@@ -6,53 +6,19 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/08/06 22:40:18 by mayeung          ###   ########.fr       --
+--   Updated: 2025/08/15 12:25:32 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
 module IR where
 
 import Parser
-    ( NumConst(..),
-      StorageClass(Static),
-      Expr(AddrOf, Constant, Unary, Binary, Variable, Assignment,
-           Conditional, FunctionCall, Cast, Dereference),
-      TypedExpr(TExpr, tDT),
-      Block(Block, unBlock),
-      BlockItem(..),
-      Statement(..),
-      ForInit(..),
-      FuncTypeInfo(FuncTypeInfo, nextVarId, funcName, funcType),
-      VarTypeInfo(VarTypeInfo),
-      Declaration(..),
-      IdentifierType(VarIdentifier),
-      DT(DTInternal, DTPointer, argList),
-      PrimType(TDouble, TShort, TUShort, TInt, TUInt, TLong, TULong),
-      JumpLabel(SwitchLabel, LoopLabel),
-      CProgramAST,
-      compoundAssignOpToBinOp,
-      isFloatDT,
-      foldToConstExpr,
-      cvtTypedExpr,
-      getPointingType,
-      makeConstantTEIntWithDT,
-      makeConstantTEFloatWithDT,
-      getDTSize,
-      isSignedInteger,
-      isUnsigned,
-      getExprsCommonType,
-      isVarIdentifier )
 import Operation
-    ( BinaryOp(EqualRelation, Minus, Plus, LogicAnd, LogicOr),
-      CompoundAssignOp(AssignOp, BitShiftLeftAssign,
-                       BitShiftRightAssign),
-      UnaryOp(PreIncrement, PostDecrement, PostIncrement, PreDecrement) )
 import Control.Monad.State
-    ( gets, modify, evalState, State )
 import qualified Data.Map.Strict as M
-import Data.Char ( isDigit )
-import Data.Maybe (fromMaybe)
-import Control.Monad (mapAndUnzipM)
+import Data.Char
+import Data.Maybe
+import Control.Monad
 
 type IRProgramAST = [IRTopLevel]
 
