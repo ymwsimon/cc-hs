@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/08/13 21:57:39 by mayeung          ###   ########.fr       --
+--   Updated: 2025/08/15 10:53:22 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -2383,3 +2383,33 @@ updateLabelSingle (FunctionDeclaration (FuncTypeInfo n ft (Just (Block bls)) lid
 
 updateGotoLabel :: [Declaration] -> [M.Map String String] -> [Declaration]
 updateGotoLabel = zipWith updateLabelSingle
+
+getStackVarsStatement :: Statement -> [DT]
+getStackVarsStatement s = case s of
+  If _ tStat fStat ->
+    getStackVarsStatement tStat ++ maybe [] getStackVarsStatement fStat
+  Label _ _ stat -> getStackVarsStatement stat
+  Compound bl -> concatMap getStackVarsBlockItem $ unBlock bl
+  While _ stat _ -> getStackVarsStatement stat
+  DoWhile stat _ _ -> getStackVarsStatement stat
+  For fi _ _ stat _ ->
+    let initDT = case fi of
+          InitDecl vInfo -> [variableType vInfo]
+          _ -> [] in
+    initDT ++ getStackVarsStatement stat
+  Switch _ stat _ -> getStackVarsStatement stat
+  Case stat _ -> getStackVarsStatement stat
+  Default stat _ -> getStackVarsStatement stat
+  _ -> []
+
+getStackVarsBlockItem :: BlockItem -> [DT]
+getStackVarsBlockItem bi = case bi of
+  S s -> getStackVarsStatement s
+  D d -> getStackVarsDeclare d
+
+getStackVarsDeclare :: Declaration -> [DT]
+getStackVarsDeclare d = case d of
+  VariableDeclaration vInfo ->
+    [variableType vInfo | isNothing (varStoreClass vInfo) || topLv vInfo]
+  FunctionDeclaration fInfo ->
+    maybe [] (concatMap getStackVarsBlockItem . unBlock) $ funcDefine fInfo
