@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/08/15 12:25:32 by mayeung          ###   ########.fr       --
+--   Updated: 2025/08/18 00:19:29 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -33,13 +33,14 @@ data IRFunctionDefine =
     irFuncName :: String,
     irFuncGlobal :: Bool,
     irParameter :: [(DT, String)],
-    irInstruction :: [IRInstruction]
+    irInstruction :: [IRInstruction],
+    irFuncStackVarsSize :: [Int]
   }
   deriving (Show, Eq)
 
 data IRStaticVarDefine =
   IRStaticVarDefine {irVarName :: String, irVarGlobal :: Bool,
-    irType :: DT, irVarInitVal :: StaticInit}
+    irType :: DT, irVarInitVal :: [StaticInit]}
   deriving (Show, Eq)
 
 data IRInstruction =
@@ -65,6 +66,8 @@ data IRInstruction =
   | IRJumpIfNP String
   | IRLabel {labelName :: String}
   | IRFuncCall {irFName :: String, arg :: [IRVal], irFCallDst :: IRVal}
+  | IRAddPtr {irAddPtr :: IRVal, irPtrIndex :: IRVal, irPtrScale :: Int, irAddPtrDst :: IRVal}
+  | IRCopyToOffset {irCopyOffsetSrc :: IRVal, irCopyOffsetDst :: String, irCopyOffset :: Integer}
   deriving (Show, Eq)
 
 data IRVal =
@@ -95,7 +98,7 @@ irValToDT irVal = case irVal of
   IRConstant dt _ -> dt
   IRVar dt _ -> dt
 
-cStatmentToIRInstructions :: BlockItem -> State (Int, Int) [IRInstruction]
+cStatmentToIRInstructions :: BlockItem -> State ([DT], Int) [IRInstruction]
 cStatmentToIRInstructions bi = case bi of
   S (Return expr) -> exprToReturnIRs expr
   S Null -> pure []
@@ -124,27 +127,30 @@ cStatmentToIRInstructions bi = case bi of
   S (Default statement l) -> defaultToIRs statement l
   D (VariableDeclaration (VarTypeInfo var dt (Just expr) Nothing False)) ->
     cStatmentToIRInstructions (S (Expression
-      (TExpr (Assignment AssignOp (TExpr (Variable var False Nothing) dt) undefined) dt)))
+      (TExpr (Assignment AssignOp (TExpr (Variable var False Nothing) dt) (head $ initialiserToTE expr)) dt)))
       -- (TExpr (Assignment AssignOp (TExpr (Variable var False Nothing) dt) expr) dt)))
   D _ -> pure []
 
-initIRVarId :: a1 -> (a2, b) -> (a1, b)
-initIRVarId s (_, b) = (s, b)
+initDTList :: a1 -> (a2, b) -> (a1, b)
+initDTList s (_, b) = (s, b)
 
 hasFuncBody :: Declaration -> Bool
 hasFuncBody (FunctionDeclaration (FuncTypeInfo _ _ (Just _) _ _)) = True
 hasFuncBody _ = False
 
-cFuncDefineToIRFuncDefine :: Declaration -> State (Int, Int) IRTopLevel
-cFuncDefineToIRFuncDefine (FunctionDeclaration fd@(FuncTypeInfo _ _ (Just bl) sc _)) =
-  IRFunc . IRFunctionDefine (funcName fd) (sc /= Just Static) (argList $ funcType fd)
-    . (++ [IRReturn (IRConstant (DTInternal TInt) $ ConstInt 0)]) . concat
-    <$> (modify (initIRVarId (nextVarId fd)) >>
-      mapM cStatmentToIRInstructions (unBlock bl))
-cFuncDefineToIRFuncDefine  _ = error "function define only, not for variable define"
+cFuncDefineToIRFuncDefine :: Declaration -> [DT] -> State ([DT], Int) IRTopLevel
+cFuncDefineToIRFuncDefine (FunctionDeclaration fd@(FuncTypeInfo _ _ (Just bl) sc _)) dtList = do
+  modify $ initDTList dtList
+  res <- concat <$> mapM cStatmentToIRInstructions (unBlock bl)
+  sVar <- gets $ drop 1 . map getDTSize . fst
+  pure $ IRFunc $ IRFunctionDefine (funcName fd) (sc /= Just Static) (argList $ funcType fd)
+     (res ++ [IRReturn (IRConstant (DTInternal TInt) $ ConstInt 0)]) sVar
+cFuncDefineToIRFuncDefine _ _ = error "function define only, not for variable define"
 
 cASTToIrAST :: CProgramAST -> IRProgramAST
-cASTToIrAST = flip evalState (1, 1) . mapM cFuncDefineToIRFuncDefine . filter hasFuncBody
+cASTToIrAST =
+  flip evalState ([], 1) .
+    mapM (\d -> cFuncDefineToIRFuncDefine d (DTInternal TVoid : getStackVarsDeclare d)) . filter hasFuncBody
 
 exprToStaticInit :: TypedExpr -> StaticInit
 exprToStaticInit (TExpr e _) = case e of
@@ -178,34 +184,37 @@ staticVarConvertion m = map IRStaticVar .
           VarIdentifier (VarTypeInfo vName dt expr (Just Static) _) -> if dt == DTInternal TDouble
             then [IRStaticVarDefine vName False dt
               -- (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstDouble 0) (DTInternal TDouble)) expr)]
-              (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstDouble 0) (DTInternal TDouble)) undefined)]
+              [exprToStaticInit $ maybe (TExpr (Constant $ ConstDouble 0) (DTInternal TDouble)) (head . initialiserToTE) expr]]
             else [IRStaticVarDefine vName False dt
               -- (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstInt 0) (DTInternal TInt)) expr)]
-              (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstInt 0) (DTInternal TInt)) undefined)]
+              [exprToStaticInit $ maybe (TExpr (Constant $ ConstInt 0) (DTInternal TInt)) (head . initialiserToTE) expr]]
           VarIdentifier (VarTypeInfo vName dt expr Nothing topLvl) -> if dt == DTInternal TDouble
             then [IRStaticVarDefine vName topLvl dt
               -- (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstDouble 0) (DTInternal TDouble)) expr)]
-              (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstDouble 0) (DTInternal TDouble)) undefined)]
+              [exprToStaticInit $ maybe (TExpr (Constant $ ConstDouble 0) (DTInternal TDouble)) (head . initialiserToTE) expr]]
             else [IRStaticVarDefine vName topLvl dt
               -- (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstInt 0) (DTInternal TInt)) expr)]
-              (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstInt 0) (DTInternal TInt)) undefined)]
+              [exprToStaticInit $ maybe (TExpr (Constant $ ConstInt 0) (DTInternal TInt)) (head . initialiserToTE) expr]]
           _ -> []
 
 bumpOneToVarId :: Num a => (a, b) -> (a, b)
 bumpOneToVarId (a, b) = (a + 1, b)
 
+addDTAtEnd :: a -> ([a], b) -> ([a], b)
+addDTAtEnd dt (dtList, b) = (dtList ++ [dt], b)
+
 bumpOneToLabelId :: Num b => (a, b) -> (a, b)
 bumpOneToLabelId (a, b) = (a, b + 1)
 
-exprToReturnIRs :: TypedExpr -> State (Int, Int) [IRInstruction]
+exprToReturnIRs :: TypedExpr -> State ([DT], Int) [IRInstruction]
 exprToReturnIRs expr = do
   (irs, irVal) <- exprToIRs expr
   pure $ irs ++ [IRReturn irVal]
 
-exprToExpressionIRs :: TypedExpr -> State (Int, Int) [IRInstruction]
+exprToExpressionIRs :: TypedExpr -> State ([DT], Int) [IRInstruction]
 exprToExpressionIRs expr = fst <$> exprToIRs expr
 
-exprToIfIRs :: TypedExpr -> Statement -> Maybe Statement -> State (Int, Int) [IRInstruction]
+exprToIfIRs :: TypedExpr -> Statement -> Maybe Statement -> State ([DT], Int) [IRInstruction]
 exprToIfIRs condition tStat fStat = do
   (cIRs, cValIR) <- exprToIRs condition
   tStatIRs <- cStatmentToIRInstructions $ S tStat
@@ -231,11 +240,11 @@ postPrefixToBin op
   | op `elem` [PostDecrement, PreDecrement] = Minus
   | otherwise = Plus
 
-unaryOperationToIRs :: UnaryOp -> DT -> TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
+unaryOperationToIRs :: UnaryOp -> DT -> TypedExpr -> State ([DT], Int) ([IRInstruction], IRVal)
 unaryOperationToIRs op dt uExpr
   | op `elem` [PostDecrement, PostIncrement] = do
-    oldVal <- gets $ IRVar dt . show . fst
-    modify bumpOneToVarId
+    oldVal <- gets $ IRVar dt . ("#" ++) . show . length . fst
+    modify $ addDTAtEnd dt
     (newValIRs, irNewVal) <-
       let c = if isFloatDT dt then makeConstantTEFloatWithDT 1.0 dt else makeConstantTEIntWithDT 1 dt in
       exprToIRs $ TExpr
@@ -261,11 +270,11 @@ unaryOperationToIRs op dt uExpr
     pure (oldIRs ++ varIRs ++ updateVarIRs, irVal)
   | otherwise = do
       (oldIRs, irVal) <- exprToIRs uExpr
-      varId <- gets fst
-      modify bumpOneToVarId
-      pure (oldIRs ++ [IRUnary op irVal $ IRVar dt $ show varId], IRVar dt $ show varId)
+      varId <- gets $ ("#" ++) . show . length . fst
+      modify $ addDTAtEnd dt
+      pure (oldIRs ++ [IRUnary op irVal $ IRVar dt varId], IRVar dt varId)
 
-genJumpIRsIfNeeded :: BinaryOp -> (Int, Int, Int) -> IRVal -> State (Int, Int) [IRInstruction]
+genJumpIRsIfNeeded :: BinaryOp -> (Int, Int, Int) -> IRVal -> State ([DT], Int) [IRInstruction]
 genJumpIRsIfNeeded op (fId, tId, _) irVal = case op of
     LogicAnd ->
       pure [IRJumpIfZero irVal ("false_label" ++ show fId) ("true_label" ++ show tId)]
@@ -273,15 +282,15 @@ genJumpIRsIfNeeded op (fId, tId, _) irVal = case op of
       pure [IRJumpIfNotZero irVal $ "false_label" ++ show fId]
     _ -> pure []
 
-genJumpIRsAndLabel :: Int -> (Int, Int, Int) -> IRVal -> IRVal -> State (Int, Int) [IRInstruction]
+genJumpIRsAndLabel :: String -> (Int, Int, Int) -> IRVal -> IRVal -> State ([DT], Int) [IRInstruction]
 genJumpIRsAndLabel varId (fId, _, eId) fstVal sndVal = do
-  pure [IRCopy fstVal $ IRVar (DTInternal TInt) $ show varId,
+  pure [IRCopy fstVal $ IRVar (DTInternal TInt) varId,
     IRJump $ "end_label" ++ show eId,
     IRLabel $ "false_label" ++ show fId,
-    IRCopy sndVal $ IRVar (DTInternal TInt) $ show varId,
+    IRCopy sndVal $ IRVar (DTInternal TInt) varId,
     IRLabel $ "end_label" ++ show eId]
 
-genLabelIfNeeded :: BinaryOp -> State (Int, Int) (Int, Int, Int)
+genLabelIfNeeded :: BinaryOp -> State ([DT], Int) (Int, Int, Int)
 genLabelIfNeeded op =
   let getLabels = do
           fId <- gets snd
@@ -296,30 +305,33 @@ genLabelIfNeeded op =
     LogicOr -> getLabels
     _ -> pure (-1, -1, -1)
 
-binaryOperationToIRs :: BinaryOp -> DT -> TypedExpr -> TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
+binaryOperationToIRs :: BinaryOp -> DT -> TypedExpr -> TypedExpr -> State ([DT], Int) ([IRInstruction], IRVal)
 binaryOperationToIRs op dt lExpr rExpr = do
   ids@(_, tId, _) <- genLabelIfNeeded op
   (irsFromLExpr, irValFromLExpr) <- exprToIRs lExpr
   lExprCondJumpIRs <- genJumpIRsIfNeeded op ids irValFromLExpr
   (irsFromRExpr, irValFromRExpr) <- exprToIRs rExpr
   rExprCondJumpIRs <- genJumpIRsIfNeeded op ids irValFromRExpr
-  varId <- gets fst
-  modify bumpOneToVarId
+  varId <- gets $ ("#" ++) . show . length . fst
+  modify $ addDTAtEnd dt
   resultIRVal <-
     let trueVal = IRConstant (DTInternal TInt) $ ConstInt 1
         falseVal = IRConstant (DTInternal TInt) $ ConstInt 0 in
       case op of
         LogicAnd -> (IRLabel ("true_label" ++ show tId) :) <$> genJumpIRsAndLabel varId ids trueVal falseVal
         LogicOr -> (IRLabel ("true_label" ++ show tId) :) <$> genJumpIRsAndLabel varId ids falseVal trueVal
-        _ -> pure [IRBinary op irValFromLExpr irValFromRExpr $ IRVar dt $ show varId]
+        _ -> pure [IRBinary op irValFromLExpr irValFromRExpr $ IRVar dt varId]
   pure (concat
     [irsFromLExpr, lExprCondJumpIRs, irsFromRExpr, rExprCondJumpIRs, resultIRVal],
-    IRVar dt $ show varId)
+    IRVar dt varId)
 
 dropVarName :: String -> String
 dropVarName v = if '#' `elem` v then drop 1 $ dropWhile (/= '#') v else v
 
-assignmentToIRs :: CompoundAssignOp -> TypedExpr -> TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
+isStackVar :: String -> Bool
+isStackVar = elem '#'
+
+assignmentToIRs :: CompoundAssignOp -> TypedExpr -> TypedExpr -> State ([DT], Int) ([IRInstruction], IRVal)
 assignmentToIRs op var rExpr = do
   let cType = getExprsCommonType var rExpr
   let dt
@@ -327,7 +339,7 @@ assignmentToIRs op var rExpr = do
         | otherwise = cType
   case var of
     TExpr (Dereference ptr) lDT -> do
-      tempVarId <- gets (('#' :) . show . fst) <* modify bumpOneToVarId
+      tempVarId <- gets (('#' :) . show . length . fst) <* modify (addDTAtEnd dt)
       (tempVarIRs, tempVar) <- if op == AssignOp
         then do
           (rIRs, rVal) <- exprToIRs $ foldToConstExpr $ (`cvtTypedExpr` dt) rExpr
@@ -356,12 +368,12 @@ assignmentToIRs op var rExpr = do
             (cvtTypedExpr rExpr dt)) dt
       pure (newValIRs ++ varIRs ++ [IRCopy newVal irVar], irVar)
 
-conditionToIRs :: DT -> TypedExpr -> TypedExpr -> TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
+conditionToIRs :: DT -> TypedExpr -> TypedExpr -> TypedExpr -> State ([DT], Int) ([IRInstruction], IRVal)
 conditionToIRs dt condition tExpr fExpr = do
   (cIRs, cValIR) <- exprToIRs condition
   (tIRs, tValIR) <- exprToIRs tExpr
   (fIRs, fValIR) <- exprToIRs fExpr
-  resValIR <- gets (IRVar dt . show . fst) <* modify bumpOneToVarId
+  resValIR <- gets (IRVar dt . ("#" ++) . show . length . fst) <* modify (addDTAtEnd dt)
   tLabel <- if isFloatDT $ tDT condition
     then gets (("condT" ++) . show . snd) <* modify bumpOneToLabelId
     else pure ""
@@ -373,7 +385,7 @@ conditionToIRs dt condition tExpr fExpr = do
     tIRs ++ [IRCopy tValIR resValIR, IRJump $ "condD" ++ dLabel , IRLabel $ "condF" ++ fLabel] ++
     fIRs ++ [IRCopy fValIR resValIR, IRLabel $ "condD" ++ dLabel], resValIR)
 
-doWhileToIRs :: Statement -> TypedExpr -> (String, String, String) -> State (Int, Int) [IRInstruction]
+doWhileToIRs :: Statement -> TypedExpr -> (String, String, String) -> State ([DT], Int) [IRInstruction]
 doWhileToIRs bl condition (sLabel, cLabel, dLabel) = do
   blIRs <- cStatmentToIRInstructions $ S bl
   (exprIRs, exprIRVal) <- exprToIRs condition
@@ -385,7 +397,7 @@ doWhileToIRs bl condition (sLabel, cLabel, dLabel) = do
     exprIRs ++ [IRJumpIfP $ "ifTrue" ++ (!! 0) tLabel | not (null tLabel)] ++
     [IRJumpIfNotZero exprIRVal sLabel, IRLabel dLabel]
 
-whileToIRs :: TypedExpr -> Statement -> (String, String, String) -> State (Int, Int) [IRInstruction]
+whileToIRs :: TypedExpr -> Statement -> (String, String, String) -> State ([DT], Int) [IRInstruction]
 whileToIRs condition bl (_, cLabel, dLabel) = do
   (exprIRs, exprIRVal) <- exprToIRs condition
   tLabel <- if isFloatDT $ tDT condition
@@ -397,14 +409,14 @@ whileToIRs condition bl (_, cLabel, dLabel) = do
     [IRLabel tLabel | tLabel /= ""] ++
     blIRs ++ [IRJump cLabel, IRLabel dLabel]
 
-forInitToIRs :: ForInit -> State (Int, Int) [IRInstruction]
+forInitToIRs :: ForInit -> State ([DT], Int) [IRInstruction]
 forInitToIRs fi = case fi of
   InitDecl d -> cStatmentToIRInstructions $ D $ VariableDeclaration d
   InitExpr (Just expr) -> cStatmentToIRInstructions $ S $ Expression expr
   _ -> pure []
 
 forToIRs :: ForInit -> Maybe TypedExpr -> Maybe TypedExpr -> Statement ->
-  (String, String, String) -> State (Int, Int) [IRInstruction]
+  (String, String, String) -> State ([DT], Int) [IRInstruction]
 forToIRs forInit condition post bl (sLabel, cLabel, dLabel) = do
   forInitIRs <- forInitToIRs forInit
   conditionIRs <- case condition of
@@ -428,38 +440,38 @@ forToIRs forInit condition post bl (sLabel, cLabel, dLabel) = do
 caseMapToIRJump :: IRVal -> IRVal -> M.Map Integer String -> [IRInstruction]
 caseMapToIRJump irVal resIRVal m = concatMap caseToIRJump $ M.toList m
   where caseToIRJump (val, l) =
-          let irConst = if irValToDT irVal ==DTInternal TLong
+          let irConst = if irValToDT irVal == DTInternal TLong
                           then IRConstant (DTInternal TLong) $ ConstLong val
                           else IRConstant (DTInternal TInt) $ ConstInt $ fromIntegral val in
           [IRBinary EqualRelation irVal irConst resIRVal,
             IRJumpIfNotZero resIRVal l]
 
 switchToIRs :: TypedExpr -> Statement -> (Maybe String, String) ->
-  M.Map Integer String -> State (Int, Int) [IRInstruction]
+  M.Map Integer String -> State ([DT], Int) [IRInstruction]
 switchToIRs c@(TExpr _ cDt) bl (defaultLabel, doneLabel) caseMap = do
   (exprIRs, exprIRVal) <- exprToIRs c
-  varId <- gets fst <* modify bumpOneToVarId
+  varId <- gets (("#" ++) . show . length . fst) <* modify (addDTAtEnd cDt)
   blIRs <- cStatmentToIRInstructions $ S bl
   defaultIRs <- case defaultLabel of
     Just l -> pure [IRJump l]
     _ -> pure []
-  let caseIRs = caseMapToIRJump exprIRVal (IRVar cDt (show varId)) caseMap
+  let caseIRs = caseMapToIRJump exprIRVal (IRVar (DTInternal TInt) varId) caseMap
   pure $ exprIRs ++ caseIRs ++ defaultIRs ++ [IRJump doneLabel] ++ blIRs ++ [IRLabel doneLabel]
 
-caseToIRs :: Statement -> String -> State (Int, Int) [IRInstruction]
+caseToIRs :: Statement -> String -> State ([DT], Int) [IRInstruction]
 caseToIRs statement l = do
   stateIRs <- cStatmentToIRInstructions $ S statement
   pure $ IRLabel l : stateIRs
 
-defaultToIRs :: Statement -> String -> State (Int, Int) [IRInstruction]
+defaultToIRs :: Statement -> String -> State ([DT], Int) [IRInstruction]
 defaultToIRs statement l = do
   stateIRs <- cStatmentToIRInstructions $ S statement
   pure $ IRLabel l : stateIRs
 
-funcCallToIRs :: String -> DT -> [TypedExpr] -> State (Int, Int) ([IRInstruction], IRVal)
+funcCallToIRs :: String -> DT -> [TypedExpr] -> State ([DT], Int) ([IRInstruction], IRVal)
 funcCallToIRs name dt exprs = do
-  varId <- gets $ IRVar dt . show . fst
-  modify bumpOneToVarId
+  varId <- gets $ IRVar dt . ("#" ++) . show . length . fst
+  modify $ addDTAtEnd dt
   (irs, irVal) <- mapAndUnzipM exprToIRs exprs
   pure (concat irs ++ [IRFuncCall name irVal varId], varId)
 
@@ -471,12 +483,12 @@ truncateIRVal irVal dt = case irVal of
     _ -> error "unsupported ir value truncation"
   _ -> irVal
 
-castToIRs :: DT -> TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
+castToIRs :: DT -> TypedExpr -> State ([DT], Int) ([IRInstruction], IRVal)
 castToIRs dt te@(TExpr _ tdt)
   | dt == tdt = exprToIRs te
   | otherwise = do
     (teIRs, teIRVal) <- exprToIRs te
-    varId <- gets (IRVar dt . show . fst) <* modify bumpOneToVarId
+    varId <- gets (IRVar dt . ("#" ++) . show . length . fst) <* modify (addDTAtEnd dt)
     lbsId <- if isFloatDT dt && isUnsigned tdt || isUnsigned dt && isFloatDT tdt
       then do
         l1 <- gets (show . snd) <* modify bumpOneToLabelId
@@ -494,27 +506,28 @@ castToIRs dt te@(TExpr _ tdt)
           | otherwise = IRZeroExtend
     pure (teIRs ++ [op teIRVal varId], varId)
 
-derefToIRs :: TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
+derefToIRs :: TypedExpr -> State ([DT], Int) ([IRInstruction], IRVal)
 derefToIRs ptr = do
   (ptrIRs, ptrIRVal) <- exprToIRs ptr
-  resIRVal <- gets (IRVar (getPointingType $ tDT ptr) . show . fst) <* modify bumpOneToVarId
+  resIRVal <- gets (IRVar (getPointingType $ tDT ptr) . ("#" ++) . show . length . fst) <*
+    modify (addDTAtEnd (getPointingType $ tDT ptr))
   pure (ptrIRs ++ [IRLoad ptrIRVal resIRVal], resIRVal)
 
-derefAssignmentToIRs :: TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
+derefAssignmentToIRs :: TypedExpr -> State ([DT], Int) ([IRInstruction], IRVal)
 derefAssignmentToIRs ptr = do
   (ptrIRs, ptrIRVal) <- exprToIRs ptr
   pure (ptrIRs, ptrIRVal)
 
-addrOfToIRs :: TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
+addrOfToIRs :: TypedExpr -> State ([DT], Int) ([IRInstruction], IRVal)
 addrOfToIRs v@(TExpr var dt) = case var of
   Variable {} -> do
     (varIRs, varIRVal) <- exprToIRs v
-    resIRVal <- gets (IRVar (DTPointer dt) . show . fst) <* modify bumpOneToVarId
+    resIRVal <- gets (IRVar (DTPointer dt) . ("#" ++) . show . length . fst) <* modify (addDTAtEnd $ DTPointer dt)
     pure (varIRs ++ [IRGetAddress varIRVal resIRVal], resIRVal)
   Dereference ptr -> exprToIRs ptr
   _ -> error "unsupported address of operation for ir value"
 
-exprToIRs :: TypedExpr -> State (Int, Int) ([IRInstruction], IRVal)
+exprToIRs :: TypedExpr -> State ([DT], Int) ([IRInstruction], IRVal)
 exprToIRs (TExpr expr dt) = case expr of
   Constant (ConstShort s) -> pure ([], IRConstant (DTInternal TShort) $ ConstShort s)
   Constant (ConstUShort s) -> pure ([], IRConstant (DTInternal TUShort) $ ConstUShort s)
@@ -559,7 +572,7 @@ extractVarId instr = case instr of
   IRStore s d -> [getVarId s, getVarId d]
   where getVarId i = case i of
           IRConstant _ _ -> 0
-          IRVar _ iv -> if all isDigit iv then read iv else 0
+          IRVar _ iv -> if '#' `elem` iv then read $ dropVarName iv else 0
 
 getMaxStackVarId :: [IRInstruction] -> Int
 getMaxStackVarId = maximum . concatMap extractVarId 

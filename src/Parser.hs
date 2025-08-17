@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/08/15 12:25:48 by mayeung          ###   ########.fr       --
+--   Updated: 2025/08/15 22:26:49 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -981,6 +981,11 @@ foldInitToConstExpr initialiser = case initialiser of
   SingleInit si -> if isConstantInit initialiser then SingleInit (foldToConstExpr si) else initialiser
   CompoundInit ci -> CompoundInit $ map foldInitToConstExpr ci
 
+initialiserToTE :: Initialiser -> [TypedExpr]
+initialiserToTE i = case i of
+  SingleInit te -> [te]
+  CompoundInit tes -> concatMap initialiserToTE tes
+
 doubleIntegralParser :: ParsecT String ParseInfo IO TypedExpr
 doubleIntegralParser = do
   maybeDotE <- lookAhead $ optionMaybe $ try $ spaces >> (dotLex <|> (many1 digit >> (dotLex <|> eLex)))
@@ -1127,6 +1132,8 @@ getDTSize dt = case dt of
   DTInternal TDouble -> 8
   DTInternal TLDouble -> 16
   DTPointer _ -> 8
+  DTInternal TVoid -> 0
+  DTArray aDT (Just aSize) -> aSize * getDTSize aDT
   _ -> error $ "get size of unsupported data type " ++ show dt
 
 isSignedInteger :: DT -> Bool

@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/08/15 12:25:06 by mayeung          ###   ########.fr       --
+--   Updated: 2025/08/18 00:26:40 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -30,7 +30,7 @@ data AsmTopLevel =
   deriving (Show, Eq)
 
 data AsmStaticVarDefine =
-  AsmStaticVarDefine {asmVarName :: String, asmVarGlobal :: Bool, asmVarAlign :: Int, asmVarInit :: StaticInit}
+  AsmStaticVarDefine {asmVarName :: String, asmVarGlobal :: Bool, asmVarAlign :: Int, asmVarInit :: [StaticInit]}
   deriving (Show, Eq)
 
 data AsmStaticConstantDefine =
@@ -38,7 +38,7 @@ data AsmStaticConstantDefine =
   deriving (Show, Eq)
 
 data AsmFunctionDefine =
-  AsmFunctionDefine {asmFuncName :: String, asmFuncGlobal :: Bool, instructions :: [AsmInstruction]}
+  AsmFunctionDefine {asmFuncName :: String, asmFuncGlobal :: Bool, instructions :: [AsmInstruction], asmStackVars :: [Int]}
   deriving (Show, Eq)
 
 data AsmInstruction =
@@ -344,7 +344,7 @@ irASTToAsmAST m irAst = map
 extractFloatConstant :: [AsmTopLevel] -> S.Set Word64
 extractFloatConstant = S.fromList . foldl' foldF (map castDoubleToWord64 [-0.0, 9223372036854775808.0])
   where foldF x y = x ++ case y of
-          AsmFunc (AsmFunctionDefine _ _ instrs) -> map castDoubleToWord64 $ getFloatConst instrs
+          AsmFunc (AsmFunctionDefine _ _ instrs _) -> map castDoubleToWord64 $ getFloatConst instrs
           _ -> []
 
 parametersRegister :: [Operand]
@@ -367,19 +367,18 @@ irFuncDefineToAsmFuncDefine gVarMap funcList fd = do
   let irVars = map (uncurry IRVar) $ irParameter fd
       (regArg, stackArg) =
         regStackArgSplit generalXmmRegister stackAddr irVars ([], [])
-      (m, instrs) = copyParametersToStack
-          ((+ 1) . getMaxStackVarId $ irInstruction fd)
+      (m, instrs) = copyParametersToStack (alignTo16 $ sum $ irFuncStackVarsSize fd) (-1)
           (M.empty, []) (regArg, stackArg)
-  AsmFunctionDefine (irFuncName fd) (irFuncGlobal fd) $
+  AsmFunctionDefine (irFuncName fd) (irFuncGlobal fd) (
     instrs ++
     [AllocateStack (getPaddingSize stackArg)] ++
-    concatMap (\irs -> irInstructionToAsmInstruction irs m funcList gVarMap) (irInstruction fd)
+    concatMap (\irs -> irInstructionToAsmInstruction irs m funcList gVarMap) (irInstruction fd)) (irFuncStackVarsSize fd)
 
 irOperandToAsmOperand :: M.Map String Int -> M.Map String IdentifierType -> IRVal -> Operand
 irOperandToAsmOperand _ _ (IRConstant _ n) = Imm n
-irOperandToAsmOperand m gVarMap (IRVar _ s)
+irOperandToAsmOperand argMap gVarMap (IRVar _ s)
   | M.member s gVarMap && isVarIdentifier (gVarMap M.! s) = Data s
-  | M.member (dropVarName s) m = Pseudo $ show $ m M.! dropVarName s
+  | M.member (dropVarName s) argMap = Pseudo $ '@' : show (argMap M.! dropVarName s)
   | otherwise = Pseudo $ dropVarName s
 
 irUnaryOpToAsmOp :: UnaryOp -> AsmUnaryOp
@@ -419,16 +418,14 @@ irFuncCallToAsm :: String -> [IRVal] -> IRVal -> M.Map String String ->
 irFuncCallToAsm name args dst funcList m gVarMap =
   let (regArg, stackArg) = regStackArgSplit generalXmmRegister stackAddr args ([], [])
       paddingSize = getPaddingSize stackArg
-      paddingInstr = [AllocateStack paddingSize]
+      paddingInstr = [AllocateStack paddingSize | paddingSize /= 0]
       copyRegArgsInstr =
         map (\(v, r) -> Mov (dtToAsmType $ irValToDT v) (cvtOperand v) (Register r))
           regArg
       copyStackArgsInstr = concatMap (\v ->
         let r = Register R10 in
             case v of
-              IRConstant _ c ->
-                    [Mov QuadWord (Imm c) r,
-                      Push r]
+              IRConstant _ c -> [Mov QuadWord (Imm c) r, Push r]
               IRVar dt _ -> let pushSize = if isFloatDT dt then QuadWord else dtToAsmType dt in
                 [Mov pushSize (cvtOperand v) r,
                   Push r]) (reverse $ map fst stackArg)
@@ -560,7 +557,7 @@ irInstructionToAsmInstruction instr m funcList gVarMap = case instr of
   IRIntToDouble s d -> [Cvtsi2sd (dtToAsmType $ irValToDT s) (cvtOperand s) (cvtOperand d)]
   IRUIntToDouble lbs s d -> if irValToDT s == DTInternal TUInt
     then [MovZeroExtend (cvtOperand s) (Register R10),
-      Cvtsi2sd QuadWord (cvtOperand s) (cvtOperand d)]
+      Cvtsi2sd QuadWord (Register R10) (cvtOperand d)]
     else [Cmp QuadWord (Imm $ ConstLong 0) (cvtOperand s),
       JmpCC L $ "castUToD1." ++ (!! 0) lbs,
       Cvtsi2sd QuadWord (cvtOperand s) (cvtOperand d),
@@ -578,21 +575,21 @@ irInstructionToAsmInstruction instr m funcList gVarMap = case instr of
       AsmLabel $ "castUToD2." ++ (!! 1) lbs]
   where cvtOperand = irOperandToAsmOperand m gVarMap
 
-copyParametersToStack :: Int -> (M.Map String Int, [AsmInstruction]) ->
+copyParametersToStack :: Int -> Int -> (M.Map String Int, [AsmInstruction]) ->
   ([(IRVal, Reg)], [(IRVal, Int)]) -> (M.Map String Int, [AsmInstruction])
-copyParametersToStack n (m, instrs) (reg, stack)
+copyParametersToStack offset n (m, instrs) (reg, stack)
   | null reg && null stack = (m, instrs)
   | not (null reg) = let var = irVName $ fst $ (!! 0) reg
                          src = Register $ snd $ (!! 0) reg in
-      copyParametersToStack
-        (n + 1)
-        (M.insert var n m, instrs ++ [Mov QuadWord src (Pseudo (show n))])
+      copyParametersToStack offset
+        (n - 1)
+        (M.insert var (offset + n * 8) m, instrs ++ [Mov QuadWord src (Pseudo ('@' : show (offset + n * 8)))])
         (drop 1 reg, stack)
   | otherwise = let var = irVName $ fst $ (!! 0) stack
                     src = Memory RBP $ snd $ (!! 0) stack in
-      copyParametersToStack
-        (n + 1)
-        (M.insert var n m, instrs ++ [Mov QuadWord src (Pseudo (show n))])
+      copyParametersToStack offset
+        (n - 1)
+        (M.insert var (offset + n * 8) m, instrs ++ [Mov QuadWord src (Pseudo ('@' : show (offset + n * 8)))])
         (reg, drop 1 stack)
 
 buildAsmIntrsForIRRelationOp :: IRInstruction -> M.Map String Int -> M.Map String IdentifierType -> [AsmInstruction]
@@ -611,14 +608,14 @@ buildAsmIntrsForIRRelationOp instr m gVarMap =
   if isFloatDT $ irValToDT vL
     then
       [Cmp (dtToAsmType $ irValToDT vL) (cvtOperand vR) (cvtOperand vL),
-        Mov QuadWord (Imm $ ConstInt 0) (Register R11),
+        Mov LongWord (Imm $ ConstInt 0) (Register R11),
         SetCC (if condCode == NE then P else NP) (Register R11B),
-        Mov QuadWord (Imm $ ConstInt 0) $ cvtOperand setDst,
+        Mov LongWord (Imm $ ConstInt 0) $ cvtOperand setDst,
         SetCC condCode $ cvtOperand setDst,
-        AsmBinary (if condCode == NE then AsmBitOr else AsmBitAnd) QuadWord (Register R11) (cvtOperand setDst)]
+        AsmBinary (if condCode == NE then AsmBitOr else AsmBitAnd) LongWord (Register R11) (cvtOperand setDst)]
     else
       [Cmp (dtToAsmType $ irValToDT vL) (cvtOperand vR) (cvtOperand vL),
-        Mov QuadWord (Imm $ ConstInt 0) $ cvtOperand setDst,
+        Mov LongWord (Imm $ ConstInt 0) $ cvtOperand setDst,
         SetCC condCode $ cvtOperand setDst]
   where cvtOperand = irOperandToAsmOperand m gVarMap
 
@@ -626,8 +623,8 @@ noExecutableStackString :: String
 noExecutableStackString =
   tabulate [".section", ".note.GNU-stack,\"\",@progbits"] ++ "\n"
 
-convertAsmTempVarToStackAddr :: [AsmInstruction] -> [AsmInstruction]
-convertAsmTempVarToStackAddr = map convertInstr
+convertAsmTempVarToStackAddr :: [Int] -> [AsmInstruction] -> [AsmInstruction]
+convertAsmTempVarToStackAddr sVars = map convertInstr
   where convertInstr instr = case instr of
           Mov t s d -> Mov t (convertOperand s) (convertOperand d)
           AsmUnary op t d -> AsmUnary op t $ convertOperand d
@@ -643,15 +640,23 @@ convertAsmTempVarToStackAddr = map convertInstr
           Lea s d -> Lea (convertOperand s) (convertOperand d)
           _ -> instr
         convertOperand operand = case operand of
-          Pseudo ident -> Memory RBP $ (-8) * read ident
+          Pseudo ident -> Memory RBP $ if '@' `elem` ident
+            then read $ drop 1 ident
+            else calStackPos (read ident) sVars
           _ -> operand
+
+alignTo16 :: Integral a => a -> a
+alignTo16 n = div ((-1) * abs n) 16 * 16
 
 addAllocateStackToFunc :: [AsmInstruction] -> [AsmInstruction]
 addAllocateStackToFunc instrs =
-  let stackSize = (-1) * getStackSize instrs in
+  let stackSize = alignTo16 $ getStackSize instrs in
     if stackSize == 0
       then instrs
-      else AllocateStack (16 + div stackSize 16 * 16) : instrs
+      else AllocateStack (abs stackSize) : instrs
+
+calStackPos :: Int -> [Int] -> Int
+calStackPos n = foldl' (-) 0 . take n
 
 getStackSize :: [AsmInstruction] -> Int
 getStackSize = foldl' getMinSize 0
@@ -696,7 +701,7 @@ replacePseudoRegAllocateStackFixDoubleStackOperand afd =
                       $ concatMap fixBitShiftNonImm
                       $ concatMap fixDivConstant
                       $ addAllocateStackToFunc
-                      $ convertAsmTempVarToStackAddr
+                      $ convertAsmTempVarToStackAddr (asmStackVars afd)
                       $ instructions afd }
 
 isMemoryAddr :: Operand -> Bool
@@ -784,9 +789,9 @@ fixDivConstant instr = [instr]
 
 fixBitShiftNonImm :: AsmInstruction -> [AsmInstruction]
 fixBitShiftNonImm (AsmBinary AsmShiftL t (Memory RBP i) d) =
-  [Mov AsmByte  (Memory RBP i) (Register CL), AsmBinary AsmShiftL t (Register CL) d]
+  [Mov AsmByte (Memory RBP i) (Register CL), AsmBinary AsmShiftL t (Register CL) d]
 fixBitShiftNonImm (AsmBinary AsmUShiftL t (Memory RBP i) d) =
-  [Mov AsmByte  (Memory RBP i) (Register CL), AsmBinary AsmUShiftL t (Register CL) d]
+  [Mov AsmByte (Memory RBP i) (Register CL), AsmBinary AsmUShiftL t (Register CL) d]
 fixBitShiftNonImm (AsmBinary AsmShiftR t (Memory RBP i) d) =
   [Mov AsmByte (Memory RBP i) (Register CL), AsmBinary AsmShiftR t (Register CL) d]
 fixBitShiftNonImm (AsmBinary AsmUShiftR t (Memory RBP i) d) =
@@ -956,7 +961,7 @@ convertCASTToAsmStr m p = do
     $ map asmFunctionDefineToStr asmFuncs
 
 asmFunctionDefineToStr :: AsmFunctionDefine -> String
-asmFunctionDefineToStr (AsmFunctionDefine fname isGlobal instrs) =
+asmFunctionDefineToStr (AsmFunctionDefine fname isGlobal instrs _) =
   unlines [tabulate $ if isGlobal then [".globl", fname] else [],
     tabulate [".text"],
     fname ++ ":",
@@ -964,16 +969,18 @@ asmFunctionDefineToStr (AsmFunctionDefine fname isGlobal instrs) =
     tabulate ["movq", "%rsp, %rbp"],
     unlines $ concatMap asmInstructionToStr instrs]
 
+asmVarInitToStr :: StaticInit -> String
+asmVarInitToStr iVal = tabulate ["." ++ show (staticInitToAsmType iVal) ++ " " ++ (case iVal of
+      DoubleInit _ -> doubleValToLabel (staticInitToDouble iVal) ++ " #" ++ show (staticInitToDouble iVal)
+      _ -> show $ staticInitToInt iVal)]
+
 asmStaticVarDefineToStr :: AsmStaticVarDefine -> String
 asmStaticVarDefineToStr (AsmStaticVarDefine vName isGlobal varAlign initVal) =
   unlines [tabulate $ if isGlobal then [".globl", vName] else [],
     tabulate [".data"],
     tabulate [".align " ++ show varAlign],
     vName ++ ":",
-    "# " ++ show initVal,
-    tabulate ["." ++ show (staticInitToAsmType initVal) ++ " " ++ (case initVal of
-      DoubleInit _ -> doubleValToLabel (staticInitToDouble initVal) ++ " #" ++ show (staticInitToDouble initVal)
-      _ -> show $ staticInitToInt initVal)]]
+    concatMap asmVarInitToStr initVal]
 
 asmStaticConstDefineToStr :: AsmStaticConstantDefine -> String
 asmStaticConstDefineToStr (AsmStaticConstantDefine name constAlign initVal) =
