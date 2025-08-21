@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/08/18 00:19:29 by mayeung          ###   ########.fr       --
+--   Updated: 2025/08/21 22:29:28 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -16,8 +16,6 @@ import Parser
 import Operation
 import Control.Monad.State
 import qualified Data.Map.Strict as M
-import Data.Char
-import Data.Maybe
 import Control.Monad
 
 type IRProgramAST = [IRTopLevel]
@@ -67,7 +65,7 @@ data IRInstruction =
   | IRLabel {labelName :: String}
   | IRFuncCall {irFName :: String, arg :: [IRVal], irFCallDst :: IRVal}
   | IRAddPtr {irAddPtr :: IRVal, irPtrIndex :: IRVal, irPtrScale :: Int, irAddPtrDst :: IRVal}
-  | IRCopyToOffset {irCopyOffsetSrc :: IRVal, irCopyOffsetDst :: String, irCopyOffset :: Integer}
+  | IRCopyToOffset {irCopyOffsetSrc :: IRVal, irCopyOffsetDst :: String, irCopyOffset :: Int}
   deriving (Show, Eq)
 
 data IRVal =
@@ -92,6 +90,14 @@ isIRFuncDefine _ = False
 isIRStaticVarDefine :: IRTopLevel -> Bool
 isIRStaticVarDefine (IRStaticVar _) = True
 isIRStaticVarDefine _ = False
+
+isIRConstant :: IRVal -> Bool
+isIRConstant (IRConstant {}) = True
+isIRConstant _ = False
+
+irConstantToInt :: IRVal -> Int
+irConstantToInt (IRConstant _ n) = numConstToInt n
+irConstantToInt _ = error "not a irConstant "
 
 irValToDT :: IRVal -> DT
 irValToDT irVal = case irVal of
@@ -314,16 +320,46 @@ binaryOperationToIRs op dt lExpr rExpr = do
   rExprCondJumpIRs <- genJumpIRsIfNeeded op ids irValFromRExpr
   varId <- gets $ ("#" ++) . show . length . fst
   modify $ addDTAtEnd dt
-  resultIRVal <-
-    let trueVal = IRConstant (DTInternal TInt) $ ConstInt 1
-        falseVal = IRConstant (DTInternal TInt) $ ConstInt 0 in
-      case op of
-        LogicAnd -> (IRLabel ("true_label" ++ show tId) :) <$> genJumpIRsAndLabel varId ids trueVal falseVal
-        LogicOr -> (IRLabel ("true_label" ++ show tId) :) <$> genJumpIRsAndLabel varId ids falseVal trueVal
-        _ -> pure [IRBinary op irValFromLExpr irValFromRExpr $ IRVar dt varId]
-  pure (concat
-    [irsFromLExpr, lExprCondJumpIRs, irsFromRExpr, rExprCondJumpIRs, resultIRVal],
-    IRVar dt varId)
+  if op `elem` [Plus, Minus] && (isPointerOrArray lExpr || isPointerOrArray rExpr)
+    then
+      if op == Minus && isPointerOrArray lExpr && isPointerOrArray rExpr
+        then do
+          divVarId <- gets $ ("#" ++) . show . length . fst
+          modify $ addDTAtEnd $ DTInternal TULong
+          let refDataSize = getDTSize $ getRefType $ irVarDT irValFromLExpr
+          let minusVar = IRVar (irVarDT irValFromLExpr) varId
+          let minusInstr = [IRBinary Minus irValFromLExpr irValFromRExpr minusVar]
+          let divVar = IRVar (irVarDT irValFromLExpr) divVarId
+          let divInstr = [IRBinary Division minusVar
+                (IRConstant (DTInternal TULong) (ConstULong $ fromIntegral refDataSize)) divVar]
+          pure (concat
+            [irsFromLExpr, irsFromRExpr, minusInstr, divInstr],
+            divVar)
+        else do
+          let ptr = if isPointerOrArray lExpr then irValFromLExpr else irValFromRExpr
+          let idx = if isPointerOrArray lExpr then irValFromRExpr else irValFromLExpr
+          let dst = IRVar dt varId
+          (maybeNegate, finalIdx) <- case op of
+            Plus -> pure ([], idx)
+            Minus -> do
+              negateVarId <- gets $ ("#" ++) . show . length . fst
+              modify $ addDTAtEnd dt
+              let idxDst = IRVar dt negateVarId
+              pure ([IRUnary Negate idx idxDst], idxDst)
+            _ -> error "unsupported binary operation for 2 pointers"
+          let addPtrInstr = [IRAddPtr ptr finalIdx (getDTSize $ getRefType $ irVarDT ptr) dst]
+          pure (concat [irsFromLExpr, irsFromRExpr, maybeNegate, addPtrInstr], dst)
+    else do
+      resultIRVal <-
+        let trueVal = IRConstant (DTInternal TInt) $ ConstInt 1
+            falseVal = IRConstant (DTInternal TInt) $ ConstInt 0 in
+          case op of
+            LogicAnd -> (IRLabel ("true_label" ++ show tId) :) <$> genJumpIRsAndLabel varId ids trueVal falseVal
+            LogicOr -> (IRLabel ("true_label" ++ show tId) :) <$> genJumpIRsAndLabel varId ids falseVal trueVal
+            _ -> pure [IRBinary op irValFromLExpr irValFromRExpr $ IRVar dt varId]
+      pure (concat
+        [irsFromLExpr, lExprCondJumpIRs, irsFromRExpr, rExprCondJumpIRs, resultIRVal],
+        IRVar dt varId)
 
 dropVarName :: String -> String
 dropVarName v = if '#' `elem` v then drop 1 $ dropWhile (/= '#') v else v
@@ -527,6 +563,16 @@ addrOfToIRs v@(TExpr var dt) = case var of
   Dereference ptr -> exprToIRs ptr
   _ -> error "unsupported address of operation for ir value"
 
+subscriptToIRs :: TypedExpr -> TypedExpr -> State ([DT], Int) ([IRInstruction], IRVal)
+subscriptToIRs l r = do
+  let ptr = if isPointerOrArray l then l else r
+  let idx = if isPointerOrArray l then r else l
+  (ptrIRs, ptrVal) <- exprToIRs ptr
+  (idxIRs, idxVal) <- exprToIRs idx
+  resIRVal <- gets (IRVar (DTPointer (getRefType $ tDT ptr)) . ("#" ++) . show . length . fst) <* modify (addDTAtEnd $ DTPointer (getRefType $ tDT ptr))
+  let calPtrIRs = [IRAddPtr ptrVal idxVal (getDTSize $ getRefType $ tDT ptr) resIRVal]
+  pure (ptrIRs ++ idxIRs ++ calPtrIRs, resIRVal)
+
 exprToIRs :: TypedExpr -> State ([DT], Int) ([IRInstruction], IRVal)
 exprToIRs (TExpr expr dt) = case expr of
   Constant (ConstShort s) -> pure ([], IRConstant (DTInternal TShort) $ ConstShort s)
@@ -546,33 +592,34 @@ exprToIRs (TExpr expr dt) = case expr of
   Cast cDt cExpr -> castToIRs cDt cExpr
   Dereference ptr -> derefToIRs ptr
   AddrOf var -> addrOfToIRs var
+  Subscript l r -> subscriptToIRs l r
 
-extractVarId :: IRInstruction -> [Int]
-extractVarId instr = case instr of
-  IRReturn v -> [getVarId v]
-  IRUnary _ s d -> [getVarId s, getVarId d]
-  IRBinary _ l r d -> [getVarId l, getVarId r, getVarId d]
-  IRCopy s d -> [getVarId s, getVarId d]
-  IRJump _ -> []
-  IRJumpIfZero v _ _ -> [getVarId v]
-  IRJumpIfNotZero v _ -> [getVarId v]
-  IRJumpIfP _ -> []
-  IRJumpIfNP _ -> []
-  IRLabel _ -> []
-  IRFuncCall _ args d -> map getVarId (d : args)
-  IRSignExtend s d -> [getVarId s, getVarId d]
-  IRTruncate s d -> [getVarId s, getVarId d]
-  IRZeroExtend s d -> [getVarId s, getVarId d]
-  IRDoubleToInt s d -> [getVarId s, getVarId d]
-  IRDoubleToUInt _ s d -> [getVarId s, getVarId d]
-  IRIntToDouble s d -> [getVarId s, getVarId d]
-  IRUIntToDouble _ s d -> [getVarId s, getVarId d]
-  IRGetAddress s d -> [getVarId s, getVarId d]
-  IRLoad s d -> [getVarId s, getVarId d]
-  IRStore s d -> [getVarId s, getVarId d]
-  where getVarId i = case i of
-          IRConstant _ _ -> 0
-          IRVar _ iv -> if '#' `elem` iv then read $ dropVarName iv else 0
+-- extractVarId :: IRInstruction -> [Int]
+-- extractVarId instr = case instr of
+--   IRReturn v -> [getVarId v]
+--   IRUnary _ s d -> [getVarId s, getVarId d]
+--   IRBinary _ l r d -> [getVarId l, getVarId r, getVarId d]
+--   IRCopy s d -> [getVarId s, getVarId d]
+--   IRJump _ -> []
+--   IRJumpIfZero v _ _ -> [getVarId v]
+--   IRJumpIfNotZero v _ -> [getVarId v]
+--   IRJumpIfP _ -> []
+--   IRJumpIfNP _ -> []
+--   IRLabel _ -> []
+--   IRFuncCall _ args d -> map getVarId (d : args)
+--   IRSignExtend s d -> [getVarId s, getVarId d]
+--   IRTruncate s d -> [getVarId s, getVarId d]
+--   IRZeroExtend s d -> [getVarId s, getVarId d]
+--   IRDoubleToInt s d -> [getVarId s, getVarId d]
+--   IRDoubleToUInt _ s d -> [getVarId s, getVarId d]
+--   IRIntToDouble s d -> [getVarId s, getVarId d]
+--   IRUIntToDouble _ s d -> [getVarId s, getVarId d]
+--   IRGetAddress s d -> [getVarId s, getVarId d]
+--   IRLoad s d -> [getVarId s, getVarId d]
+--   IRStore s d -> [getVarId s, getVarId d]
+--   where getVarId i = case i of
+--           IRConstant _ _ -> 0
+--           IRVar _ iv -> if '#' `elem` iv then read $ dropVarName iv else 0
 
-getMaxStackVarId :: [IRInstruction] -> Int
-getMaxStackVarId = maximum . concatMap extractVarId 
+-- getMaxStackVarId :: [IRInstruction] -> Int
+-- getMaxStackVarId = maximum . concatMap extractVarId 

@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/08/15 22:26:49 by mayeung          ###   ########.fr       --
+--   Updated: 2025/08/21 23:01:36 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -978,7 +978,7 @@ foldToConstExpr te = if isConstantTypedExpr te then exprToConstantExpr te else t
 
 foldInitToConstExpr :: Initialiser -> Initialiser
 foldInitToConstExpr initialiser = case initialiser of
-  SingleInit si -> if isConstantInit initialiser then SingleInit (foldToConstExpr si) else initialiser
+  SingleInit si -> if isConstantInit initialiser then SingleInit (decayArrayToPointer $ foldToConstExpr si) else initialiser
   CompoundInit ci -> CompoundInit $ map foldInitToConstExpr ci
 
 initialiserToTE :: Initialiser -> [TypedExpr]
@@ -1055,8 +1055,13 @@ getPointingType dt = case dt of
   DTArray aDT _ -> aDT
   _ -> dt
 
-decayArrayToPointer :: DT -> DT
-decayArrayToPointer dt = case dt of
+decayArrayToPointer :: TypedExpr -> TypedExpr
+decayArrayToPointer te = case te of
+  TExpr _ t@(DTArray {}) -> TExpr (AddrOf te) (decayArrayToPointerType t)
+  _ -> te
+
+decayArrayToPointerType :: DT -> DT
+decayArrayToPointerType dt = case dt of
   DTArray aDT _ -> DTPointer aDT
   _ -> dt
 
@@ -1069,7 +1074,7 @@ derefParser = do
   unless (isPointerOrArray expr) $
     unexpected "dereference of non pointer type"
   modifyState $ setPrecedence p
-  pure $ TExpr (Dereference expr) $ getPointingType $ tDT expr
+  pure $ TExpr (Dereference $ decayArrayToPointer expr) $ getPointingType $ tDT expr
 
 addrOfParser :: ParsecT String ParseInfo IO TypedExpr
 addrOfParser = do
@@ -1101,7 +1106,7 @@ unaryExprParser = do
         unexpected "Invalid unary operation for pointer"
       let dt = if uOp == NotRelation then DTInternal TInt else tDT expr
       modifyState $ setPrecedence p
-      pure $ foldToConstExpr (TExpr (Unary uOp expr) dt)
+      pure $ foldToConstExpr (TExpr (Unary uOp (decayArrayToPointer expr)) dt)
 
 makeConstantTEIntWithDT :: Integer -> DT -> TypedExpr
 makeConstantTEIntWithDT n dt = case dt of
@@ -1259,7 +1264,7 @@ conditionalTrueParser = do
   expr <- exprParser
   modifyState $ setPrecedence oldState
   void colonParser
-  pure $ foldToConstExpr expr
+  pure $ decayArrayToPointer $ foldToConstExpr expr
 
 compoundAssignParser :: TypedExpr -> String -> ParsecT String ParseInfo IO TypedExpr
 compoundAssignParser l@(TExpr lExpr lDt) binOp = do
@@ -1268,7 +1273,7 @@ compoundAssignParser l@(TExpr lExpr lDt) binOp = do
         modifyState $ setPrecedence $ getBinOpPrecedence binOp
         e <- exprParser
         checkImplicitCastAssign l op e
-        exprRightParser $ TExpr (Assignment op l e) lDt
+        exprRightParser $ TExpr (Assignment op (decayArrayToPointer l) (decayArrayToPointer e)) lDt
   case lExpr of
         Variable {} -> varDerefPtr
         Dereference {} -> varDerefPtr
@@ -1284,9 +1289,9 @@ conditionalParser l binOp = do
   let cType = getExprsCommonType tCond fCond
   modifyState $ setPrecedence p
   exprRightParser $ (`TExpr` cType) $
-    Conditional l
-      (if isPointerTypedExpr tCond then tCond else foldToConstExpr $ cvtTypedExpr tCond cType)
-      (if isPointerTypedExpr fCond then fCond else foldToConstExpr $ cvtTypedExpr fCond cType)
+    Conditional (decayArrayToPointer l)
+      (if isPointerTypedExpr tCond then tCond else decayArrayToPointer $ foldToConstExpr $ cvtTypedExpr tCond cType)
+      (if isPointerTypedExpr fCond then fCond else decayArrayToPointer $ foldToConstExpr $ cvtTypedExpr fCond cType)
 
 binaryParser :: TypedExpr -> String -> ParsecT String ParseInfo IO TypedExpr
 binaryParser l binOp = do
@@ -1298,7 +1303,7 @@ binaryParser l binOp = do
     checkImplicitCastBinary l op rExpr
   modifyState $ setPrecedence p
   let forAndOr = exprRightParser $ foldToConstExpr $
-        TExpr (Binary op (foldToConstExpr l) (foldToConstExpr rExpr)) $ DTInternal TInt
+        TExpr (Binary op (decayArrayToPointer $ foldToConstExpr l) (decayArrayToPointer $ foldToConstExpr rExpr)) $ DTInternal TInt
   case op of
     LogicAnd -> forAndOr
     LogicOr -> forAndOr
@@ -1310,7 +1315,7 @@ binaryParser l binOp = do
             | op `elem` [BitShiftLeft, BitShiftRight] = tDT l
             | otherwise = DTInternal TInt
       exprRightParser $ (`cvtTypedExpr` dt) $ TExpr
-        (Binary op (foldToConstExpr (cvtTypedExpr l cType)) (foldToConstExpr (cvtTypedExpr rExpr cType))) dt
+        (Binary op (decayArrayToPointer $ foldToConstExpr (cvtTypedExpr l cType)) (decayArrayToPointer $ foldToConstExpr (cvtTypedExpr rExpr cType))) dt
 
 exprRightParser :: TypedExpr -> ParsecT String ParseInfo IO TypedExpr
 exprRightParser l = do
@@ -1490,7 +1495,7 @@ functionCallParser = do
   unless (isFuncIdentiferInVarMap functionName current outer) $
     unexpected $ functionName ++ ". Not declared before"
   maybeCloseParen <- lookAhead (try closePParser) <|> pure ""
-  paraList <- case maybeCloseParen of
+  paraList <- map decayArrayToPointer <$> case maybeCloseParen of
     ")" -> closePParser >> pure []
     _ -> do
       p <- precedence <$> getState
@@ -1537,12 +1542,13 @@ castParser = do
   pure $ foldToConstExpr $ TExpr (Cast cType e) cType
 
 subscriptParser :: TypedExpr -> ParsecT String ParseInfo IO TypedExpr
-subscriptParser te = do
+subscriptParser ogTe = do
   maybeSqtBracket <- lookAhead $ spaces >> anyChar
   case maybeSqtBracket of
     '[' -> do
       void openSqtParser
-      expr <- exprParser
+      expr <- decayArrayToPointer <$> exprParser
+      let te = decayArrayToPointer ogTe
       void closeSqtParser
       if isPointerOrArray te && isIntegralTypedExpr expr && not (isPointerTypedExpr expr)
         || isPointerOrArray expr && isIntegralTypedExpr te && not (isPointerTypedExpr te)
@@ -1550,10 +1556,10 @@ subscriptParser te = do
           let aType = if isPointerOrArray te
               then getRefType $ tDT te
               else getRefType $ tDT expr
-          postfixOpParser $ (`TExpr` aType) $ Subscript te expr
+          postfixOpParser $ (`TExpr` aType) $ Dereference $ (`TExpr` DTPointer aType) $ Subscript te expr
         else
           unexpected "subscript operation"
-    _ -> pure te
+    _ -> pure ogTe
 
 postfixOpParser :: TypedExpr -> ParsecT String ParseInfo IO TypedExpr
 postfixOpParser te = do
@@ -1604,13 +1610,13 @@ ifStatParser = do
         void keyElseParser
         Just <$> statementParser
     _ -> pure Nothing
-  pure $ If (foldToConstExpr cond) tStat fStat
+  pure $ If (decayArrayToPointer $ foldToConstExpr cond) tStat fStat
 
 argPairParser :: ParsecT String ParseInfo IO (DT, IdentifierName)
 argPairParser = do
   (_, baseType) <- declarationSpecifierParser False ([], "void" : storageClassSpecifierStrList)
   (vName, declarator) <- declaratorParser (show baseType) Nothing [id]
-  let varType = decayArrayToPointer $ foldl1 (.) declarator baseType
+  let varType = decayArrayToPointerType $ foldl1 (.) declarator baseType
   current <- currentScopeIdent <$> getState
   when (M.member (fromJust vName) current) $
     unexpected $ fromJust vName ++ ". Already defined"

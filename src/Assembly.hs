@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/08/18 00:26:40 by mayeung          ###   ########.fr       --
+--   Updated: 2025/08/22 00:48:17 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -134,9 +134,10 @@ data MemorySize =
 data Operand =
   Imm NumConst
   | Register Reg
-  | Pseudo {identifier :: String}
+  | Pseudo {identifier :: String, pOffset :: Int}
   | Memory Reg Int
   | Data String
+  | Indexed Reg Reg Int
   deriving Eq
 
 instance Show AsmType where
@@ -151,9 +152,10 @@ instance Show Operand where
     ConstDouble d -> ".L_" ++ doubleValToLabel d ++ "(%rip)"
     _ -> "$" ++ numConstToStr n
   show (Register s) = "%" ++ show s
-  show (Pseudo ident) = "tmpVar." ++ show ident
+  show (Pseudo ident offset) = "tmpVar." ++ show ident ++ " " ++ show offset
   show (Memory reg i) = show i ++ "(%" ++ show reg ++ ")"
   show (Data s) = s ++ "(%rip)"
+  show (Indexed ptr idx scale) = "(%" ++ show ptr ++ ", %" ++ show idx ++ ", " ++ show scale ++ ")"
 
 instance Show AsmUnaryOp where
   show AsmNeg = "neg"
@@ -378,8 +380,8 @@ irOperandToAsmOperand :: M.Map String Int -> M.Map String IdentifierType -> IRVa
 irOperandToAsmOperand _ _ (IRConstant _ n) = Imm n
 irOperandToAsmOperand argMap gVarMap (IRVar _ s)
   | M.member s gVarMap && isVarIdentifier (gVarMap M.! s) = Data s
-  | M.member (dropVarName s) argMap = Pseudo $ '@' : show (argMap M.! dropVarName s)
-  | otherwise = Pseudo $ dropVarName s
+  | M.member (dropVarName s) argMap = Pseudo ('@' : show (argMap M.! dropVarName s)) 0
+  | otherwise = Pseudo (dropVarName s) 0
 
 irUnaryOpToAsmOp :: UnaryOp -> AsmUnaryOp
 irUnaryOpToAsmOp Complement = AsmNot
@@ -487,6 +489,11 @@ irBinaryInstrToAsmInstr instr m gVarMap = case instr of
   _ -> error "unknown ir instruction conversion to asm"
   where cvtOperand = irOperandToAsmOperand m gVarMap
 
+updateOffset :: Operand -> Int -> Operand
+updateOffset op offset = case op of
+  Pseudo v _ -> Pseudo v offset
+  _ -> op
+
 irInstructionToAsmInstruction :: IRInstruction -> M.Map String Int -> M.Map String String
   -> M.Map String IdentifierType -> [AsmInstruction]
 irInstructionToAsmInstruction instr m funcList gVarMap = case instr of
@@ -573,6 +580,20 @@ irInstructionToAsmInstruction instr m funcList gVarMap = case instr of
       AsmBinary AsmPlus AsmDouble (cvtOperand d) (Register XMM0),
       Mov AsmDouble (Register XMM0) (cvtOperand d),
       AsmLabel $ "castUToD2." ++ (!! 1) lbs]
+  IRAddPtr ptr idx n dst ->
+    if n `elem` [1, 2, 4, 8]
+      then [Mov QuadWord (cvtOperand ptr) (Register RAX),
+            Mov QuadWord (cvtOperand idx) (Register RDX),
+            Lea (Indexed RAX RDX n) (cvtOperand dst)]
+      else if isIRConstant idx
+        then [Mov QuadWord (cvtOperand ptr) (Register RAX),
+              Lea (Memory RAX $ irConstantToInt idx * n) (cvtOperand dst)]
+        else [Mov QuadWord (cvtOperand ptr) (Register RAX),
+              Mov QuadWord (cvtOperand idx) (Register RDX),
+              AsmBinary AsmMul QuadWord (Imm $ ConstInt $ fromIntegral n) (Register RDX),
+              Lea (Indexed RAX RDX 1) (cvtOperand dst)]
+  IRCopyToOffset s d offset ->
+    [Mov (dtToAsmType $ irValToDT s) (cvtOperand s) (Pseudo d offset)]
   where cvtOperand = irOperandToAsmOperand m gVarMap
 
 copyParametersToStack :: Int -> Int -> (M.Map String Int, [AsmInstruction]) ->
@@ -583,13 +604,13 @@ copyParametersToStack offset n (m, instrs) (reg, stack)
                          src = Register $ snd $ (!! 0) reg in
       copyParametersToStack offset
         (n - 1)
-        (M.insert var (offset + n * 8) m, instrs ++ [Mov QuadWord src (Pseudo ('@' : show (offset + n * 8)))])
+        (M.insert var (offset + n * 8) m, instrs ++ [Mov QuadWord src (Pseudo ('@' : show (offset + n * 8)) 0)])
         (drop 1 reg, stack)
   | otherwise = let var = irVName $ fst $ (!! 0) stack
                     src = Memory RBP $ snd $ (!! 0) stack in
       copyParametersToStack offset
         (n - 1)
-        (M.insert var (offset + n * 8) m, instrs ++ [Mov QuadWord src (Pseudo ('@' : show (offset + n * 8)))])
+        (M.insert var (offset + n * 8) m, instrs ++ [Mov QuadWord src (Pseudo ('@' : show (offset + n * 8)) 0)])
         (reg, drop 1 stack)
 
 buildAsmIntrsForIRRelationOp :: IRInstruction -> M.Map String Int -> M.Map String IdentifierType -> [AsmInstruction]
@@ -640,7 +661,7 @@ convertAsmTempVarToStackAddr sVars = map convertInstr
           Lea s d -> Lea (convertOperand s) (convertOperand d)
           _ -> instr
         convertOperand operand = case operand of
-          Pseudo ident -> Memory RBP $ if '@' `elem` ident
+          Pseudo ident offset -> Memory RBP $ offset + if '@' `elem` ident
             then read $ drop 1 ident
             else calStackPos (read ident) sVars
           _ -> operand
@@ -707,8 +728,9 @@ replacePseudoRegAllocateStackFixDoubleStackOperand afd =
 isMemoryAddr :: Operand -> Bool
 isMemoryAddr (Memory {}) = True
 isMemoryAddr (Data _) = True
-isMemoryAddr (Pseudo _) = True
+isMemoryAddr (Pseudo {}) = True
 isMemoryAddr (Imm (ConstDouble _)) = True
+isMemoryAddr (Indexed {}) = True
 isMemoryAddr _ = False
 
 isImm :: Operand -> Bool
@@ -770,7 +792,7 @@ resolveDoubleStackOperand instr = case instr of
       Mov t (Register AX) d]
   instrs@(Lea s d) -> if isMemoryAddr s && isMemoryAddr d
     then
-      [Lea s (Register RAX), Mov QuadWord (Register RAX) d]
+      [Lea s (Register R10), Mov QuadWord (Register R10) d]
     else [instrs]
   _ -> [instr]
 
@@ -879,6 +901,11 @@ convertToNSizeOperand s op = case op of
       DWORD -> Register $ regDWordMap M.! r
       QWORD -> Register $ regQWordMap M.! r
   _ -> op
+
+extractReg :: Operand -> Reg
+extractReg op = case op of
+  Register r -> r
+  _ -> error "unsupport"
 
 tabulate :: [String] -> String
 tabulate = intercalate "\t" . ("" :)
