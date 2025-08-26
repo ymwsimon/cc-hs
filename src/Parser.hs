@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/08/21 23:01:36 by mayeung          ###   ########.fr       --
+--   Updated: 2025/08/26 16:27:02 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -148,7 +148,7 @@ data Expr =
 
 data Initialiser =
   SingleInit TypedExpr
-  | CompoundInit [Initialiser]
+  | CompoundInit {cInits :: [Initialiser]}
   deriving (Show, Eq)
 
 data StorageClass =
@@ -971,14 +971,13 @@ exprToConstantExpr te@(TExpr e dt) =
             then makeConstantTEIntWithDT 1 $ DTInternal TInt
             else makeConstantTEIntWithDT 0 $ DTInternal TInt
 
-
 foldToConstExpr :: TypedExpr -> TypedExpr
 -- foldToConstExpr = id
 foldToConstExpr te = if isConstantTypedExpr te then exprToConstantExpr te else te
 
 foldInitToConstExpr :: Initialiser -> Initialiser
 foldInitToConstExpr initialiser = case initialiser of
-  SingleInit si -> if isConstantInit initialiser then SingleInit (decayArrayToPointer $ foldToConstExpr si) else initialiser
+  SingleInit si -> if isConstantInit initialiser then SingleInit (foldToConstExpr $ decayArrayToPointer si) else initialiser
   CompoundInit ci -> CompoundInit $ map foldInitToConstExpr ci
 
 initialiserToTE :: Initialiser -> [TypedExpr]
@@ -1055,6 +1054,11 @@ getPointingType dt = case dt of
   DTArray aDT _ -> aDT
   _ -> dt
 
+decayArrayToPointerInit :: Initialiser -> Initialiser
+decayArrayToPointerInit i = case i of
+  SingleInit si -> SingleInit $ decayArrayToPointer si
+  CompoundInit ci -> CompoundInit $ map decayArrayToPointerInit ci
+
 decayArrayToPointer :: TypedExpr -> TypedExpr
 decayArrayToPointer te = case te of
   TExpr _ t@(DTArray {}) -> TExpr (AddrOf te) (decayArrayToPointerType t)
@@ -1074,7 +1078,7 @@ derefParser = do
   unless (isPointerOrArray expr) $
     unexpected "dereference of non pointer type"
   modifyState $ setPrecedence p
-  pure $ TExpr (Dereference $ decayArrayToPointer expr) $ getPointingType $ tDT expr
+  pure $ decayArrayToPointer $ TExpr (Dereference $ decayArrayToPointer expr) $ getPointingType $ tDT expr
 
 addrOfParser :: ParsecT String ParseInfo IO TypedExpr
 addrOfParser = do
@@ -1116,6 +1120,7 @@ makeConstantTEIntWithDT n dt = case dt of
   DTInternal TUInt -> TExpr (Constant $ ConstUInt n) dt
   DTInternal TLong -> TExpr (Constant $ ConstLong n) dt
   DTInternal TULong -> TExpr (Constant $ ConstULong n) dt
+  DTPointer _ -> TExpr (Constant $ ConstLong n) (DTInternal TLong)
   _ -> error "unsupported constant int type creatation"
 
 makeConstantTEFloatWithDT :: Double -> DT -> TypedExpr
@@ -1303,7 +1308,7 @@ binaryParser l binOp = do
     checkImplicitCastBinary l op rExpr
   modifyState $ setPrecedence p
   let forAndOr = exprRightParser $ foldToConstExpr $
-        TExpr (Binary op (decayArrayToPointer $ foldToConstExpr l) (decayArrayToPointer $ foldToConstExpr rExpr)) $ DTInternal TInt
+        TExpr (Binary op (foldToConstExpr $ decayArrayToPointer l) (foldToConstExpr $ decayArrayToPointer rExpr)) $ DTInternal TInt
   case op of
     LogicAnd -> forAndOr
     LogicOr -> forAndOr
@@ -1315,7 +1320,17 @@ binaryParser l binOp = do
             | op `elem` [BitShiftLeft, BitShiftRight] = tDT l
             | otherwise = DTInternal TInt
       exprRightParser $ (`cvtTypedExpr` dt) $ TExpr
-        (Binary op (decayArrayToPointer $ foldToConstExpr (cvtTypedExpr l cType)) (decayArrayToPointer $ foldToConstExpr (cvtTypedExpr rExpr cType))) dt
+        (Binary op 
+          (foldToConstExpr ((if isPointerDT cType
+              then if isPointerOrArray l
+                then id
+                else signedExtendIntUInt
+              else (`cvtTypedExpr` cType)) (decayArrayToPointer l)))
+          (foldToConstExpr ((if isPointerDT cType
+              then if isPointerOrArray rExpr
+                then id
+                else signedExtendIntUInt
+              else (`cvtTypedExpr` cType)) (decayArrayToPointer rExpr)))) dt
 
 exprRightParser :: TypedExpr -> ParsecT String ParseInfo IO TypedExpr
 exprRightParser l = do
@@ -1483,7 +1498,7 @@ getRefType :: DT -> DT
 getRefType dt = case dt of
   DTPointer pDT -> pDT
   DTArray aDT _ -> aDT
-  _ -> error "not a derived type"
+  _ -> dt
 
 functionCallParser :: ParsecT String ParseInfo IO TypedExpr
 functionCallParser = do
@@ -1531,7 +1546,7 @@ castParser = do
   void closePParser
   p <- precedence <$> getState
   modifyState $ setPrecedence 2
-  e@(TExpr innerE _) <- exprParser
+  e@(TExpr innerE _) <- decayArrayToPointer <$> exprParser
   when (isAssignmentExpr innerE) $
     unexpected "cast of assignment expression"
   let cType = foldl1 (.) declarator baseType
@@ -1540,6 +1555,12 @@ castParser = do
   modifyState $ setPrecedence p
   checkExplicitCast e cType
   pure $ foldToConstExpr $ TExpr (Cast cType e) cType
+
+signedExtendIntUInt :: TypedExpr -> TypedExpr
+signedExtendIntUInt te = case tDT te of
+  DTInternal TInt -> TExpr (Cast (DTInternal TLong) te) (DTInternal TLong)
+  DTInternal TUInt -> TExpr (Cast (DTInternal TULong) te) (DTInternal TULong)
+  _ -> te
 
 subscriptParser :: TypedExpr -> ParsecT String ParseInfo IO TypedExpr
 subscriptParser ogTe = do
@@ -1556,7 +1577,8 @@ subscriptParser ogTe = do
           let aType = if isPointerOrArray te
               then getRefType $ tDT te
               else getRefType $ tDT expr
-          postfixOpParser $ (`TExpr` aType) $ Dereference $ (`TExpr` DTPointer aType) $ Subscript te expr
+          postfixOpParser $ (`TExpr` aType) $ Dereference $ (`TExpr` DTPointer aType) $ 
+            Subscript (signedExtendIntUInt te) (signedExtendIntUInt expr)
         else
           unexpected "subscript operation"
     _ -> pure ogTe
@@ -1595,7 +1617,7 @@ returnStatParser = do
   rType <- funcReturnType <$> getState
   expr <- exprParser
   checkImplicitCast expr rType
-  let cvtedTE = cvtTypedExpr expr rType
+  let cvtedTE = cvtTypedExpr (decayArrayToPointer expr) rType
   void semiColParser
   pure $ Return $ foldToConstExpr cvtedTE
 
@@ -1711,7 +1733,7 @@ topLevelVarDeclarationParser = do
       || not (topLevelVarStorageClassCheck (varStoreClass (vti (topIdentMap M.! fromJust vName))) sc))) $
     unexpected $ fromJust vName ++ ". Type mismatch to previous declaration"
   initialiser <- optionMaybe $ try $ equalLex >> getInitialiser exprParser
-  let cvtinitialiser = foldInitToConstExpr . (`cvtInit` getArrayInnerType varType) <$> initialiser
+  let cvtinitialiser = foldInitToConstExpr . (`cvtInit` getArrayInnerType varType) . decayArrayToPointerInit <$> initialiser
   void semiColParser
   unless (isNothing initialiser || isConstantInit (fromJust initialiser)) $
     unexpected "non constant initialiser"
@@ -1756,7 +1778,7 @@ localPlainVarHandle varType sc vName = do
   putState $ parseInfo {currentVarId = varId + 1, currentScopeIdent = newVarMap}
   initialiser <- optionMaybe $ try $ equalLex >> getInitialiser exprParser
   void semiColParser
-  let cvtinitialiser = foldInitToConstExpr . (`cvtInit` getArrayInnerType varType) <$> initialiser
+  let cvtinitialiser = foldInitToConstExpr . (`cvtInit` getArrayInnerType varType) . decayArrayToPointerInit <$> initialiser
   when (isJust initialiser) $ do
     checkImplicitCastInit (fromJust initialiser) varType
     checkPointerInit (fromJust initialiser) varType sc
@@ -1766,7 +1788,8 @@ localPlainVarHandle varType sc vName = do
 
 localStaticVarHandle :: DT -> Maybe StorageClass -> IdentifierName -> ParsecT String ParseInfo IO VarTypeInfo
 localStaticVarHandle varType sc vName = do
-  initialiser <- fmap (fmap (foldInitToConstExpr . (`cvtInit` getArrayInnerType varType))) <$> optionMaybe $ try $ equalLex >> getInitialiser exprParser
+  initialiser <- optionMaybe $ try $ equalLex >> getInitialiser exprParser
+  let cvtinitialiser = foldInitToConstExpr . (`cvtInit` getArrayInnerType varType) . decayArrayToPointerInit <$> initialiser
   void semiColParser
   unless (isNothing initialiser || isConstantInit (fromJust initialiser)) $
     unexpected "non constant initialiser"
@@ -1779,11 +1802,11 @@ localStaticVarHandle varType sc vName = do
         (VarIdentifier (VarTypeInfo newVarName varType Nothing sc (topLevel parseInfo))) $
         currentScopeIdent parseInfo
       newGlobalVarMap = M.insert newVarName
-        (VarIdentifier (VarTypeInfo newVarName varType initialiser sc (topLevel parseInfo))) $
+        (VarIdentifier (VarTypeInfo newVarName varType cvtinitialiser sc (topLevel parseInfo))) $
         topLevelScopeIdent parseInfo
   putState $ parseInfo {globalVarId = varId + 1,
     currentScopeIdent = newLocalVarMap, topLevelScopeIdent = newGlobalVarMap}
-  pure $ VarTypeInfo newVarName varType initialiser sc $ topLevel parseInfo
+  pure $ VarTypeInfo newVarName varType cvtinitialiser sc $ topLevel parseInfo
 
 funcDeclaratorArgListParser :: ParsecT String ParseInfo IO (DT -> DT)
 funcDeclaratorArgListParser = do
@@ -2149,6 +2172,11 @@ isFuncIdentifier _ = False
 isVarIdentifier :: IdentifierType -> Bool
 isVarIdentifier (VarIdentifier {}) = True
 isVarIdentifier _ = False
+
+isExternIdentifier :: IdentifierType -> Bool
+isExternIdentifier i = case i of
+  VarIdentifier vInfo -> varStoreClass vInfo == Just Extern
+  FuncIdentifier fInfo -> funcStorageClass fInfo == Just Extern
 
 isFuncDT :: DT -> Bool
 isFuncDT dt = case dt of 

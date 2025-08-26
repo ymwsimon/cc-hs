@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/08/21 22:29:28 by mayeung          ###   ########.fr       --
+--   Updated: 2025/08/26 16:24:44 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -17,6 +17,7 @@ import Operation
 import Control.Monad.State
 import qualified Data.Map.Strict as M
 import Control.Monad
+import Data.Maybe
 
 type IRProgramAST = [IRTopLevel]
 
@@ -81,6 +82,7 @@ data StaticInit =
   | LongInit NumConst
   | ULongInit NumConst
   | DoubleInit NumConst
+  | ZeroInit Int
   deriving (Show, Eq)
 
 isIRFuncDefine :: IRTopLevel -> Bool
@@ -103,6 +105,17 @@ irValToDT :: IRVal -> DT
 irValToDT irVal = case irVal of
   IRConstant dt _ -> dt
   IRVar dt _ -> dt
+
+dtToByteSize :: DT -> Int
+dtToByteSize dt = case dt of
+  DTInternal TInt -> 4
+  DTInternal TUInt -> 4
+  DTInternal TLong -> 8
+  DTInternal TULong -> 8
+  DTInternal TDouble -> 8
+  DTPointer _ -> 8
+  DTArray aDT (Just s) -> s * dtToByteSize aDT
+  _ -> error "unknown data type to asm size"
 
 cStatmentToIRInstructions :: BlockItem -> State ([DT], Int) [IRInstruction]
 cStatmentToIRInstructions bi = case bi of
@@ -132,9 +145,7 @@ cStatmentToIRInstructions bi = case bi of
   S (Case statement l) -> caseToIRs statement l
   S (Default statement l) -> defaultToIRs statement l
   D (VariableDeclaration (VarTypeInfo var dt (Just expr) Nothing False)) ->
-    cStatmentToIRInstructions (S (Expression
-      (TExpr (Assignment AssignOp (TExpr (Variable var False Nothing) dt) (head $ initialiserToTE expr)) dt)))
-      -- (TExpr (Assignment AssignOp (TExpr (Variable var False Nothing) dt) expr) dt)))
+    varInitToIRs expr var dt 0
   D _ -> pure []
 
 initDTList :: a1 -> (a2, b) -> (a1, b)
@@ -143,6 +154,9 @@ initDTList s (_, b) = (s, b)
 hasFuncBody :: Declaration -> Bool
 hasFuncBody (FunctionDeclaration (FuncTypeInfo _ _ (Just _) _ _)) = True
 hasFuncBody _ = False
+
+alignTo16 :: Integral a => a -> a
+alignTo16 n = div ((-1) * abs n) 16 * 16
 
 cFuncDefineToIRFuncDefine :: Declaration -> [DT] -> State ([DT], Int) IRTopLevel
 cFuncDefineToIRFuncDefine (FunctionDeclaration fd@(FuncTypeInfo _ _ (Just bl) sc _)) dtList = do
@@ -167,12 +181,19 @@ exprToStaticInit (TExpr e _) = case e of
   Constant (ConstDouble d) -> DoubleInit $ ConstDouble d
   _ -> error "unsupported expression convert to static init"
 
+initialiserToStaticInits :: DT -> Initialiser -> [StaticInit]
+initialiserToStaticInits dt i = case i of
+  SingleInit si -> [exprToStaticInit si]
+  CompoundInit ci -> concatMap (initialiserToStaticInits (getRefType dt)) ci ++
+    [ZeroInit $ getDTSize (getRefType dt) * (fromJust (arrSize dt) - length ci) | length ci < fromJust (arrSize dt)]
+
 staticInitToInt :: StaticInit -> Integer
 staticInitToInt (IntInit (ConstInt i)) = i
 staticInitToInt (UIntInit (ConstUInt ui)) = ui
 staticInitToInt (LongInit (ConstLong l)) = l
 staticInitToInt (ULongInit (ConstULong ul)) = ul
 staticInitToInt (DoubleInit (ConstDouble d)) = truncate d
+staticInitToInt (ZeroInit z) = fromIntegral z
 staticInitToInt _ = error "not a static init"
 
 staticInitToDouble :: StaticInit -> Double
@@ -181,27 +202,15 @@ staticInitToDouble (UIntInit (ConstUInt ui)) = fromIntegral ui
 staticInitToDouble (LongInit (ConstLong l)) = fromIntegral l
 staticInitToDouble (ULongInit (ConstULong ul)) = fromIntegral ul
 staticInitToDouble (DoubleInit (ConstDouble d)) = d
+staticInitToDouble (ZeroInit z) = fromIntegral z
 staticInitToDouble _ = error "not a static init"
 
 staticVarConvertion :: M.Map String IdentifierType -> [IRTopLevel]
-staticVarConvertion m = map IRStaticVar .
-  concatMap (identToStaticVar . snd) $ M.toList $ M.filter isVarIdentifier m
-  where identToStaticVar ident = case ident of
-          VarIdentifier (VarTypeInfo vName dt expr (Just Static) _) -> if dt == DTInternal TDouble
-            then [IRStaticVarDefine vName False dt
-              -- (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstDouble 0) (DTInternal TDouble)) expr)]
-              [exprToStaticInit $ maybe (TExpr (Constant $ ConstDouble 0) (DTInternal TDouble)) (head . initialiserToTE) expr]]
-            else [IRStaticVarDefine vName False dt
-              -- (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstInt 0) (DTInternal TInt)) expr)]
-              [exprToStaticInit $ maybe (TExpr (Constant $ ConstInt 0) (DTInternal TInt)) (head . initialiserToTE) expr]]
-          VarIdentifier (VarTypeInfo vName dt expr Nothing topLvl) -> if dt == DTInternal TDouble
-            then [IRStaticVarDefine vName topLvl dt
-              -- (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstDouble 0) (DTInternal TDouble)) expr)]
-              [exprToStaticInit $ maybe (TExpr (Constant $ ConstDouble 0) (DTInternal TDouble)) (head . initialiserToTE) expr]]
-            else [IRStaticVarDefine vName topLvl dt
-              -- (exprToStaticInit $ fromMaybe (TExpr (Constant $ ConstInt 0) (DTInternal TInt)) expr)]
-              [exprToStaticInit $ maybe (TExpr (Constant $ ConstInt 0) (DTInternal TInt)) (head . initialiserToTE) expr]]
-          _ -> []
+staticVarConvertion m = map (IRStaticVar . identToStaticVar . snd) $ 
+  M.toList $ M.filter (\i -> isVarIdentifier i && not (isExternIdentifier i)) m
+  where identToStaticVar ident = let vInfo = vti ident in
+          IRStaticVarDefine (varName vInfo) (varStoreClass vInfo /= Just Static && topLv vInfo)
+            (variableType vInfo) (maybe [ZeroInit (getDTSize $ variableType vInfo)] (initialiserToStaticInits (variableType vInfo)) (varDefine vInfo))
 
 bumpOneToVarId :: Num a => (a, b) -> (a, b)
 bumpOneToVarId (a, b) = (a + 1, b)
@@ -264,16 +273,22 @@ unaryOperationToIRs op dt uExpr
     pure (concat [varIRs, [IRCopy irVar oldVal], newValIRs,
       updateVarIRs], oldVal)
   | op `elem` [PreDecrement, PreIncrement] = do
-    (oldIRs, irVal) <- let c = if isFloatDT dt then makeConstantTEFloatWithDT 1.0 dt else makeConstantTEIntWithDT 1 dt in
-      exprToIRs $ TExpr 
-        (Binary (postPrefixToBin op) uExpr c) $ tDT uExpr
-    (varIRs, irVar) <- exprToIRs uExpr
-    updateVarIRs <- case uExpr of
+    let c = if isFloatDT dt then makeConstantTEFloatWithDT 1.0 dt else makeConstantTEIntWithDT 1 dt
+    case uExpr of
       TExpr (Dereference ptr) _ -> do
-        (ptrIRs, ptrIRVar) <- exprToIRs ptr
-        pure $ ptrIRs ++ [IRStore irVal ptrIRVar]
-      _ -> pure [IRCopy irVal irVar]
-    pure (oldIRs ++ varIRs ++ updateVarIRs, irVal)
+        (ptrIRs, ptrIRVal) <- exprToIRs ptr
+        oldIRVal <- gets (IRVar (getPointingType $ tDT ptr) . ("#" ++) . show . length . fst) <*
+          modify (addDTAtEnd (getPointingType $ tDT ptr))
+        newIRVal <- gets (IRVar (getPointingType $ tDT ptr) . ("#" ++) . show . length . fst) <*
+          modify (addDTAtEnd (getPointingType $ tDT ptr))
+        stepVal <- snd <$> exprToIRs c
+        let loadIRs = [IRLoad ptrIRVal oldIRVal]
+        let binIRs = [IRBinary (postPrefixToBin op) oldIRVal stepVal newIRVal]
+        pure (ptrIRs ++ loadIRs ++ binIRs ++ [IRStore newIRVal ptrIRVal], newIRVal)
+      _ -> do
+        (varIRs, irVar) <- exprToIRs uExpr
+        (updateIRs, newVal) <- exprToIRs $ TExpr (Binary (postPrefixToBin op) uExpr c) $ tDT uExpr
+        pure (varIRs ++ updateIRs ++ [IRCopy newVal irVar], newVal)
   | otherwise = do
       (oldIRs, irVal) <- exprToIRs uExpr
       varId <- gets $ ("#" ++) . show . length . fst
@@ -331,7 +346,7 @@ binaryOperationToIRs op dt lExpr rExpr = do
           let minusInstr = [IRBinary Minus irValFromLExpr irValFromRExpr minusVar]
           let divVar = IRVar (irVarDT irValFromLExpr) divVarId
           let divInstr = [IRBinary Division minusVar
-                (IRConstant (DTInternal TULong) (ConstULong $ fromIntegral refDataSize)) divVar]
+                (IRConstant (DTInternal TLong) (ConstULong $ fromIntegral refDataSize)) divVar]
           pure (concat
             [irsFromLExpr, irsFromRExpr, minusInstr, divInstr],
             divVar)
@@ -344,10 +359,11 @@ binaryOperationToIRs op dt lExpr rExpr = do
             Minus -> do
               negateVarId <- gets $ ("#" ++) . show . length . fst
               modify $ addDTAtEnd dt
-              let idxDst = IRVar dt negateVarId
+              let idxDst = IRVar (irValToDT idx) negateVarId
               pure ([IRUnary Negate idx idxDst], idxDst)
             _ -> error "unsupported binary operation for 2 pointers"
-          let addPtrInstr = [IRAddPtr ptr finalIdx (getDTSize $ getRefType $ irVarDT ptr) dst]
+          let addPtrInstr = [IRAddPtr ptr finalIdx (getDTSize $ getRefType $
+                (if isAddrOf lExpr || isAddrOf rExpr then getRefType else id) $ irVarDT ptr) dst]
           pure (concat [irsFromLExpr, irsFromRExpr, maybeNegate, addPtrInstr], dst)
     else do
       resultIRVal <-
@@ -594,32 +610,22 @@ exprToIRs (TExpr expr dt) = case expr of
   AddrOf var -> addrOfToIRs var
   Subscript l r -> subscriptToIRs l r
 
--- extractVarId :: IRInstruction -> [Int]
--- extractVarId instr = case instr of
---   IRReturn v -> [getVarId v]
---   IRUnary _ s d -> [getVarId s, getVarId d]
---   IRBinary _ l r d -> [getVarId l, getVarId r, getVarId d]
---   IRCopy s d -> [getVarId s, getVarId d]
---   IRJump _ -> []
---   IRJumpIfZero v _ _ -> [getVarId v]
---   IRJumpIfNotZero v _ -> [getVarId v]
---   IRJumpIfP _ -> []
---   IRJumpIfNP _ -> []
---   IRLabel _ -> []
---   IRFuncCall _ args d -> map getVarId (d : args)
---   IRSignExtend s d -> [getVarId s, getVarId d]
---   IRTruncate s d -> [getVarId s, getVarId d]
---   IRZeroExtend s d -> [getVarId s, getVarId d]
---   IRDoubleToInt s d -> [getVarId s, getVarId d]
---   IRDoubleToUInt _ s d -> [getVarId s, getVarId d]
---   IRIntToDouble s d -> [getVarId s, getVarId d]
---   IRUIntToDouble _ s d -> [getVarId s, getVarId d]
---   IRGetAddress s d -> [getVarId s, getVarId d]
---   IRLoad s d -> [getVarId s, getVarId d]
---   IRStore s d -> [getVarId s, getVarId d]
---   where getVarId i = case i of
---           IRConstant _ _ -> 0
---           IRVar _ iv -> if '#' `elem` iv then read $ dropVarName iv else 0
+initToIRs :: Initialiser -> IdentifierName -> DT -> Int -> State ([DT], Int) [IRInstruction]
+initToIRs i n dt offset = case i of
+  SingleInit si -> do
+    (siIR, siIRVal) <- exprToIRs si
+    pure $ siIR ++ [IRCopyToOffset siIRVal n offset]
+  CompoundInit ci ->
+    concat <$> zipWithM (\cii idx -> initToIRs cii n (getRefType dt) (offset + getDTSize (getRefType dt) * idx)) ci [0..]
 
--- getMaxStackVarId :: [IRInstruction] -> Int
--- getMaxStackVarId = maximum . concatMap extractVarId 
+varInitToIRs :: Initialiser -> IdentifierName -> DT -> Int -> State ([DT], Int) [IRInstruction]
+varInitToIRs i vName dt offset = do
+  zeroIRs <- if isArrayDT dt
+    then 
+      fst <$> funcCallToIRs "memset" (DTPointer dt)
+        [TExpr (AddrOf $ TExpr (Variable vName False Nothing) dt) (DTPointer dt),
+          TExpr (Constant (ConstInt 0)) (DTInternal TInt),
+          TExpr (Constant (ConstInt $ fromIntegral $ dtToByteSize dt)) (DTInternal TInt)]
+    else pure []
+  initIRs <- initToIRs i vName dt offset
+  pure $ zeroIRs ++ initIRs

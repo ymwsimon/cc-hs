@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/08/22 00:48:17 by mayeung          ###   ########.fr       --
+--   Updated: 2025/08/26 16:23:12 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -71,6 +71,8 @@ data AsmType =
   | LongWord
   | QuadWord
   | AsmDouble
+  | Zero
+  | ByteArr {byteArrSize :: Int, byteArrAlign :: Int}
   deriving Eq
 
 data AsmUnaryOp =
@@ -146,6 +148,8 @@ instance Show AsmType where
   show LongWord = "long"
   show QuadWord = "quad"
   show AsmDouble = "quad"
+  show Zero = "zero"
+  show (ByteArr s a) = "array " ++ show s ++ " " ++ show a
 
 instance Show Operand where
   show (Imm n) = case n of
@@ -291,6 +295,7 @@ staticInitToAsmType si = case si of
   LongInit _ -> QuadWord
   ULongInit _ -> QuadWord
   DoubleInit _ -> AsmDouble
+  ZeroInit _ -> Zero
 
 staticInitToAsmSize :: StaticInit -> Int
 staticInitToAsmSize si = case si of
@@ -301,16 +306,6 @@ staticInitToAsmSize si = case si of
   DoubleInit _ -> 16
   _ -> error "unknown init type to asm size"
 
-dtToAsmSize :: DT -> Int
-dtToAsmSize dt = case dt of
-  DTInternal TInt -> 4
-  DTInternal TUInt -> 4
-  DTInternal TLong -> 8
-  DTInternal TULong -> 8
-  DTInternal TDouble -> 8
-  DTPointer _ -> 8
-  _ -> error "unknown data type to asm size"
-
 dtToAsmType :: DT -> AsmType
 dtToAsmType dt = case dt of
   DTInternal TInt -> LongWord
@@ -319,6 +314,8 @@ dtToAsmType dt = case dt of
   DTInternal TULong -> QuadWord
   DTInternal TDouble -> AsmDouble
   DTPointer _ -> QuadWord
+  DTArray aDT (Just s) -> let elemSize = dtToByteSize aDT in
+    ByteArr (s * elemSize) (if s * elemSize > 16 then 16 else elemSize)
   _ -> error "unknown data type to asm type"
 
 asmTypeToMemSize :: AsmType -> MemorySize
@@ -328,6 +325,8 @@ asmTypeToMemSize t = case t of
   LongWord -> DWORD
   QuadWord -> QWORD
   AsmDouble -> QWORD
+  Zero -> error "unsupport zero to memory size"
+  ByteArr {} -> error "unsupport array to memory size"
 
 doubleValToLabel :: Double -> String
 doubleValToLabel = show . castDoubleToWord64
@@ -335,7 +334,7 @@ doubleValToLabel = show . castDoubleToWord64
 irStaticVarToAsmStaticVarDefine :: IRTopLevel -> AsmStaticVarDefine
 irStaticVarToAsmStaticVarDefine irD = case irD of
   IRStaticVar (IRStaticVarDefine vName global vType initVal) ->
-    AsmStaticVarDefine vName global (dtToAsmSize vType) initVal
+    AsmStaticVarDefine vName global (dtToByteSize $ getArrayInnerType vType) initVal
   _ -> error "unknown condition for static var conversion to asm static var define"
 
 irASTToAsmAST :: M.Map String IdentifierType -> IRProgramAST -> AsmProgramAST
@@ -379,8 +378,8 @@ irFuncDefineToAsmFuncDefine gVarMap funcList fd = do
 irOperandToAsmOperand :: M.Map String Int -> M.Map String IdentifierType -> IRVal -> Operand
 irOperandToAsmOperand _ _ (IRConstant _ n) = Imm n
 irOperandToAsmOperand argMap gVarMap (IRVar _ s)
-  | M.member s gVarMap && isVarIdentifier (gVarMap M.! s) = Data s
   | M.member (dropVarName s) argMap = Pseudo ('@' : show (argMap M.! dropVarName s)) 0
+  | M.member s gVarMap && isVarIdentifier (gVarMap M.! s) = Data s
   | otherwise = Pseudo (dropVarName s) 0
 
 irUnaryOpToAsmOp :: UnaryOp -> AsmUnaryOp
@@ -583,13 +582,13 @@ irInstructionToAsmInstruction instr m funcList gVarMap = case instr of
   IRAddPtr ptr idx n dst ->
     if n `elem` [1, 2, 4, 8]
       then [Mov QuadWord (cvtOperand ptr) (Register RAX),
-            Mov QuadWord (cvtOperand idx) (Register RDX),
+            Mov (dtToAsmType $ irValToDT idx) (cvtOperand idx) (Register RDX),
             Lea (Indexed RAX RDX n) (cvtOperand dst)]
       else if isIRConstant idx
         then [Mov QuadWord (cvtOperand ptr) (Register RAX),
               Lea (Memory RAX $ irConstantToInt idx * n) (cvtOperand dst)]
         else [Mov QuadWord (cvtOperand ptr) (Register RAX),
-              Mov QuadWord (cvtOperand idx) (Register RDX),
+              Mov (dtToAsmType $ irValToDT idx) (cvtOperand idx) (Register RDX),
               AsmBinary AsmMul QuadWord (Imm $ ConstInt $ fromIntegral n) (Register RDX),
               Lea (Indexed RAX RDX 1) (cvtOperand dst)]
   IRCopyToOffset s d offset ->
@@ -663,11 +662,8 @@ convertAsmTempVarToStackAddr sVars = map convertInstr
         convertOperand operand = case operand of
           Pseudo ident offset -> Memory RBP $ offset + if '@' `elem` ident
             then read $ drop 1 ident
-            else calStackPos (read ident) sVars
+            else calStackPos (read $ dropVarName ident) sVars
           _ -> operand
-
-alignTo16 :: Integral a => a -> a
-alignTo16 n = div ((-1) * abs n) 16 * 16
 
 addAllocateStackToFunc :: [AsmInstruction] -> [AsmInstruction]
 addAllocateStackToFunc instrs =
@@ -923,6 +919,8 @@ asmTypeToAsmStrSuffix t = case t of
   LongWord -> "l"
   QuadWord -> "q"
   AsmDouble -> "sd"
+  Zero -> error "unsupport zero to suffix string"
+  ByteArr {} -> error "unsupport array to suffix string"
 
 getBinOpStrForType :: AsmBinaryOp -> AsmType -> String
 getBinOpStrForType op t = if op == AsmMul && t == AsmDouble
@@ -1007,7 +1005,7 @@ asmStaticVarDefineToStr (AsmStaticVarDefine vName isGlobal varAlign initVal) =
     tabulate [".data"],
     tabulate [".align " ++ show varAlign],
     vName ++ ":",
-    concatMap asmVarInitToStr initVal]
+    unlines $ map asmVarInitToStr initVal]
 
 asmStaticConstDefineToStr :: AsmStaticConstantDefine -> String
 asmStaticConstDefineToStr (AsmStaticConstantDefine name constAlign initVal) =
