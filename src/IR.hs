@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/08/26 16:24:44 by mayeung          ###   ########.fr       --
+--   Updated: 2025/08/26 19:50:34 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -162,7 +162,7 @@ cFuncDefineToIRFuncDefine :: Declaration -> [DT] -> State ([DT], Int) IRTopLevel
 cFuncDefineToIRFuncDefine (FunctionDeclaration fd@(FuncTypeInfo _ _ (Just bl) sc _)) dtList = do
   modify $ initDTList dtList
   res <- concat <$> mapM cStatmentToIRInstructions (unBlock bl)
-  sVar <- gets $ drop 1 . map getDTSize . fst
+  sVar <- gets $ drop 1 . map ((\s -> if s > 16 then abs $ alignTo16 s else s) . getDTSize) . fst
   pure $ IRFunc $ IRFunctionDefine (funcName fd) (sc /= Just Static) (argList $ funcType fd)
      (res ++ [IRReturn (IRConstant (DTInternal TInt) $ ConstInt 0)]) sVar
 cFuncDefineToIRFuncDefine _ _ = error "function define only, not for variable define"
@@ -406,7 +406,7 @@ assignmentToIRs op var rExpr = do
           (binOpIRs, binOpRes) <- exprToIRs $ (`cvtTypedExpr` tDT var) $ TExpr (Binary
             (compoundAssignOpToBinOp op)
             (cvtTypedExpr (TExpr (Dereference (TExpr (Variable tempVarId False Nothing) (tDT ptr))) lDT) dt)
-            (cvtTypedExpr rExpr dt)) dt
+            ((if isPointerDT (getRefType $ irValToDT tempVar) then id else (`cvtTypedExpr` dt)) rExpr)) dt
           pure (binOpIRs ++ [IRStore binOpRes tempVar], binOpRes)
       pure (tempVarIRs ++ newValIRs, newVal)
     _ -> do
@@ -414,10 +414,24 @@ assignmentToIRs op var rExpr = do
       (newValIRs, newVal) <- case op of
         AssignOp -> exprToIRs $ foldToConstExpr $ (`cvtTypedExpr` tDT var) rExpr
         _ -> do
-          exprToIRs $ (`cvtTypedExpr` tDT var) $ TExpr (Binary
-            (compoundAssignOpToBinOp op)
-            (cvtTypedExpr var dt)
-            (cvtTypedExpr rExpr dt)) dt
+          if isPointerTypedExpr var
+            then do
+              (idxIRs, idx) <- exprToIRs rExpr
+              dst <- gets (IRVar dt . ('#' :) . show . length . fst) <* modify (addDTAtEnd dt)
+              (maybeNegate, finalIdx) <- case op of
+                PlusAssign -> pure ([], idx)
+                MinusAssign -> do
+                  negateVarId <- gets $ ("#" ++) . show . length . fst
+                  modify $ addDTAtEnd dt
+                  let idxDst = IRVar (irValToDT idx) negateVarId
+                  pure ([IRUnary Negate idx idxDst], idxDst)
+                _ -> error "unsupported binary operation for 2 pointers"
+              let addPtrInstr = [IRAddPtr irVar finalIdx (getDTSize $ getRefType $ irVarDT irVar) dst]
+              pure (idxIRs ++ maybeNegate ++ addPtrInstr, dst)
+            else exprToIRs $ (`cvtTypedExpr` tDT var) $ TExpr (Binary
+              (compoundAssignOpToBinOp op)
+              (cvtTypedExpr var dt)
+              (cvtTypedExpr rExpr dt)) dt
       pure (newValIRs ++ varIRs ++ [IRCopy newVal irVar], irVar)
 
 conditionToIRs :: DT -> TypedExpr -> TypedExpr -> TypedExpr -> State ([DT], Int) ([IRInstruction], IRVal)

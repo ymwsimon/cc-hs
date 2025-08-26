@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/08/26 16:27:02 by mayeung          ###   ########.fr       --
+--   Updated: 2025/08/26 16:59:55 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -1278,7 +1278,10 @@ compoundAssignParser l@(TExpr lExpr lDt) binOp = do
         modifyState $ setPrecedence $ getBinOpPrecedence binOp
         e <- exprParser
         checkImplicitCastAssign l op e
-        exprRightParser $ TExpr (Assignment op (decayArrayToPointer l) (decayArrayToPointer e)) lDt
+        exprRightParser $ TExpr (Assignment op l
+          ((if isPointerOrArray l
+                then signedExtendIntUInt
+                else id) (foldToConstExpr e))) lDt
   case lExpr of
         Variable {} -> varDerefPtr
         Dereference {} -> varDerefPtr
@@ -1320,7 +1323,7 @@ binaryParser l binOp = do
             | op `elem` [BitShiftLeft, BitShiftRight] = tDT l
             | otherwise = DTInternal TInt
       exprRightParser $ (`cvtTypedExpr` dt) $ TExpr
-        (Binary op 
+        (Binary op
           (foldToConstExpr ((if isPointerDT cType
               then if isPointerOrArray l
                 then id
