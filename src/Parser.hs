@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/08/26 16:59:55 by mayeung          ###   ########.fr       --
+--   Updated: 2025/08/31 14:25:29 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -828,7 +828,7 @@ isLValueExpr (TExpr (Variable {}) vdt) =
   case vdt of
     DTArray {} -> False
     _ -> True
-isLValueExpr (TExpr (Dereference _) _) = True
+isLValueExpr (TExpr (Dereference _) dfDT) =  not $ isArrayDT dfDT
 isLValueExpr (TExpr (Subscript {}) sDT) = not $ isArrayDT sDT
 isLValueExpr _ = False
 
