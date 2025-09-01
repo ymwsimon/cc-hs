@@ -6,11 +6,12 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/08/31 14:25:29 by mayeung          ###   ########.fr       --
+--   Updated: 2025/09/01 13:39:11 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE LambdaCase #-}
 
 module Parser where
 
@@ -40,6 +41,7 @@ data JumpLabel =
 data PrimType =
   TVoid
   | TChar
+  | TSChar
   | TUChar
   | TShort
   | TUShort
@@ -134,6 +136,7 @@ data TypedExpr = TExpr {texpr :: Expr, tDT :: DT}
 
 data Expr =
   Constant NumConst
+  | StringLit String
   | Variable String Bool (Maybe StorageClass)
   | Cast DT TypedExpr
   | FunctionCall String [TypedExpr]
@@ -157,7 +160,9 @@ data StorageClass =
   deriving Eq
 
 data NumConst =
-  ConstShort Integer
+  ConstChar Integer
+  | ConstUChar Integer
+  | ConstShort Integer
   | ConstUShort Integer
   | ConstInt Integer
   | ConstUInt Integer
@@ -178,6 +183,7 @@ instance Eq DT where
 instance Show PrimType where
   show TVoid = "void"
   show TChar = "char"
+  show TSChar = "signed char"
   show TUChar = "unsigned char"
   show TShort = "short"
   show TUShort = "unsigned short"
@@ -251,7 +257,7 @@ primDataTypeStrList = map sort
 
 primTypeList :: [PrimType]
 primTypeList =
-  [TVoid, TChar, TChar, TUChar,
+  [TVoid, TChar, TSChar, TUChar,
     TShort, TShort, TShort, TShort,
     TUShort, TUShort,
     TInt, TInt, TInt,
@@ -468,6 +474,18 @@ openSqtParser = createSkipSpacesStringParser "["
 
 closeSqtParser :: ParsecT String u IO String
 closeSqtParser = createSkipSpacesStringParser "]"
+
+singleQParser :: ParsecT String u IO String
+singleQParser = createSkipSpacesStringParser "'"
+
+doubleQParser :: ParsecT String u IO String
+doubleQParser = createSkipSpacesStringParser "\""
+
+doubleQCharParser :: ParsecT String u IO Char
+doubleQCharParser = createSkipSpacesCharParser '"'
+
+backSlashParser :: ParsecT String u IO String
+backSlashParser = createSkipSpacesStringParser "\\"
 
 keywordParserCreate :: String -> ParsecT String u IO String
 keywordParserCreate k = do
@@ -778,6 +796,8 @@ unaryOpStringParser = foldl1 (<|>) $
 
 exprToInteger :: TypedExpr -> Integer
 exprToInteger (TExpr expr _) = case expr of
+  Constant (ConstChar c) -> c
+  Constant (ConstUChar uc) -> uc
   Constant (ConstInt i) -> i
   Constant (ConstUInt ui) -> ui
   Constant (ConstLong l) -> l
@@ -787,6 +807,8 @@ exprToInteger (TExpr expr _) = case expr of
 
 exprToDouble :: TypedExpr -> Double
 exprToDouble (TExpr expr _) = case expr of
+  Constant (ConstChar c) -> fromIntegral c
+  Constant (ConstUChar uc) -> fromIntegral uc
   Constant (ConstInt i) -> fromIntegral i
   Constant (ConstUInt ui) -> fromIntegral ui
   Constant (ConstLong l) -> fromIntegral l
@@ -796,6 +818,8 @@ exprToDouble (TExpr expr _) = case expr of
 
 numConstToInt :: Num b => NumConst -> b
 numConstToInt n = case n of
+  ConstChar c -> fromIntegral c
+  ConstUChar uc -> fromIntegral uc
   ConstShort s -> fromIntegral s
   ConstUShort us -> fromIntegral us
   ConstInt i -> fromIntegral i
@@ -811,6 +835,8 @@ numConstToDouble n = case n of
 
 numConstToStr :: NumConst -> String
 numConstToStr n = case n of
+  ConstChar c -> show c
+  ConstUChar uc -> show uc
   ConstShort s -> show s
   ConstUShort us -> show us
   ConstInt i -> show i
@@ -840,6 +866,7 @@ isAddrOf te = case te of
 isConstantTypedExpr :: TypedExpr -> Bool
 isConstantTypedExpr (TExpr expr _) = case expr of
   Constant _ -> True
+  StringLit _ -> False
   Variable {} -> False
   Cast _ e -> isConstantTypedExpr e
   FunctionCall {} -> False
@@ -863,6 +890,8 @@ isConstantIntegralInit initialiser = case initialiser of
 
 isIntegralConstantTE :: TypedExpr -> Bool
 isIntegralConstantTE (TExpr expr _) = case expr of
+  Constant (ConstChar _) -> True
+  Constant (ConstUChar _) -> True
   Constant (ConstShort _) -> True
   Constant (ConstUShort _) -> True
   Constant (ConstInt _) -> True
@@ -901,6 +930,9 @@ isFloatDT dt = case dt of
 exprToConstantExpr :: TypedExpr -> TypedExpr
 exprToConstantExpr te@(TExpr e dt) =
   let constructor = case dt of
+        DTInternal TChar -> Constant . ConstChar . toInteger . (fromInteger :: Integer -> Int8)
+        DTInternal TSChar -> Constant . ConstChar . toInteger . (fromInteger :: Integer -> Int8)
+        DTInternal TUChar -> Constant . ConstUChar . toInteger . (fromInteger :: Integer -> Word8)
         DTInternal TInt -> Constant . ConstInt . toInteger . (fromInteger :: Integer -> Int32)
         DTInternal TUInt -> Constant . ConstUInt . toInteger . (fromInteger :: Integer -> Word32) 
         DTInternal TLong -> Constant . ConstLong . toInteger . (fromInteger :: Integer -> Int64)
@@ -1086,7 +1118,7 @@ addrOfParser = do
   p <- precedence <$> getState
   modifyState $ setPrecedence $ getUnaryOpPrecedence "&"
   expr <- exprParser
-  unless (isLValueExpr expr || isArrayTypedExpr expr) $
+  unless (isLValueExpr expr || isArrayTypedExpr expr || isStringExpr expr) $
     unexpected "non lvalue"
   modifyState $ setPrecedence p
   pure $ TExpr (AddrOf expr) $ DTPointer $ tDT expr
@@ -1114,6 +1146,9 @@ unaryExprParser = do
 
 makeConstantTEIntWithDT :: Integer -> DT -> TypedExpr
 makeConstantTEIntWithDT n dt = case dt of
+  DTInternal TChar -> TExpr (Constant $ ConstChar n) dt
+  DTInternal TSChar -> TExpr (Constant $ ConstChar n) dt
+  DTInternal TUChar -> TExpr (Constant $ ConstUChar n) dt
   DTInternal TShort -> TExpr (Constant $ ConstShort n) dt
   DTInternal TUShort -> TExpr (Constant $ ConstUShort n) dt
   DTInternal TInt -> TExpr (Constant $ ConstInt n) dt
@@ -1131,6 +1166,7 @@ makeConstantTEFloatWithDT n dt = case dt of
 getDTSize :: DT -> Int
 getDTSize dt = case dt of
   DTInternal TChar -> 1
+  DTInternal TSChar -> 1
   DTInternal TUChar -> 1
   DTInternal TShort -> 2
   DTInternal TUShort -> 2
@@ -1170,6 +1206,8 @@ isFloatConstNumConst c = case c of
 
 isIntegralConstantNumConst :: NumConst -> Bool
 isIntegralConstantNumConst c = case c of
+  ConstChar _ -> True
+  ConstUChar _ -> True
   ConstShort _ -> True
   ConstUShort _ -> True
   ConstInt _ -> True
@@ -1180,8 +1218,10 @@ isIntegralConstantNumConst c = case c of
 
 constantExprToInt :: TypedExpr -> Integer
 constantExprToInt e = case e of
+  TExpr (Constant (ConstChar c)) _ -> fromIntegral c
   TExpr (Constant (ConstInt i)) _ -> fromIntegral i
   TExpr (Constant (ConstLong l)) _ -> fromIntegral l
+  TExpr (Constant (ConstUChar uc)) _ -> fromIntegral uc
   TExpr (Constant (ConstUInt ui)) _ -> fromIntegral ui
   TExpr (Constant (ConstULong ul)) _ -> fromIntegral ul
   TExpr (Constant (ConstDouble d)) _ -> truncate d
@@ -1190,8 +1230,10 @@ constantExprToInt e = case e of
 constantExprToDouble :: TypedExpr -> Double
 constantExprToDouble e = case e of
   TExpr (Constant (ConstDouble d)) _ -> d
+  TExpr (Constant (ConstChar c)) _ -> fromIntegral c
   TExpr (Constant (ConstInt i)) _ -> fromIntegral i
   TExpr (Constant (ConstLong l)) _ -> fromIntegral l
+  TExpr (Constant (ConstUChar uc)) _ -> fromIntegral uc
   TExpr (Constant (ConstUInt ui)) _ -> fromIntegral ui
   TExpr (Constant (ConstULong ul)) _ -> fromIntegral ul
   _ -> error "unsupported const type expression to double"
@@ -1344,7 +1386,7 @@ exprRightParser l = do
           then compoundAssignParser l binOp
           else if binOp == "?"
             then conditionalParser l binOp
-            else binaryParser l binOp
+            else binaryParser (decayArrayToPointer l) binOp
     else pure l
 
 intOperandParser :: ParsecT String u IO TypedExpr
@@ -1594,6 +1636,50 @@ postfixOpParser te = do
     "[" -> subscriptParser te
     _ -> postAdjustOp te
 
+anyCharBut :: String -> ParsecT String ParseInfo IO Char
+anyCharBut set = do
+  c <- lookAhead anyChar
+  if c `elem` set
+    then unexpected $ show c
+    else anyChar
+
+escapeCharParser :: ParsecT String ParseInfo IO Char
+escapeCharParser = do
+  void backSlashParser
+  nextChar <- anyChar
+  if nextChar `elem` "abefnrtv\\'\"?"
+    then pure $ chr $ (M.! nextChar) $ M.fromList $
+      zip "abefnrtv\\'\"?"
+        [0x07, 0x08, 0x1B, 0x0C, 0x0A, 0x0D, 0x09, 0x0B, 0x5C, 0x27, 0x22, 0x3F]
+    else unexpected "character doesn't need to escape"
+
+charLitParser :: ParsecT String ParseInfo IO TypedExpr
+charLitParser = do
+  void singleQParser
+  tc <- lookAhead anyChar
+  c <- case tc of
+    '\'' -> unexpected "empty char"
+    '\\' -> escapeCharParser
+    _ -> anyChar
+  void singleQParser <?> "'"
+  pure $ (`TExpr` DTInternal TChar) $ Constant $ ConstChar $ fromIntegral $ ord c
+
+stringLitParser :: ParsecT String ParseInfo IO Expr
+stringLitParser = do
+  void doubleQParser
+  s <- many $ try escapeCharParser <|> try (anyCharBut "\\\n\"")
+  void doubleQParser <?> "\""
+  pure $ StringLit s
+
+joinStringLits :: Expr -> Expr -> Expr
+joinStringLits (StringLit lstr) (StringLit rstr) = StringLit $ lstr ++ rstr
+joinStringLits _ _ = error "cannot join non string literals expression"
+
+stringLitMParser :: ParsecT String ParseInfo IO Expr
+stringLitMParser = do
+  strs <- many $ try stringLitParser
+  pure $ foldl' joinStringLits (StringLit "") strs
+
 factorParser :: ParsecT String ParseInfo IO TypedExpr
 factorParser = do
   c <- lookAhead $ try $ spaces >> anyChar
@@ -1608,6 +1694,11 @@ factorParser = do
         case maybeDT of
           Just _ -> castParser
           _ -> parenExprParser
+      | c == '\'' = charLitParser
+      | c == '"' = (\case
+        StringLit str -> TExpr (StringLit str) (DTArray (DTInternal TChar) (Just $ 1 + length str))
+        _ -> error "string literal only")
+          <$> stringLitMParser
       | otherwise = do
           maybeParen <- lookAhead (try (identifierParser >> openPParser)) <|> pure ""
           case maybeParen of
@@ -1707,20 +1798,37 @@ checkVarInitCorrectness (DTArray aDT aSize) (CompoundInit cInit) =
 checkVarInitCorrectness _ (CompoundInit _) = False
 checkVarInitCorrectness _ (SingleInit _) = True
 
-singleInitParser :: ParsecT String u IO TypedExpr -> ParsecT String u IO Initialiser
-singleInitParser parser = SingleInit <$> parser
+stringLitToCompoundInit :: TypedExpr -> ParsecT String u IO Initialiser
+stringLitToCompoundInit strLit = do
+  case strLit of
+    TExpr (StringLit str) _ -> do
+      pure $ CompoundInit $
+        map (SingleInit . ((`TExpr` DTInternal TChar) . Constant . ConstChar . fromIntegral . ord)) str
+    _ -> error "not a string literal for conversion"
 
-getInitialiser :: ParsecT String u IO TypedExpr -> ParsecT String u IO Initialiser
-getInitialiser parser = do
+singleInitParser :: DT -> ParsecT String u IO TypedExpr -> ParsecT String u IO Initialiser
+singleInitParser dt parser = do
+  expr <- parser
+  let strCvt = case expr of
+        TExpr (StringLit _) _ -> stringLitToCompoundInit expr
+        _ -> pure $ SingleInit expr
+  case dt of
+    DTArray (DTInternal TChar) _ -> strCvt
+    DTArray (DTInternal TSChar) _ -> strCvt
+    DTArray (DTInternal TUChar) _ -> strCvt
+    _ -> pure $ SingleInit expr
+
+getInitialiser :: DT -> ParsecT String u IO TypedExpr -> ParsecT String u IO Initialiser
+getInitialiser dt parser = do
   maybeOpenCur <- lookAhead $ optionMaybe $ try openCurParser
   initialiser <- case maybeOpenCur of
     Just _ -> do
       void openCurParser
-      i <- CompoundInit <$> sepBy1 (getInitialiser parser) (try (commaParser <* notFollowedBy closeCurParser))
+      i <- CompoundInit <$> sepBy1 (getInitialiser (getRefType dt) parser) (try (commaParser <* notFollowedBy closeCurParser))
       void $ optionMaybe $ try commaParser
       void closeCurParser
       pure i
-    _ -> singleInitParser parser
+    _ -> singleInitParser dt parser
   pure $ foldInitToConstExpr initialiser
 
 topLevelVarDeclarationParser :: ParsecT String ParseInfo IO VarTypeInfo
@@ -1735,7 +1843,7 @@ topLevelVarDeclarationParser = do
     && (variableType (vti (topIdentMap M.! fromJust vName)) /= varType
       || not (topLevelVarStorageClassCheck (varStoreClass (vti (topIdentMap M.! fromJust vName))) sc))) $
     unexpected $ fromJust vName ++ ". Type mismatch to previous declaration"
-  initialiser <- optionMaybe $ try $ equalLex >> getInitialiser exprParser
+  initialiser <- optionMaybe $ try $ equalLex >> getInitialiser varType exprParser
   let cvtinitialiser = foldInitToConstExpr . (`cvtInit` getArrayInnerType varType) . decayArrayToPointerInit <$> initialiser
   void semiColParser
   unless (isNothing initialiser || isConstantInit (fromJust initialiser)) $
@@ -1779,7 +1887,7 @@ localPlainVarHandle varType sc vName = do
         (VarIdentifier (VarTypeInfo newVarName varType Nothing sc $ topLevel parseInfo)) $
         currentScopeIdent parseInfo
   putState $ parseInfo {currentVarId = varId + 1, currentScopeIdent = newVarMap}
-  initialiser <- optionMaybe $ try $ equalLex >> getInitialiser exprParser
+  initialiser <- optionMaybe $ try $ equalLex >> getInitialiser varType exprParser
   void semiColParser
   let cvtinitialiser = foldInitToConstExpr . (`cvtInit` getArrayInnerType varType) . decayArrayToPointerInit <$> initialiser
   when (isJust initialiser) $ do
@@ -1791,7 +1899,7 @@ localPlainVarHandle varType sc vName = do
 
 localStaticVarHandle :: DT -> Maybe StorageClass -> IdentifierName -> ParsecT String ParseInfo IO VarTypeInfo
 localStaticVarHandle varType sc vName = do
-  initialiser <- optionMaybe $ try $ equalLex >> getInitialiser exprParser
+  initialiser <- optionMaybe $ try $ equalLex >> getInitialiser varType exprParser
   let cvtinitialiser = foldInitToConstExpr . (`cvtInit` getArrayInnerType varType) . decayArrayToPointerInit <$> initialiser
   void semiColParser
   unless (isNothing initialiser || isConstantInit (fromJust initialiser)) $
@@ -2035,10 +2143,12 @@ forLoopParser = do
 
 dtCvtRead :: Num c => DT -> String -> c
 dtCvtRead dt = case dt of
-  DTInternal TChar -> fromIntegral . (read :: String -> Int8)
+  DTInternal TChar -> fromIntegral . (read :: String -> Int32)
+  DTInternal TSChar -> fromIntegral . (read :: String -> Int32)
   DTInternal TShort -> fromIntegral . (read :: String -> Int16)
   DTInternal TInt -> fromIntegral . (read :: String -> Int32)
   DTInternal TLong -> fromIntegral . (read :: String -> Int64)
+  DTInternal TUChar -> fromIntegral . (read :: String -> Word32)
   DTInternal TUInt -> fromIntegral . (read :: String -> Word32)
   DTInternal TULong -> fromIntegral . (read :: String -> Word64)
   _ -> error "unsupported data type convert read"
@@ -2052,7 +2162,7 @@ caseParser = do
       void keyCaseParser
       sType <- switchValSize <$> getState
       let cvtRead = dtCvtRead sType
-      val <- cvtRead <$> integerParser
+      val <- try (cvtRead <$> integerParser) <|> (exprToInteger <$> charLitParser)
       if M.member val caseMap
         then unexpected $ show val ++ ": Already defined."
         else do
@@ -2083,7 +2193,7 @@ defaultParser = do
     _ -> unexpected "Default"
 
 isIntDT :: DT -> Bool
-isIntDT dt = isPointerDT dt || dt `elem` [DTInternal TChar, DTInternal TShort, DTInternal TInt, DTInternal TLong,
+isIntDT dt = isPointerDT dt || dt `elem` [DTInternal TChar, DTInternal TSChar, DTInternal TShort, DTInternal TInt, DTInternal TLong,
   DTInternal TUChar, DTInternal TUShort, DTInternal TUInt, DTInternal TULong]
 
 switchParser :: ParsecT String ParseInfo IO Statement
@@ -2093,7 +2203,7 @@ switchParser = do
   void keySwitchParser
   makeSwitchLabel
   expr@(TExpr _ dt) <- parenExprParser
-  unless (isIntDT dt) $ unexpected "non integer type"
+  unless (isIntDT dt && not (isStringExpr expr)) $ unexpected "non integer type"
   modifyState $ \p -> p{switchValSize = dt}
   bl <- statementParser
   jLabel <- getJumpLabel
@@ -2195,6 +2305,11 @@ isArrayDT :: DT -> Bool
 isArrayDT dt = case dt of
   DTArray {} -> True
   _ -> False
+
+isStringExpr :: TypedExpr -> Bool
+isStringExpr (TExpr (StringLit _) _) = True
+isStringExpr (TExpr (AddrOf (TExpr (StringLit _) _)) _) = True
+isStringExpr _ = False
 
 funcNotYetDefined :: String -> ParseInfo -> Bool
 funcNotYetDefined name parseInfo =
