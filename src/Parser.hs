@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/09/01 13:39:11 by mayeung          ###   ########.fr       --
+--   Updated: 2025/09/02 22:02:34 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -136,7 +136,7 @@ data TypedExpr = TExpr {texpr :: Expr, tDT :: DT}
 
 data Expr =
   Constant NumConst
-  | StringLit String
+  | StringLit IdentifierName String
   | Variable String Bool (Maybe StorageClass)
   | Cast DT TypedExpr
   | FunctionCall String [TypedExpr]
@@ -866,7 +866,7 @@ isAddrOf te = case te of
 isConstantTypedExpr :: TypedExpr -> Bool
 isConstantTypedExpr (TExpr expr _) = case expr of
   Constant _ -> True
-  StringLit _ -> False
+  StringLit _ _ -> False
   Variable {} -> False
   Cast _ e -> isConstantTypedExpr e
   FunctionCall {} -> False
@@ -1011,11 +1011,6 @@ foldInitToConstExpr :: Initialiser -> Initialiser
 foldInitToConstExpr initialiser = case initialiser of
   SingleInit si -> if isConstantInit initialiser then SingleInit (foldToConstExpr $ decayArrayToPointer si) else initialiser
   CompoundInit ci -> CompoundInit $ map foldInitToConstExpr ci
-
-initialiserToTE :: Initialiser -> [TypedExpr]
-initialiserToTE i = case i of
-  SingleInit te -> [te]
-  CompoundInit tes -> concatMap initialiserToTE tes
 
 doubleIntegralParser :: ParsecT String ParseInfo IO TypedExpr
 doubleIntegralParser = do
@@ -1215,6 +1210,10 @@ isIntegralConstantNumConst c = case c of
   ConstLong _ -> True
   ConstULong _ -> True
   ConstDouble _ -> False
+
+isCharType :: DT -> Bool
+isCharType (DTInternal dt) = dt `elem` [TChar, TSChar, TUChar]
+isCharType _ = False
 
 constantExprToInt :: TypedExpr -> Integer
 constantExprToInt e = case e of
@@ -1669,16 +1668,18 @@ stringLitParser = do
   void doubleQParser
   s <- many $ try escapeCharParser <|> try (anyCharBut "\\\n\"")
   void doubleQParser <?> "\""
-  pure $ StringLit s
+  sId <- globalVarId <$> getState
+  modifyState $ \ps -> ps {globalVarId = sId + 1}
+  pure $ StringLit ("String." ++ show sId) s
 
 joinStringLits :: Expr -> Expr -> Expr
-joinStringLits (StringLit lstr) (StringLit rstr) = StringLit $ lstr ++ rstr
+joinStringLits (StringLit l lstr) (StringLit _ rstr) = StringLit l $ lstr ++ rstr
 joinStringLits _ _ = error "cannot join non string literals expression"
 
 stringLitMParser :: ParsecT String ParseInfo IO Expr
 stringLitMParser = do
   strs <- many $ try stringLitParser
-  pure $ foldl' joinStringLits (StringLit "") strs
+  pure $ foldl1' joinStringLits strs
 
 factorParser :: ParsecT String ParseInfo IO TypedExpr
 factorParser = do
@@ -1696,7 +1697,7 @@ factorParser = do
           _ -> parenExprParser
       | c == '\'' = charLitParser
       | c == '"' = (\case
-        StringLit str -> TExpr (StringLit str) (DTArray (DTInternal TChar) (Just $ 1 + length str))
+        StringLit n str -> TExpr (StringLit n str) (DTArray (DTInternal TChar) (Just $ 1 + length str))
         _ -> error "string literal only")
           <$> stringLitMParser
       | otherwise = do
@@ -1738,7 +1739,8 @@ argPairParser = do
     unexpected $ fromJust vName ++ ". Already defined"
   unless (null vName) $
     modifyState (\p -> p {currentScopeIdent =
-      M.insert (fromJust vName) (VarIdentifier (VarTypeInfo (fromJust vName) varType Nothing Nothing False)) (currentScopeIdent p)})
+      M.insert (fromJust vName) (VarIdentifier (VarTypeInfo (fromJust vName) varType Nothing Nothing False))
+        (currentScopeIdent p)})
   pure (varType, fromJust vName)
 
 isTypeSpecifier :: String -> Bool
@@ -1801,7 +1803,7 @@ checkVarInitCorrectness _ (SingleInit _) = True
 stringLitToCompoundInit :: TypedExpr -> ParsecT String u IO Initialiser
 stringLitToCompoundInit strLit = do
   case strLit of
-    TExpr (StringLit str) _ -> do
+    TExpr (StringLit _ str) _ -> do
       pure $ CompoundInit $
         map (SingleInit . ((`TExpr` DTInternal TChar) . Constant . ConstChar . fromIntegral . ord)) str
     _ -> error "not a string literal for conversion"
@@ -1810,7 +1812,7 @@ singleInitParser :: DT -> ParsecT String u IO TypedExpr -> ParsecT String u IO I
 singleInitParser dt parser = do
   expr <- parser
   let strCvt = case expr of
-        TExpr (StringLit _) _ -> stringLitToCompoundInit expr
+        TExpr (StringLit _ _) _ -> stringLitToCompoundInit expr
         _ -> pure $ SingleInit expr
   case dt of
     DTArray (DTInternal TChar) _ -> strCvt
@@ -2193,8 +2195,10 @@ defaultParser = do
     _ -> unexpected "Default"
 
 isIntDT :: DT -> Bool
-isIntDT dt = isPointerDT dt || dt `elem` [DTInternal TChar, DTInternal TSChar, DTInternal TShort, DTInternal TInt, DTInternal TLong,
-  DTInternal TUChar, DTInternal TUShort, DTInternal TUInt, DTInternal TULong]
+isIntDT dt = isPointerDT dt || dt `elem`
+  [DTInternal TChar, DTInternal TSChar, DTInternal TShort,
+    DTInternal TInt, DTInternal TLong, DTInternal TUChar,
+    DTInternal TUShort, DTInternal TUInt, DTInternal TULong]
 
 switchParser :: ParsecT String ParseInfo IO Statement
 switchParser = do
@@ -2307,8 +2311,8 @@ isArrayDT dt = case dt of
   _ -> False
 
 isStringExpr :: TypedExpr -> Bool
-isStringExpr (TExpr (StringLit _) _) = True
-isStringExpr (TExpr (AddrOf (TExpr (StringLit _) _)) _) = True
+isStringExpr (TExpr (StringLit _ _) _) = True
+isStringExpr (TExpr (AddrOf (TExpr (StringLit _ _) _)) _) = True
 isStringExpr _ = False
 
 funcNotYetDefined :: String -> ParseInfo -> Bool
@@ -2391,7 +2395,7 @@ functionDeclareParser = do
   void $ checkForFuncNameConflict (fromJust name)
   checkFuncStorageClass (fromJust name) sc
   checkForFuncTypeConflict parseInfo $
-      FunctionDeclaration $ FuncTypeInfo (fromJust name) fType  Nothing sc 1
+      FunctionDeclaration $ FuncTypeInfo (fromJust name) fType Nothing sc 1
   addFuncDeclarationIfNeed $ FuncTypeInfo (fromJust name) fType Nothing sc 1
   maybeSemiColon <- lookAhead (try semiColParser <|> try openCurParser)
   modifyState (\p -> p {funcReturnType = retType fType})
