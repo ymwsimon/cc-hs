@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/09/02 22:02:34 by mayeung          ###   ########.fr       --
+--   Updated: 2025/09/09 12:37:59 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -65,6 +65,7 @@ data DT =
 data IdentifierType =
   VarIdentifier {vti :: VarTypeInfo}
   | FuncIdentifier {fti :: FuncTypeInfo}
+  | StaticConstIdentifier {scti :: StaticConstInfo}
   deriving (Show, Eq)
 
 data Declaration =
@@ -80,6 +81,11 @@ data VarTypeInfo =
 data FuncTypeInfo =
   FuncTypeInfo {funcName :: IdentifierName, funcType :: DT,
     funcDefine :: Maybe Block, funcStorageClass :: Maybe StorageClass, nextVarId :: Int}
+  deriving (Show, Eq)
+
+data StaticConstInfo =
+  StaticConstInfo {constName :: IdentifierName, constType :: DT,
+    constDefine :: TypedExpr}
   deriving (Show, Eq)
 
 data ParseInfo = 
@@ -136,7 +142,7 @@ data TypedExpr = TExpr {texpr :: Expr, tDT :: DT}
 
 data Expr =
   Constant NumConst
-  | StringLit IdentifierName String
+  | StringLit {strLitName :: IdentifierName, strLitContent :: String}
   | Variable String Bool (Maybe StorageClass)
   | Cast DT TypedExpr
   | FunctionCall String [TypedExpr]
@@ -1679,7 +1685,17 @@ joinStringLits _ _ = error "cannot join non string literals expression"
 stringLitMParser :: ParsecT String ParseInfo IO Expr
 stringLitMParser = do
   strs <- many $ try stringLitParser
-  pure $ foldl1' joinStringLits strs
+  let combinedStr = foldl1' joinStringLits strs
+  modifyState $ \ps -> ps {topLevelScopeIdent =
+    M.insert (strLitName combinedStr) 
+      (StaticConstIdentifier
+        (let dt = DTArray (DTInternal TChar) (Just $ 1 + length (strLitContent combinedStr)) in
+          StaticConstInfo
+          (strLitName combinedStr)
+          dt
+          (TExpr combinedStr dt)))
+        $ topLevelScopeIdent ps}
+  pure combinedStr
 
 factorParser :: ParsecT String ParseInfo IO TypedExpr
 factorParser = do
@@ -1826,12 +1842,30 @@ getInitialiser dt parser = do
   initialiser <- case maybeOpenCur of
     Just _ -> do
       void openCurParser
-      i <- CompoundInit <$> sepBy1 (getInitialiser (getRefType dt) parser) (try (commaParser <* notFollowedBy closeCurParser))
+      i <- CompoundInit <$> sepBy1 (getInitialiser (getRefType dt) parser)
+        (try (commaParser <* notFollowedBy closeCurParser))
       void $ optionMaybe $ try commaParser
       void closeCurParser
       pure i
     _ -> singleInitParser dt parser
   pure $ foldInitToConstExpr initialiser
+
+joinSingleInitToStr :: [Initialiser] -> Initialiser
+joinSingleInitToStr si =
+  SingleInit $ (`TExpr` DTArray (DTInternal TChar) (Just $ length si + 1)) $
+    StringLit "" $ foldr joinInit "" si
+  where joinInit l r = case l of
+          SingleInit i -> (:r) $ chr $ fromInteger $ exprToInteger i
+          CompoundInit _ -> error "must be single init"
+
+compoundInitToString :: DT -> Initialiser -> Initialiser
+compoundInitToString dt i = case dt of
+  DTArray aType _ -> if isCharType aType
+    then case i of
+      CompoundInit ci -> joinSingleInitToStr ci
+      _ -> error "not a string literal initialiser"
+    else CompoundInit $ map (compoundInitToString aType) (cInits i)
+  _ -> i
 
 topLevelVarDeclarationParser :: ParsecT String ParseInfo IO VarTypeInfo
 topLevelVarDeclarationParser = do
@@ -1846,7 +1880,11 @@ topLevelVarDeclarationParser = do
       || not (topLevelVarStorageClassCheck (varStoreClass (vti (topIdentMap M.! fromJust vName))) sc))) $
     unexpected $ fromJust vName ++ ". Type mismatch to previous declaration"
   initialiser <- optionMaybe $ try $ equalLex >> getInitialiser varType exprParser
-  let cvtinitialiser = foldInitToConstExpr . (`cvtInit` getArrayInnerType varType) . decayArrayToPointerInit <$> initialiser
+  let cvtinitialiser =
+        compoundInitToString varType .
+          foldInitToConstExpr .
+          (`cvtInit` getArrayInnerType varType) .
+          decayArrayToPointerInit <$> initialiser
   void semiColParser
   unless (isNothing initialiser || isConstantInit (fromJust initialiser)) $
     unexpected "non constant initialiser"
@@ -1902,7 +1940,11 @@ localPlainVarHandle varType sc vName = do
 localStaticVarHandle :: DT -> Maybe StorageClass -> IdentifierName -> ParsecT String ParseInfo IO VarTypeInfo
 localStaticVarHandle varType sc vName = do
   initialiser <- optionMaybe $ try $ equalLex >> getInitialiser varType exprParser
-  let cvtinitialiser = foldInitToConstExpr . (`cvtInit` getArrayInnerType varType) . decayArrayToPointerInit <$> initialiser
+  let cvtinitialiser =
+        compoundInitToString varType .
+          foldInitToConstExpr .
+          (`cvtInit` getArrayInnerType varType) .
+          decayArrayToPointerInit <$> initialiser
   void semiColParser
   unless (isNothing initialiser || isConstantInit (fromJust initialiser)) $
     unexpected "non constant initialiser"
@@ -2290,10 +2332,15 @@ isVarIdentifier :: IdentifierType -> Bool
 isVarIdentifier (VarIdentifier {}) = True
 isVarIdentifier _ = False
 
+isStaticConstIdentifier :: IdentifierType -> Bool
+isStaticConstIdentifier (StaticConstIdentifier {}) = True
+isStaticConstIdentifier _ = False
+
 isExternIdentifier :: IdentifierType -> Bool
 isExternIdentifier i = case i of
   VarIdentifier vInfo -> varStoreClass vInfo == Just Extern
   FuncIdentifier fInfo -> funcStorageClass fInfo == Just Extern
+  _ -> False
 
 isFuncDT :: DT -> Bool
 isFuncDT dt = case dt of 

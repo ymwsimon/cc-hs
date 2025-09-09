@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/08/26 16:23:12 by mayeung          ###   ########.fr       --
+--   Updated: 2025/09/09 13:24:58 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -149,7 +149,7 @@ instance Show AsmType where
   show QuadWord = "quad"
   show AsmDouble = "quad"
   show Zero = "zero"
-  show (ByteArr s a) = "array " ++ show s ++ " " ++ show a
+  show (ByteArr {}) = "asciz"
 
 instance Show Operand where
   show (Imm n) = case n of
@@ -288,6 +288,8 @@ isGeneralRegister op = case op of
 
 staticInitToAsmType :: StaticInit -> AsmType
 staticInitToAsmType si = case si of
+  CharInit _ -> AsmByte
+  UCharInit _ -> AsmByte
   ShortInit _ -> AsmWord
   UShortInit _ -> AsmWord
   IntInit _ -> LongWord
@@ -296,9 +298,13 @@ staticInitToAsmType si = case si of
   ULongInit _ -> QuadWord
   DoubleInit _ -> AsmDouble
   ZeroInit _ -> Zero
+  StringInit strContent _ -> ByteArr (length strContent) 1
+  PointerInit _ -> QuadWord
 
 staticInitToAsmSize :: StaticInit -> Int
 staticInitToAsmSize si = case si of
+  CharInit _ -> 1
+  UCharInit _ -> 1
   IntInit _ -> 4
   UIntInit _ -> 4
   LongInit _ -> 8
@@ -308,6 +314,9 @@ staticInitToAsmSize si = case si of
 
 dtToAsmType :: DT -> AsmType
 dtToAsmType dt = case dt of
+  DTInternal TChar -> AsmByte
+  DTInternal TSChar -> AsmByte
+  DTInternal TUChar -> AsmByte
   DTInternal TInt -> LongWord
   DTInternal TUInt -> LongWord
   DTInternal TLong -> QuadWord
@@ -336,6 +345,12 @@ irStaticVarToAsmStaticVarDefine irD = case irD of
   IRStaticVar (IRStaticVarDefine vName global vType initVal) ->
     AsmStaticVarDefine vName global (dtToByteSize $ getArrayInnerType vType) initVal
   _ -> error "unknown condition for static var conversion to asm static var define"
+
+irStaticConstToAsmStaticConstDefine :: IRTopLevel -> AsmStaticConstantDefine
+irStaticConstToAsmStaticConstDefine irSC = case irSC of
+  IRStaticConstant (IRStaticConstDefine scName scType scInit) ->
+    AsmStaticConstantDefine scName (dtToByteSize $ getArrayInnerType scType) scInit
+  _ -> error "unknown condition for static constant conversion to asm static constant define"
 
 irASTToAsmAST :: M.Map String IdentifierType -> IRProgramAST -> AsmProgramAST
 irASTToAsmAST m irAst = map
@@ -379,6 +394,7 @@ irOperandToAsmOperand :: M.Map String Int -> M.Map String IdentifierType -> IRVa
 irOperandToAsmOperand _ _ (IRConstant _ n) = Imm n
 irOperandToAsmOperand argMap gVarMap (IRVar _ s)
   | M.member (dropVarName s) argMap = Pseudo ('@' : show (argMap M.! dropVarName s)) 0
+  | M.member s gVarMap && isStaticConstIdentifier (gVarMap M.! s) = Data $ ".L_" ++ s
   | M.member s gVarMap && isVarIdentifier (gVarMap M.! s) = Data s
   | otherwise = Pseudo (dropVarName s) 0
 
@@ -982,7 +998,8 @@ convertCASTToAsmStr m p = do
   concat
     . (++ [noExecutableStackString])
     . (++ (map asmStaticConstDefineToStr . floatConstantSetToAsmConst) (extractFloatConstant $ map AsmFunc asmFuncs))
-    . (++ (map (asmStaticVarDefineToStr . irStaticVarToAsmStaticVarDefine) $ staticVarConvertion m))
+    . (++ (map (asmStaticConstDefineToStr . irStaticConstToAsmStaticConstDefine) $ staticConstantConversion m))
+    . (++ (map (asmStaticVarDefineToStr . irStaticVarToAsmStaticVarDefine) $ staticVarConversion m))
     $ map asmFunctionDefineToStr asmFuncs
 
 asmFunctionDefineToStr :: AsmFunctionDefine -> String
@@ -997,6 +1014,7 @@ asmFunctionDefineToStr (AsmFunctionDefine fname isGlobal instrs _) =
 asmVarInitToStr :: StaticInit -> String
 asmVarInitToStr iVal = tabulate ["." ++ show (staticInitToAsmType iVal) ++ " " ++ (case iVal of
       DoubleInit _ -> doubleValToLabel (staticInitToDouble iVal) ++ " #" ++ show (staticInitToDouble iVal)
+      StringInit strContent _ -> "\"" ++ strContent ++ "\""
       _ -> show $ staticInitToInt iVal)]
 
 asmStaticVarDefineToStr :: AsmStaticVarDefine -> String
@@ -1011,8 +1029,11 @@ asmStaticConstDefineToStr :: AsmStaticConstantDefine -> String
 asmStaticConstDefineToStr (AsmStaticConstantDefine name constAlign initVal) =
   unlines [tabulate [".section", ".rodata"],
     tabulate [".align " ++ (if name == doubleValToLabel (-0.0) then "16" else show constAlign)],
-    ".L_" ++ name ++ ":",
-    tabulate [".quad " ++ doubleValToLabel (staticInitToDouble initVal) ++ " #" ++ show (staticInitToDouble initVal)]]
+     ".L_" ++ name ++ ":",
+     tabulate [if isStringInit initVal
+      then (if stringInitZeroEnd initVal then ".asciz " else".ascii ") ++ show (stringInitContent initVal)
+      else
+        ".quad " ++ doubleValToLabel (staticInitToDouble initVal) ++ " #" ++ show (staticInitToDouble initVal)]]
 
 floatConstantSetToAsmConst :: S.Set Word64 -> [AsmStaticConstantDefine]
 floatConstantSetToAsmConst sw = map cvt $ S.toList sw

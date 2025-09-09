@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/08/26 19:50:34 by mayeung          ###   ########.fr       --
+--   Updated: 2025/09/09 13:27:28 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -24,6 +24,7 @@ type IRProgramAST = [IRTopLevel]
 data IRTopLevel =
   IRFunc {irFuncD :: IRFunctionDefine}
   | IRStaticVar {irStaticVarD :: IRStaticVarDefine}
+  | IRStaticConstant {irStaticConstD :: IRStaticConstDefine}
   deriving (Show, Eq)
 
 data IRFunctionDefine =
@@ -40,6 +41,10 @@ data IRFunctionDefine =
 data IRStaticVarDefine =
   IRStaticVarDefine {irVarName :: String, irVarGlobal :: Bool,
     irType :: DT, irVarInitVal :: [StaticInit]}
+  deriving (Show, Eq)
+
+data IRStaticConstDefine =
+  IRStaticConstDefine {irConstName :: String, irConstType :: DT, irConstInit :: StaticInit}
   deriving (Show, Eq)
 
 data IRInstruction =
@@ -83,6 +88,10 @@ data StaticInit =
   | ULongInit NumConst
   | DoubleInit NumConst
   | ZeroInit Int
+  | CharInit NumConst
+  | UCharInit NumConst
+  | StringInit {stringInitContent :: String, stringInitZeroEnd :: Bool}
+  | PointerInit String
   deriving (Show, Eq)
 
 isIRFuncDefine :: IRTopLevel -> Bool
@@ -92,6 +101,10 @@ isIRFuncDefine _ = False
 isIRStaticVarDefine :: IRTopLevel -> Bool
 isIRStaticVarDefine (IRStaticVar _) = True
 isIRStaticVarDefine _ = False
+
+isStringInit :: StaticInit -> Bool
+isStringInit (StringInit {}) = True
+isStringInit _ = False
 
 isIRConstant :: IRVal -> Bool
 isIRConstant (IRConstant {}) = True
@@ -108,6 +121,9 @@ irValToDT irVal = case irVal of
 
 dtToByteSize :: DT -> Int
 dtToByteSize dt = case dt of
+  DTInternal TChar -> 1
+  DTInternal TSChar -> 1
+  DTInternal TUChar -> 1
   DTInternal TInt -> 4
   DTInternal TUInt -> 4
   DTInternal TLong -> 8
@@ -174,11 +190,15 @@ cASTToIrAST =
 
 exprToStaticInit :: TypedExpr -> StaticInit
 exprToStaticInit (TExpr e _) = case e of
+  Constant (ConstChar c) -> CharInit $ ConstChar c
+  Constant (ConstUChar uc) -> UCharInit $ ConstUChar uc
   Constant (ConstInt i) -> IntInit $ ConstInt i
   Constant (ConstLong l) -> LongInit $ ConstLong l
   Constant (ConstUInt ui) -> UIntInit $ ConstUInt ui
   Constant (ConstULong ul) -> ULongInit $ ConstULong ul
   Constant (ConstDouble d) -> DoubleInit $ ConstDouble d
+  StringLit _ strContent -> StringInit strContent True
+  AddrOf str -> undefined
   _ -> error "unsupported expression convert to static init"
 
 initialiserToStaticInits :: DT -> Initialiser -> [StaticInit]
@@ -188,6 +208,8 @@ initialiserToStaticInits dt i = case i of
     [ZeroInit $ getDTSize (getRefType dt) * (fromJust (arrSize dt) - length ci) | length ci < fromJust (arrSize dt)]
 
 staticInitToInt :: StaticInit -> Integer
+staticInitToInt (CharInit (ConstChar c)) = c
+staticInitToInt (UCharInit (ConstUChar uc)) = uc
 staticInitToInt (IntInit (ConstInt i)) = i
 staticInitToInt (UIntInit (ConstUInt ui)) = ui
 staticInitToInt (LongInit (ConstLong l)) = l
@@ -197,6 +219,8 @@ staticInitToInt (ZeroInit z) = fromIntegral z
 staticInitToInt _ = error "not a static init"
 
 staticInitToDouble :: StaticInit -> Double
+staticInitToDouble (CharInit (ConstChar c)) = fromIntegral c
+staticInitToDouble (UCharInit (ConstUChar uc)) = fromIntegral uc
 staticInitToDouble (IntInit (ConstInt i)) = fromIntegral i
 staticInitToDouble (UIntInit (ConstUInt ui)) = fromIntegral ui
 staticInitToDouble (LongInit (ConstLong l)) = fromIntegral l
@@ -205,12 +229,19 @@ staticInitToDouble (DoubleInit (ConstDouble d)) = d
 staticInitToDouble (ZeroInit z) = fromIntegral z
 staticInitToDouble _ = error "not a static init"
 
-staticVarConvertion :: M.Map String IdentifierType -> [IRTopLevel]
-staticVarConvertion m = map (IRStaticVar . identToStaticVar . snd) $ 
+staticVarConversion :: M.Map String IdentifierType -> [IRTopLevel]
+staticVarConversion m = map (IRStaticVar . identToStaticVar . snd) $ 
   M.toList $ M.filter (\i -> isVarIdentifier i && not (isExternIdentifier i)) m
   where identToStaticVar ident = let vInfo = vti ident in
           IRStaticVarDefine (varName vInfo) (varStoreClass vInfo /= Just Static && topLv vInfo)
             (variableType vInfo) (maybe [ZeroInit (getDTSize $ variableType vInfo)] (initialiserToStaticInits (variableType vInfo)) (varDefine vInfo))
+
+staticConstantConversion :: M.Map String IdentifierType -> [IRTopLevel]
+staticConstantConversion m = map (staticConstantCvt . snd) $
+  M.toList $ M.filter (\i -> isStaticConstIdentifier i && not (isExternIdentifier i)) m
+  where staticConstantCvt ident = let scInfo = scti ident in
+          IRStaticConstant $ IRStaticConstDefine (constName scInfo) (constType scInfo)
+            (exprToStaticInit $ constDefine scInfo)
 
 bumpOneToVarId :: Num a => (a, b) -> (a, b)
 bumpOneToVarId (a, b) = (a + 1, b)
@@ -585,11 +616,14 @@ derefAssignmentToIRs ptr = do
   pure (ptrIRs, ptrIRVal)
 
 addrOfToIRs :: TypedExpr -> State ([DT], Int) ([IRInstruction], IRVal)
-addrOfToIRs v@(TExpr var dt) = case var of
-  Variable {} -> do
-    (varIRs, varIRVal) <- exprToIRs v
-    resIRVal <- gets (IRVar (DTPointer dt) . ("#" ++) . show . length . fst) <* modify (addDTAtEnd $ DTPointer dt)
-    pure (varIRs ++ [IRGetAddress varIRVal resIRVal], resIRVal)
+addrOfToIRs v@(TExpr var dt) =
+  let varOrStringLit = do
+        (varIRs, varIRVal) <- exprToIRs v
+        resIRVal <- gets (IRVar (DTPointer dt) . ("#" ++) . show . length . fst) <* modify (addDTAtEnd $ DTPointer dt)
+        pure (varIRs ++ [IRGetAddress varIRVal resIRVal], resIRVal) in
+  case var of
+  Variable {} -> varOrStringLit
+  StringLit _ _ -> varOrStringLit
   Dereference ptr -> exprToIRs ptr
   _ -> error "unsupported address of operation for ir value"
 
@@ -605,6 +639,8 @@ subscriptToIRs l r = do
 
 exprToIRs :: TypedExpr -> State ([DT], Int) ([IRInstruction], IRVal)
 exprToIRs (TExpr expr dt) = case expr of
+  Constant (ConstChar s) -> pure ([], IRConstant (DTInternal TChar) $ ConstChar s)
+  Constant (ConstUChar s) -> pure ([], IRConstant (DTInternal TUChar) $ ConstUChar s)
   Constant (ConstShort s) -> pure ([], IRConstant (DTInternal TShort) $ ConstShort s)
   Constant (ConstUShort s) -> pure ([], IRConstant (DTInternal TUShort) $ ConstUShort s)
   Constant (ConstInt s) -> pure ([], IRConstant (DTInternal TInt) $ ConstInt s)
@@ -612,6 +648,7 @@ exprToIRs (TExpr expr dt) = case expr of
   Constant (ConstLong s) -> pure ([], IRConstant (DTInternal TLong) $ ConstLong s)
   Constant (ConstULong s) -> pure ([], IRConstant (DTInternal TULong) $ ConstULong s)
   Constant (ConstDouble s) -> pure ([], IRConstant (DTInternal TDouble) $ ConstDouble s)
+  StringLit strName _ -> pure ([], IRVar (DTPointer (getRefType dt)) strName)
   Unary op uExpr -> unaryOperationToIRs op dt uExpr
   Binary op lExpr rExpr -> binaryOperationToIRs op dt lExpr rExpr
   Variable var _ _ -> pure ([], IRVar dt var)

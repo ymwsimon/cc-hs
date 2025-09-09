@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/08/15 12:24:22 by mayeung          ###   ########.fr       --
+--   Updated: 2025/09/08 15:29:36 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -84,10 +84,10 @@ parseOkAct args path (m, parseOk) = do
       Left errs -> putStr (unlines errs) >> pure (parse (parserFail "") "" "")
       Right labelMap -> do
         print "-----------------"
-        print $  M.filter isVarIdentifier m
+        print $ M.filter (\v -> isVarIdentifier v || isStaticConstIdentifier v) m
         print "-----------------"
         let updatedLabel = updateGotoLabel parseOk labelMap
-            varOnlyGlobalMap = M.filter isVarIdentifier m
+            varOnlyGlobalMap = M.filter (\v -> isVarIdentifier v || isStaticConstIdentifier v) m
             converted = convertCASTToAsmStr varOnlyGlobalMap updatedLabel
         print "m-----------------m"
         print m
