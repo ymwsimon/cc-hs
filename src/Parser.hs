@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/09/09 12:37:59 by mayeung          ###   ########.fr       --
+--   Updated: 2025/09/13 20:45:45 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -1141,9 +1141,13 @@ unaryExprParser = do
         unexpected "Need lvalue for prefix operation"
       when (uOp `elem` unsupportedPointerUnaryOperation && isPointerTypedExpr expr) $
         unexpected "Invalid unary operation for pointer"
-      let dt = if uOp == NotRelation then DTInternal TInt else tDT expr
+      let maybePromote = if uOp `elem` [PreDecrement, PreIncrement]
+              then id else promoteCharToInt
+      let dt = if uOp == NotRelation
+          then DTInternal TInt
+          else tDT $ maybePromote expr
       modifyState $ setPrecedence p
-      pure $ foldToConstExpr (TExpr (Unary uOp (decayArrayToPointer expr)) dt)
+      pure $ foldToConstExpr $ TExpr (Unary uOp (decayArrayToPointer $ maybePromote expr)) dt
 
 makeConstantTEIntWithDT :: Integer -> DT -> TypedExpr
 makeConstantTEIntWithDT n dt = case dt of
@@ -1186,6 +1190,7 @@ getDTSize dt = case dt of
 isSignedInteger :: DT -> Bool
 isSignedInteger dt = case dt of
   DTInternal TChar -> True
+  DTInternal TSChar -> True
   DTInternal TShort -> True
   DTInternal TInt -> True
   DTInternal TLong -> True
@@ -1243,17 +1248,25 @@ constantExprToDouble e = case e of
   TExpr (Constant (ConstULong ul)) _ -> fromIntegral ul
   _ -> error "unsupported const type expression to double"
 
+promoteCharToInt :: TypedExpr -> TypedExpr
+promoteCharToInt te@(TExpr _ dt) =
+  if dt `elem` [DTInternal TChar, DTInternal TSChar, DTInternal TUChar]
+    then TExpr (Cast (DTInternal TInt) te) (DTInternal TInt)
+    else te
+
 getExprsCommonType :: TypedExpr -> TypedExpr -> DT
-getExprsCommonType le@(TExpr _ lDT) re@(TExpr _ rDT)
+getExprsCommonType le re
   | isPointerOrArray le = DTPointer $ getRefType lDT
   | isPointerOrArray re = DTPointer $ getRefType rDT
-  | lDT == rDT =lDT
+  | lDT == rDT = lDT
   | lDT == DTInternal TDouble || rDT == DTInternal TDouble = DTInternal TDouble
   | isSameSize lDT rDT && isSignedInteger lDT = rDT
   | isSameSize lDT rDT && isSignedInteger rDT = lDT
   | getDTSize lDT > getDTSize rDT = lDT
   | otherwise = rDT
   where isSameSize l r = getDTSize l == getDTSize r
+        lDT = tDT $ promoteCharToInt le
+        rDT = tDT $ promoteCharToInt re
 
 exprParser :: ParsecT String ParseInfo IO TypedExpr
 exprParser = factorParser >>= exprRightParser
@@ -1363,11 +1376,13 @@ binaryParser l binOp = do
     LogicAnd -> forAndOr
     LogicOr -> forAndOr
     _ -> do
-      let cType = getExprsCommonType l rExpr
+      let cType
+            | op `elem` [BitShiftLeft, BitShiftRight] = tDT $ promoteCharToInt l
+            | otherwise = getExprsCommonType l rExpr
       let dt
             | op == Minus && isPointerOrArray l && isPointerOrArray rExpr = DTInternal TLong
             | op `elem` [Plus, Minus, Multiply, Division, Modulo, BitAnd, BitOr, BitXor] = cType
-            | op `elem` [BitShiftLeft, BitShiftRight] = tDT l
+            | op `elem` [BitShiftLeft, BitShiftRight] = tDT $ promoteCharToInt l
             | otherwise = DTInternal TInt
       exprRightParser $ (`cvtTypedExpr` dt) $ TExpr
         (Binary op
@@ -1375,12 +1390,12 @@ binaryParser l binOp = do
               then if isPointerOrArray l
                 then id
                 else signedExtendIntUInt
-              else (`cvtTypedExpr` cType)) (decayArrayToPointer l)))
+              else (`cvtTypedExpr` cType)) (decayArrayToPointer $ promoteCharToInt l)))
           (foldToConstExpr ((if isPointerDT cType
               then if isPointerOrArray rExpr
                 then id
                 else signedExtendIntUInt
-              else (`cvtTypedExpr` cType)) (decayArrayToPointer rExpr)))) dt
+              else (`cvtTypedExpr` cType)) (decayArrayToPointer $ promoteCharToInt rExpr)))) dt
 
 exprRightParser :: TypedExpr -> ParsecT String ParseInfo IO TypedExpr
 exprRightParser l = do
@@ -1608,6 +1623,9 @@ castParser = do
 
 signedExtendIntUInt :: TypedExpr -> TypedExpr
 signedExtendIntUInt te = case tDT te of
+  DTInternal TChar -> TExpr (Cast (DTInternal TLong) te) (DTInternal TLong)
+  DTInternal TSChar -> TExpr (Cast (DTInternal TLong) te) (DTInternal TLong)
+  DTInternal TUChar -> TExpr (Cast (DTInternal TLong) te) (DTInternal TLong)
   DTInternal TInt -> TExpr (Cast (DTInternal TLong) te) (DTInternal TLong)
   DTInternal TUInt -> TExpr (Cast (DTInternal TULong) te) (DTInternal TULong)
   _ -> te
@@ -2254,7 +2272,7 @@ switchParser = do
   bl <- statementParser
   jLabel <- getJumpLabel
   keepIdsJumpLabel parseInfo id $ drop 1
-  pure $ Switch expr bl $ (!! 0) jLabel
+  pure $ Switch (promoteCharToInt expr) bl $ (!! 0) jLabel
 
 statementParser :: ParsecT String ParseInfo IO Statement
 statementParser = do

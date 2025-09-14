@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/09/09 13:24:58 by mayeung          ###   ########.fr       --
+--   Updated: 2025/09/14 16:20:34 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -20,6 +20,7 @@ import qualified Data.Set as S
 import Parser
 import GHC.Float
 import Data.Word
+import Data.Char
 
 type AsmProgramAST = [AsmTopLevel]
 
@@ -43,8 +44,8 @@ data AsmFunctionDefine =
 
 data AsmInstruction =
   Mov {asmMovType :: AsmType, asmMovSrc :: Operand, asmMovDst :: Operand}
-  | Movsx {asmMovsxSrc :: Operand, asmMovsxDst :: Operand}
-  | MovZeroExtend {asmMovZESrc :: Operand, asmMovZEDst :: Operand}
+  | Movsx {asmMovsxSrcType :: AsmType, asmMovsxDstType :: AsmType, asmMovsxSrc :: Operand, asmMovsxDst :: Operand}
+  | MovZeroExtend {asmMovzSrcType :: AsmType, asmMovzDstType :: AsmType, asmMovZESrc :: Operand, asmMovZEDst :: Operand}
   | Lea {asmLeaSrc :: Operand, asmLeaDst :: Operand}
   | Ret
   | AsmUnary AsmUnaryOp AsmType Operand
@@ -558,9 +559,9 @@ irInstructionToAsmInstruction instr m funcList gVarMap = case instr of
   IRStore s d -> [Mov QuadWord (cvtOperand d) (Register RAX),
     Mov (dtToAsmType $ irValToDT s) (cvtOperand s) (Memory RAX 0)]
   IRFuncCall name args dst -> irFuncCallToAsm name args dst funcList m gVarMap
-  IRSignExtend s d -> [Movsx (cvtOperand s) (cvtOperand d)]
-  IRTruncate s d -> [Mov LongWord (cvtOperand s) (cvtOperand d)]
-  IRZeroExtend s d -> [MovZeroExtend (cvtOperand s) (cvtOperand d)]
+  IRSignExtend s d -> [Movsx (dtToAsmType $ irValToDT s) (dtToAsmType $ irValToDT d) (cvtOperand s) (cvtOperand d)]
+  IRTruncate s d -> [Mov (dtToAsmType $ irValToDT d) (cvtOperand s) (cvtOperand d)]
+  IRZeroExtend s d -> [MovZeroExtend (dtToAsmType $ irValToDT s) (dtToAsmType $ irValToDT d) (cvtOperand s) (cvtOperand d)]
   IRDoubleToInt s d -> [Cvttsd2si (dtToAsmType $ irValToDT d) (cvtOperand s) (cvtOperand d)]
   IRDoubleToUInt lbs s d -> if irValToDT d == DTInternal TUInt
     then [Cvttsd2si QuadWord (cvtOperand s) (Register R10),
@@ -577,8 +578,8 @@ irInstructionToAsmInstruction instr m funcList gVarMap = case instr of
       AsmBinary AsmPlus QuadWord (Register R10) (cvtOperand d),
       AsmLabel $ "castDToU2." ++ (!! 1) lbs]
   IRIntToDouble s d -> [Cvtsi2sd (dtToAsmType $ irValToDT s) (cvtOperand s) (cvtOperand d)]
-  IRUIntToDouble lbs s d -> if irValToDT s == DTInternal TUInt
-    then [MovZeroExtend (cvtOperand s) (Register R10),
+  IRUIntToDouble lbs s d -> if irValToDT s /= DTInternal TULong
+    then [MovZeroExtend (dtToAsmType $ irValToDT s) QuadWord (cvtOperand s) (Register R10),
       Cvtsi2sd QuadWord (Register R10) (cvtOperand d)]
     else [Cmp QuadWord (Imm $ ConstLong 0) (cvtOperand s),
       JmpCC L $ "castUToD1." ++ (!! 0) lbs,
@@ -669,8 +670,8 @@ convertAsmTempVarToStackAddr sVars = map convertInstr
           AsmDiv t operand -> AsmDiv t $ convertOperand operand
           Cmp t r l -> Cmp t (convertOperand r) (convertOperand l)
           SetCC code d -> SetCC code (convertOperand d)
-          Movsx s d -> Movsx (convertOperand s) (convertOperand d)
-          MovZeroExtend s d -> MovZeroExtend (convertOperand s) (convertOperand d)
+          Movsx st dt s d -> Movsx st dt (convertOperand s) (convertOperand d)
+          MovZeroExtend st dt s d -> MovZeroExtend st dt (convertOperand s) (convertOperand d)
           Cvtsi2sd t s d -> Cvtsi2sd t (convertOperand s) (convertOperand d)
           Cvttsd2si t s d -> Cvttsd2si t (convertOperand s) (convertOperand d)
           Lea s d -> Lea (convertOperand s) (convertOperand d)
@@ -711,8 +712,8 @@ getFloatConst :: [AsmInstruction] -> [Double]
 getFloatConst = foldl' mergeOperand []
   where mergeOperand x y = x ++ case y of
           Mov _ s d -> takeFloatFromOperand s ++ takeFloatFromOperand d
-          Movsx s d -> takeFloatFromOperand s ++ takeFloatFromOperand d
-          MovZeroExtend s d -> takeFloatFromOperand s ++ takeFloatFromOperand d
+          Movsx _ _ s d -> takeFloatFromOperand s ++ takeFloatFromOperand d
+          MovZeroExtend _ _ s d -> takeFloatFromOperand s ++ takeFloatFromOperand d
           AsmUnary _ _ d -> takeFloatFromOperand d
           AsmBinary _ _ r l -> takeFloatFromOperand r ++ takeFloatFromOperand l
           AsmIdiv _ d -> takeFloatFromOperand d
@@ -787,13 +788,17 @@ resolveDoubleStackOperand instr = case instr of
                     Mov t j (Register R11),
                     Cmp t (Register R10) (Register R11)]
               | otherwise = [instrs]
-  instrs@(Movsx i j) -> if isImm i || (isMemoryAddr i && isMemoryAddr j) || isMemoryAddr j
-    then [Mov LongWord i $ Register R10,
-          Movsx (Register R10) (Register R11),
-          Mov QuadWord (Register R11) j]
+  instrs@(Movsx st dt i j) -> if isImm i || (isMemoryAddr i && isMemoryAddr j) || isMemoryAddr j
+    then [Mov st i $ Register R10,
+          Movsx st dt (Register R10) (Register R11),
+          Mov dt (Register R11) j]
     else [instrs]
-  MovZeroExtend i j -> if isImm i || (isMemoryAddr i && isMemoryAddr j) || isMemoryAddr j
-    then [Mov LongWord i (Register R11), Mov QuadWord (Register R11) j]
+  MovZeroExtend st dt i j -> if isImm i || (isMemoryAddr i && isMemoryAddr j) || isMemoryAddr j
+    then if st == LongWord && dt == QuadWord
+      then [Mov LongWord i (Register R11), Mov QuadWord (Register R11) j]
+      else [Mov st i $ Register R10,
+            MovZeroExtend st dt (Register R10) (Register R11),
+            Mov dt (Register R11) j]
     else [Mov LongWord i j]
   Cvtsi2sd t s d ->
     [Mov t s (Register AX),
@@ -977,8 +982,10 @@ asmInstructionToStr instr = case instr of
   DeallocateStack i -> case i of
     0 -> []
     _ -> pure $ tabulate ["addq", "$" ++ show i ++ ", %rsp"]
-  Movsx s d -> pure $ tabulate ["movslq", show (convertToNSizeOperand DWORD s) ++ ", " ++ show (convertToNSizeOperand QWORD d)]
-  MovZeroExtend _ _ -> error "should be converted to another ir form"
+  Movsx st dt s d -> pure $ tabulate ["movs" ++ asmTypeToAsmStrSuffix st ++ asmTypeToAsmStrSuffix dt,
+    show (convertToNSizeOperand (asmTypeToMemSize st) s) ++ ", " ++ show (convertToNSizeOperand (asmTypeToMemSize dt) d)]
+  MovZeroExtend st dt s d -> pure $ tabulate ["movz" ++ asmTypeToAsmStrSuffix st ++ asmTypeToAsmStrSuffix dt,
+    show (convertToNSizeOperand (asmTypeToMemSize st) s) ++ ", " ++ show (convertToNSizeOperand (asmTypeToMemSize dt) d)]
   Cvtsi2sd t s d ->
     pure $ tabulate ["cvtsi2sd" ++ asmTypeToAsmStrSuffix t,
       show (convertToNSizeOperand (asmTypeToMemSize t) s) ++ ", " ++ show (convertToNSizeOperand (asmTypeToMemSize t) d)]
@@ -1011,6 +1018,20 @@ asmFunctionDefineToStr (AsmFunctionDefine fname isGlobal instrs _) =
     tabulate ["movq", "%rsp, %rbp"],
     unlines $ concatMap asmInstructionToStr instrs]
 
+intToOct :: Int -> String
+intToOct i
+  | i < 8 = show i
+  | otherwise = intToOct (div i 8) ++ show (mod i 8)
+
+escapeCharIfNeeded :: Char -> String
+escapeCharIfNeeded c =
+  let res = c `lookup` [('\\', "\\"), ('\'', "\'"), ('\"', "\"")] in
+    maybe (pure c) ('\\' :) res
+
+nonPrintableToOct :: String -> String
+nonPrintableToOct = ("\"" ++) . (++ "\"") .
+    concatMap (\c -> if not (isPrint c) then '\\' : intToOct (ord c) else escapeCharIfNeeded c)
+
 asmVarInitToStr :: StaticInit -> String
 asmVarInitToStr iVal = tabulate ["." ++ show (staticInitToAsmType iVal) ++ " " ++ (case iVal of
       DoubleInit _ -> doubleValToLabel (staticInitToDouble iVal) ++ " #" ++ show (staticInitToDouble iVal)
@@ -1031,7 +1052,7 @@ asmStaticConstDefineToStr (AsmStaticConstantDefine name constAlign initVal) =
     tabulate [".align " ++ (if name == doubleValToLabel (-0.0) then "16" else show constAlign)],
      ".L_" ++ name ++ ":",
      tabulate [if isStringInit initVal
-      then (if stringInitZeroEnd initVal then ".asciz " else".ascii ") ++ show (stringInitContent initVal)
+      then (if stringInitZeroEnd initVal then ".asciz " else".ascii ") ++ nonPrintableToOct (stringInitContent initVal)
       else
         ".quad " ++ doubleValToLabel (staticInitToDouble initVal) ++ " #" ++ show (staticInitToDouble initVal)]]
 
