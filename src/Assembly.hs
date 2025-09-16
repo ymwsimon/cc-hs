@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/09/16 20:18:08 by mayeung          ###   ########.fr       --
+--   Updated: 2025/09/16 20:57:02 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -447,7 +447,10 @@ irFuncCallToAsm name args dst funcList m gVarMap =
               IRVar dt _ -> let pushSize = if isFloatDT dt then QuadWord else dtToAsmType dt in
                 [Mov pushSize (cvtOperand v) r,
                   Push r]) (reverse $ map fst stackArg)
-      setNumOfVectorRegUsed = let aList = map fst $ argList $ funcType $ fti $ gVarMap M.! name in
+      setNumOfVectorRegUsed =
+        let aList = if M.member name gVarMap
+                      then map fst $ argList $ funcType $ fti $ gVarMap M.! name
+                      else [] in
           [Mov AsmByte (Imm $ ConstInt $ fromIntegral $ length $ filter (isFloatDT . irValToDT) args) (Register AL)
             | DTVariadic `elem` aList]
       callInstrs = if M.member name funcList
