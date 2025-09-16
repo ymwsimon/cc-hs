@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/09/16 15:15:59 by mayeung          ###   ########.fr       --
+--   Updated: 2025/09/16 20:18:08 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -451,9 +451,12 @@ irFuncCallToAsm name args dst funcList m gVarMap =
               IRVar dt _ -> let pushSize = if isFloatDT dt then QuadWord else dtToAsmType dt in
                 [Mov pushSize (cvtOperand v) r,
                   Push r]) (reverse $ map fst stackArg)
+      setNumOfVectorRegUsed = let aList = map fst $ argList $ funcType $ fti $ gVarMap M.! name in
+          [Mov AsmByte (Imm $ ConstInt $ fromIntegral $ length $ filter (isFloatDT . irValToDT) args) (Register AL)
+            | DTVariadic `elem` aList]
       callInstrs = if M.member name funcList
           then [Call name] else [Call $ name ++ "@PLT"] in
-  paddingInstr ++ copyRegArgsInstr ++ copyStackArgsInstr ++ callInstrs ++
+  paddingInstr ++ copyRegArgsInstr ++ copyStackArgsInstr ++ setNumOfVectorRegUsed ++ callInstrs ++
     [DeallocateStack (8 * length stackArg + paddingSize)] ++
     [Mov (dtToAsmType $ irValToDT dst) reg $ cvtOperand dst]
     where cvtOperand = irOperandToAsmOperand m gVarMap

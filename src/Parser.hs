@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/09/16 15:38:12 by mayeung          ###   ########.fr       --
+--   Updated: 2025/09/16 20:18:35 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -60,6 +60,7 @@ data DT =
   | DTPointer {ptrPointingType :: DT}
   | DTArray {arrType :: DT, arrSize :: Maybe Int}
   | DTUserDefined String [DT]
+  | DTVariadic
   deriving Show
 
 data IdentifierType =
@@ -184,6 +185,7 @@ instance Eq DT where
  (DTPointer l) == (DTPointer r) = l == r
  (DTUserDefined lName lDT) == (DTUserDefined rName rDT) = lName == rName && lDT == rDT
  (DTArray alDT alSize) == (DTArray arDT arSize) = alDT == arDT && alSize == arSize
+ DTVariadic == DTVariadic = True
  _ == _ = False
 
 instance Show PrimType where
@@ -492,6 +494,9 @@ doubleQCharParser = createSkipSpacesCharParser '"'
 
 backSlashParser :: ParsecT String u IO String
 backSlashParser = createSkipSpacesStringParser "\\"
+
+ellipsisParser :: ParsecT String u IO String
+ellipsisParser = createSkipSpacesStringParser "..."
 
 keywordParserCreate :: String -> ParsecT String u IO String
 keywordParserCreate k = do
@@ -880,7 +885,7 @@ isConstantTypedExpr (TExpr expr _) = case expr of
   Binary _ l r -> isConstantTypedExpr l && isConstantTypedExpr r
   Assignment {} -> False
   Conditional c t f -> isConstantTypedExpr c && isConstantTypedExpr t && isConstantTypedExpr f
-  AddrOf te -> False -- isStringExpr te
+  AddrOf _ -> False
   Dereference {} -> False
   Subscript {} -> False
 
@@ -1577,6 +1582,17 @@ getRefType dt = case dt of
   DTArray aDT _ -> aDT
   _ -> dt
 
+functionCallArgLengthCheck :: [TypedExpr] -> [(DT, IdentifierName)] -> Bool
+functionCallArgLengthCheck parameters args = if DTVariadic `elem` map fst args
+  then let argsLen = length $ takeWhile (/= DTVariadic) $ map fst args in
+    length parameters >= argsLen
+  else length parameters == length args
+
+functionCallCvtParameters :: [TypedExpr] -> [(DT, IdentifierName)] -> [TypedExpr]
+functionCallCvtParameters parameters [(DTVariadic, _)] = parameters
+functionCallCvtParameters (p:ps) (t:ts) = cvtTypedExpr p (fst t) : functionCallCvtParameters ps ts
+functionCallCvtParameters parameters _ = parameters
+
 functionCallParser :: ParsecT String ParseInfo IO TypedExpr
 functionCallParser = do
   functionName <- identifierParser <* openPParser
@@ -1597,11 +1613,11 @@ functionCallParser = do
       void closePParser
       pure exprs
   let funcInfo = getFunTypeInfoFromVarMap functionName current outer
-  unless (length paraList == length (argList $ funcType funcInfo)) $
+  unless (functionCallArgLengthCheck paraList $ argList $ funcType funcInfo) $
     unexpected "Function call. Incorrect number of parameters"
   mapM_ (\(l, r) -> checkImplicitCastAssign (TExpr (Variable "" False Nothing) l) AssignOp r) $
-    zip (map fst $ argList $ funcType funcInfo) paraList
-  let convertedParaList = zipWith cvtTypedExpr paraList (map fst $ argList $ funcType funcInfo)
+    zip (takeWhile (/= DTVariadic) $ map fst $ argList $ funcType funcInfo) paraList
+  let convertedParaList = functionCallCvtParameters paraList (argList $ funcType funcInfo)
   pure $ TExpr
     (FunctionCall functionName (map foldToConstExpr convertedParaList))
     (retType $ funcType $ fti $ outer M.! functionName)
@@ -1789,6 +1805,14 @@ argPairParser = do
         (currentScopeIdent p)})
   pure (varType, fromJust vName)
 
+variadicParser :: ParsecT String ParseInfo IO (DT, IdentifierName)
+variadicParser = do
+   void $ ellipsisParser <* notFollowedBy commaParser
+   maybeCloseParen <- lookAhead (try closePParser) <|> (pure <$> anyChar)
+   if maybeCloseParen /= ")"
+    then unexpected maybeCloseParen
+    else pure (DTVariadic, "")
+
 isTypeSpecifier :: String -> Bool
 isTypeSpecifier sym = sym `elem` declarationSpecifierStrList
 
@@ -1800,7 +1824,7 @@ argListParser = do
     "void" -> keyVoidParser >> pure []
     ")" -> pure []
     _ -> if isTypeSpecifier res
-      then sepBy argPairParser $ try commaParser
+      then sepBy (try argPairParser <|> try variadicParser) $ try commaParser
       else unexpected "identifier without type"
   void closePParser
   pure r

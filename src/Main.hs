@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/02/24 00:05:21 by mayeung           #+#    #+#             --
---   Updated: 2025/09/08 15:29:36 by mayeung          ###   ########.fr       --
+--   Updated: 2025/09/16 20:17:12 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -87,15 +87,15 @@ parseOkAct args path (m, parseOk) = do
         print $ M.filter (\v -> isVarIdentifier v || isStaticConstIdentifier v) m
         print "-----------------"
         let updatedLabel = updateGotoLabel parseOk labelMap
-            varOnlyGlobalMap = M.filter (\v -> isVarIdentifier v || isStaticConstIdentifier v) m
-            converted = convertCASTToAsmStr varOnlyGlobalMap updatedLabel
+            globalIdentifierMap = m
+            converted = convertCASTToAsmStr globalIdentifierMap updatedLabel
         print "m-----------------m"
         print m
         print "m-----------------m"
         if validate args
           then pure (Right updatedLabel)
           else do
-          print $ convertCASTToAsm varOnlyGlobalMap $ updateGotoLabel parseOk labelMap
+          print $ convertCASTToAsm globalIdentifierMap $ updateGotoLabel parseOk labelMap
           writeFile (outAsmFileName path) converted
           (_, _, _, assemblerPid) <- let libs = map ("-l" ++) $ library args in
             if objOnly args
