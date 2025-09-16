@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/03/06 12:45:56 by mayeung           #+#    #+#             --
---   Updated: 2025/09/13 20:45:45 by mayeung          ###   ########.fr       --
+--   Updated: 2025/09/16 15:38:12 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -880,7 +880,7 @@ isConstantTypedExpr (TExpr expr _) = case expr of
   Binary _ l r -> isConstantTypedExpr l && isConstantTypedExpr r
   Assignment {} -> False
   Conditional c t f -> isConstantTypedExpr c && isConstantTypedExpr t && isConstantTypedExpr f
-  AddrOf {} -> False
+  AddrOf te -> False -- isStringExpr te
   Dereference {} -> False
   Subscript {} -> False
 
@@ -888,6 +888,11 @@ isConstantInit :: Initialiser -> Bool
 isConstantInit initialiser = case initialiser of
   SingleInit te -> isConstantTypedExpr te
   CompoundInit te -> all isConstantInit te
+
+isStringInitialiser :: Initialiser -> Bool
+isStringInitialiser initialiser = case initialiser of
+  SingleInit te -> isStringExpr te
+  CompoundInit te -> all isStringInitialiser te
 
 isConstantIntegralInit :: Initialiser -> Bool
 isConstantIntegralInit initialiser = case initialiser of
@@ -993,6 +998,8 @@ exprToConstantExpr te@(TExpr e dt) =
     else (`TExpr` dt) $ constructor $ 
       if exprToInteger (exprToConstantExpr c) /= 0 then
           exprToInteger $ exprToConstantExpr t else exprToInteger $ exprToConstantExpr f
+  StringLit {} -> te
+  AddrOf (TExpr (StringLit {}) _) -> te
   _ -> error "unsupported expression conversion to constant expression"
   where relationToIntConst op lE rE =
           let lVal = if isFloatDT $ tDT lE then (/= 0.0) $ exprToDouble lE else (/= 0) $ exprToInteger lE
@@ -1015,7 +1022,9 @@ foldToConstExpr te = if isConstantTypedExpr te then exprToConstantExpr te else t
 
 foldInitToConstExpr :: Initialiser -> Initialiser
 foldInitToConstExpr initialiser = case initialiser of
-  SingleInit si -> if isConstantInit initialiser then SingleInit (foldToConstExpr $ decayArrayToPointer si) else initialiser
+  SingleInit si -> if isConstantInit initialiser && not (isStringInitialiser initialiser)
+    then SingleInit (foldToConstExpr $ decayArrayToPointer si)
+    else initialiser
   CompoundInit ci -> CompoundInit $ map foldInitToConstExpr ci
 
 doubleIntegralParser :: ParsecT String ParseInfo IO TypedExpr
@@ -1469,11 +1478,14 @@ getFunTypeInfoFromVarMap fIdentifier current outer =
 checkPointerInitVal :: TypedExpr -> DT -> Maybe StorageClass -> ParsecT String ParseInfo IO ()
 checkPointerInitVal te dt sc = do
   when (isPointerDT dt && sc == Just Static
-    && not (isConstantTypedExpr te && isIntegralTypedExpr te && exprToInteger te == 0)) $
+    && not (isConstantTypedExpr te &&
+      (isStringExpr te || (isIntegralTypedExpr te && exprToInteger te == 0)))
+    && not (isStringExpr te)) $
     unexpected "non 0 init for static pointer"
   when (isPointerDT dt && sc /= Just Static
     && (isFloatTypedExpr te ||
-    not (isPointerOrArray te || (isConstantTypedExpr te && isIntegralTypedExpr te && exprToInteger te == 0)))) $
+    not (isPointerOrArray te || (isConstantTypedExpr te &&
+      (isStringExpr te || (isIntegralTypedExpr te && exprToInteger te == 0)))))) $
     unexpected "non 0 init for pointer"
   case te of
     TExpr (Conditional _ t f) _ ->do
@@ -1521,7 +1533,7 @@ checkImplicitCastAssign l op r = do
     && (isPointerOrArray l || isPointerOrArray r)) $
     unexpected "pointer right operand for plus/minus assign operation on non pointer"
   when (op == AssignOp && isPointerTypedExpr l
-    && not (isPointerOrArray r || (isIntegralConstantTE r && exprToInteger r == 0))) $
+    && not (isPointerOrArray r || (isStringExpr r || (isIntegralConstantTE r && exprToInteger r == 0)))) $
     unexpected "assignment operation for pointer"
   checkImplicitCast r (tDT l)
 
@@ -1543,7 +1555,7 @@ checkImplicitCastBinary l op r = do
   when (op == Minus && isPointerOrArray r && not (isPointerOrArray l)) $
     unexpected "pointer operand for minus operation for non pointer"
   when (op `elem` relationOp && isPointerTypedExpr l
-     && not (isPointerOrArray r || (isIntegralConstantTE r && exprToInteger r == 0))) $
+     && not (isPointerOrArray r || (isStringExpr r || (isIntegralConstantTE r && exprToInteger r == 0)))) $
     unexpected "implicit type cast for non zero constant to pointer"
   checkImplicitCast r (tDT l)
 
@@ -1904,7 +1916,7 @@ topLevelVarDeclarationParser = do
           (`cvtInit` getArrayInnerType varType) .
           decayArrayToPointerInit <$> initialiser
   void semiColParser
-  unless (isNothing initialiser || isConstantInit (fromJust initialiser)) $
+  unless (isNothing initialiser || (isStringInitialiser (fromJust initialiser) || isConstantInit (fromJust initialiser))) $
     unexpected "non constant initialiser"
   when (isJust initialiser) $
     checkPointerInit (fromJust initialiser) (getArrayInnerType varType) (Just Static)

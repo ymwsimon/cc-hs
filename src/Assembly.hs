@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/09/14 16:20:34 by mayeung          ###   ########.fr       --
+--   Updated: 2025/09/16 15:15:59 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -150,7 +150,7 @@ instance Show AsmType where
   show QuadWord = "quad"
   show AsmDouble = "quad"
   show Zero = "zero"
-  show (ByteArr {}) = "asciz"
+  show (ByteArr {}) = "ascii"
 
 instance Show Operand where
   show (Imm n) = case n of
@@ -300,7 +300,7 @@ staticInitToAsmType si = case si of
   DoubleInit _ -> AsmDouble
   ZeroInit _ -> Zero
   StringInit strContent _ -> ByteArr (length strContent) 1
-  PointerInit _ -> QuadWord
+  PointerInit {} -> QuadWord
 
 staticInitToAsmSize :: StaticInit -> Int
 staticInitToAsmSize si = case si of
@@ -344,7 +344,9 @@ doubleValToLabel = show . castDoubleToWord64
 irStaticVarToAsmStaticVarDefine :: IRTopLevel -> AsmStaticVarDefine
 irStaticVarToAsmStaticVarDefine irD = case irD of
   IRStaticVar (IRStaticVarDefine vName global vType initVal) ->
-    AsmStaticVarDefine vName global (dtToByteSize $ getArrayInnerType vType) initVal
+    -- if isArrayDT vType && isCharType (getArrayInnerType vType)
+      -- then AsmStaticVarDefine vName global (dtToByteSize $ getArrayInnerType vType) initVal
+      AsmStaticVarDefine vName global (dtToByteSize $ getArrayInnerType vType) initVal
   _ -> error "unknown condition for static var conversion to asm static var define"
 
 irStaticConstToAsmStaticConstDefine :: IRTopLevel -> AsmStaticConstantDefine
@@ -562,11 +564,16 @@ irInstructionToAsmInstruction instr m funcList gVarMap = case instr of
   IRSignExtend s d -> [Movsx (dtToAsmType $ irValToDT s) (dtToAsmType $ irValToDT d) (cvtOperand s) (cvtOperand d)]
   IRTruncate s d -> [Mov (dtToAsmType $ irValToDT d) (cvtOperand s) (cvtOperand d)]
   IRZeroExtend s d -> [MovZeroExtend (dtToAsmType $ irValToDT s) (dtToAsmType $ irValToDT d) (cvtOperand s) (cvtOperand d)]
-  IRDoubleToInt s d -> [Cvttsd2si (dtToAsmType $ irValToDT d) (cvtOperand s) (cvtOperand d)]
-  IRDoubleToUInt lbs s d -> if irValToDT d == DTInternal TUInt
-    then [Cvttsd2si QuadWord (cvtOperand s) (Register R10),
+  IRDoubleToInt s d -> if isCharType $ irValToDT d
+    then [Cvttsd2si LongWord (cvtOperand s) (Register R10),
+          Mov AsmByte (Register R10) (cvtOperand d)]
+    else [Cvttsd2si (dtToAsmType $ irValToDT d) (cvtOperand s) (cvtOperand d)]
+  IRDoubleToUInt lbs s d -> case irValToDT d of
+    DTInternal TUChar -> [Cvttsd2si QuadWord (cvtOperand s) (Register R10),
+      Mov AsmByte (Register R10) (cvtOperand d)]
+    DTInternal TUInt -> [Cvttsd2si QuadWord (cvtOperand s) (Register R10),
       Mov LongWord (Register R10) (cvtOperand d)]
-    else [Cmp AsmDouble (Data $ ".L_" ++ doubleValToLabel 9223372036854775808.0) (cvtOperand s),
+    _ -> [Cmp AsmDouble (Data $ ".L_" ++ doubleValToLabel 9223372036854775808.0) (cvtOperand s),
       JmpCC AE $ "castDToU1." ++ (!! 0) lbs,
       Cvttsd2si QuadWord (cvtOperand s) (cvtOperand d),
       AsmJmp $ "castDToU2." ++ (!! 1) lbs,
@@ -577,9 +584,15 @@ irInstructionToAsmInstruction instr m funcList gVarMap = case instr of
       Mov QuadWord (Imm $ ConstULong 9223372036854775808) (Register R10),
       AsmBinary AsmPlus QuadWord (Register R10) (cvtOperand d),
       AsmLabel $ "castDToU2." ++ (!! 1) lbs]
-  IRIntToDouble s d -> [Cvtsi2sd (dtToAsmType $ irValToDT s) (cvtOperand s) (cvtOperand d)]
+  IRIntToDouble s d -> if isCharType $ irValToDT s
+    then [Movsx (dtToAsmType $ irValToDT s) LongWord (cvtOperand s) (Register R10),
+          Cvtsi2sd LongWord (Register R10) (cvtOperand d)]
+    else [Cvtsi2sd (dtToAsmType $ irValToDT s) (cvtOperand s) (cvtOperand d)]
   IRUIntToDouble lbs s d -> if irValToDT s /= DTInternal TULong
-    then [MovZeroExtend (dtToAsmType $ irValToDT s) QuadWord (cvtOperand s) (Register R10),
+    then if isCharType $ irValToDT s
+      then [MovZeroExtend (dtToAsmType $ irValToDT s) LongWord (cvtOperand s) (Register R10),
+            Cvtsi2sd LongWord (Register R10) (cvtOperand d)]
+      else [MovZeroExtend (dtToAsmType $ irValToDT s) QuadWord (cvtOperand s) (Register R10),
       Cvtsi2sd QuadWord (Register R10) (cvtOperand d)]
     else [Cmp QuadWord (Imm $ ConstLong 0) (cvtOperand s),
       JmpCC L $ "castUToD1." ++ (!! 0) lbs,
@@ -1032,10 +1045,17 @@ nonPrintableToOct :: String -> String
 nonPrintableToOct = ("\"" ++) . (++ "\"") .
     concatMap (\c -> if not (isPrint c) then '\\' : intToOct (ord c) else escapeCharIfNeeded c)
 
+staticPointerToStr :: String -> Int -> String
+staticPointerToStr str offset = ".L_" ++ str ++
+  if offset > 0
+    then "+" ++ show offset
+    else ""
+
 asmVarInitToStr :: StaticInit -> String
 asmVarInitToStr iVal = tabulate ["." ++ show (staticInitToAsmType iVal) ++ " " ++ (case iVal of
       DoubleInit _ -> doubleValToLabel (staticInitToDouble iVal) ++ " #" ++ show (staticInitToDouble iVal)
-      StringInit strContent _ -> "\"" ++ strContent ++ "\""
+      StringInit strContent _ -> nonPrintableToOct strContent
+      PointerInit strName offset -> staticPointerToStr strName offset
       _ -> show $ staticInitToInt iVal)]
 
 asmStaticVarDefineToStr :: AsmStaticVarDefine -> String

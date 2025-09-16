@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/09/09 13:27:28 by mayeung          ###   ########.fr       --
+--   Updated: 2025/09/16 15:14:57 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -91,7 +91,7 @@ data StaticInit =
   | CharInit NumConst
   | UCharInit NumConst
   | StringInit {stringInitContent :: String, stringInitZeroEnd :: Bool}
-  | PointerInit String
+  | PointerInit String Int
   deriving (Show, Eq)
 
 isIRFuncDefine :: IRTopLevel -> Bool
@@ -198,12 +198,18 @@ exprToStaticInit (TExpr e _) = case e of
   Constant (ConstULong ul) -> ULongInit $ ConstULong ul
   Constant (ConstDouble d) -> DoubleInit $ ConstDouble d
   StringLit _ strContent -> StringInit strContent True
-  AddrOf str -> undefined
+  AddrOf (TExpr str _) -> PointerInit (strLitName str) 0
   _ -> error "unsupported expression convert to static init"
 
 initialiserToStaticInits :: DT -> Initialiser -> [StaticInit]
 initialiserToStaticInits dt i = case i of
-  SingleInit si -> [exprToStaticInit si]
+  SingleInit si -> let sInit = exprToStaticInit si in
+    case sInit of
+      StringInit strContent _ -> if fromJust (arrSize dt) > length strContent
+        then
+          [sInit, ZeroInit (fromJust (arrSize dt) - length strContent)]
+        else [sInit]
+      _ -> [sInit]
   CompoundInit ci -> concatMap (initialiserToStaticInits (getRefType dt)) ci ++
     [ZeroInit $ getDTSize (getRefType dt) * (fromJust (arrSize dt) - length ci) | length ci < fromJust (arrSize dt)]
 
