@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:33:35 by mayeung           #+#    #+#             --
---   Updated: 2025/09/16 20:57:02 by mayeung          ###   ########.fr       --
+--   Updated: 2025/09/17 17:36:02 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -455,7 +455,7 @@ irFuncCallToAsm name args dst funcList m gVarMap =
         let aList = if M.member name gVarMap
                       then map fst $ argList $ funcType $ fti $ gVarMap M.! name
                       else [] in
-          [Mov AsmByte (Imm $ ConstInt $ fromIntegral $ length $ filter (isFloatDT . irValToDT) args) (Register AL)
+          [Mov AsmByte (Imm $ ConstInt $ fromIntegral $ min 8 $ length $ filter (isFloatDT . irValToDT) args) (Register AL)
             | DTVariadic `elem` aList]
       callInstrs = if M.member name funcList
           then [Call name] else [Call $ name ++ "@PLT"] in
