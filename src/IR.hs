@@ -6,7 +6,7 @@
 --   By: mayeung <mayeung@student.42london.com>     +#+  +:+       +#+        --
 --                                                +#+#+#+#+#+   +#+           --
 --   Created: 2025/04/03 12:38:13 by mayeung           #+#    #+#             --
---   Updated: 2025/09/16 15:14:57 by mayeung          ###   ########.fr       --
+--   Updated: 2025/09/19 13:15:48 by mayeung          ###   ########.fr       --
 --                                                                            --
 -- ************************************************************************** --
 
@@ -199,6 +199,7 @@ exprToStaticInit (TExpr e _) = case e of
   Constant (ConstDouble d) -> DoubleInit $ ConstDouble d
   StringLit _ strContent -> StringInit strContent True
   AddrOf (TExpr str _) -> PointerInit (strLitName str) 0
+  Cast _ inside -> exprToStaticInit inside
   _ -> error "unsupported expression convert to static init"
 
 initialiserToStaticInits :: DT -> Initialiser -> [StaticInit]
