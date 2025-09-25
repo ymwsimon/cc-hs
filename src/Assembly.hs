@@ -344,9 +344,11 @@ doubleValToLabel = show . castDoubleToWord64
 irStaticVarToAsmStaticVarDefine :: IRTopLevel -> AsmStaticVarDefine
 irStaticVarToAsmStaticVarDefine irD = case irD of
   IRStaticVar (IRStaticVarDefine vName global vType initVal) ->
-    -- if isArrayDT vType && isCharType (getArrayInnerType vType)
-      -- then AsmStaticVarDefine vName global (dtToByteSize $ getArrayInnerType vType) initVal
-      AsmStaticVarDefine vName global (dtToByteSize $ getArrayInnerType vType) initVal
+    AsmStaticVarDefine vName global 
+      (if dtToByteSize vType >= 16
+          then 16 
+          else dtToByteSize $ getArrayInnerType vType) 
+      initVal
   _ -> error "unknown condition for static var conversion to asm static var define"
 
 irStaticConstToAsmStaticConstDefine :: IRTopLevel -> AsmStaticConstantDefine
@@ -1038,7 +1040,7 @@ intToOct i
 
 escapeCharIfNeeded :: Char -> String
 escapeCharIfNeeded c =
-  let res = c `lookup` [('\\', "\\"), ('\'', "\'"), ('\"', "\"")] in
+  let res = c `lookup` [('\\', "\\"), ('\"', "\"")] in
     maybe (pure c) ('\\' :) res
 
 nonPrintableToOct :: String -> String
